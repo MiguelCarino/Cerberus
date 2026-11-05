@@ -2408,6 +2408,18 @@ Only what differs from, or settles, the text above.
   takes the run past `max_tokens` or `max_cost_usd` is stopped and the run ends `limited`. Usage an
   agent spends outside the daemon (an agent CLI that calls its vendor directly) is not seen, so it
   is not counted.
+- **Continue (2026-11-05).** A run that ended `failed`, `limited` or `canceled` before its last step
+  can be continued (`POST /api/flows/runs/{run}/continue`, the run page's "↻ Continue", audited as
+  `flow.run.continue`). It is queued again from the step it stopped at (`pc`, which now also moves
+  past each passed step, so a run stopped between steps does not repeat one). That step runs again
+  and earlier steps keep their outputs. A session step that stopped inside a session goes on in
+  that session (`Manager.Resume`: same workspace, conversation and resume command) instead of
+  starting a new one. Fan-out items always start over. Each Continue gives a fresh allowance of
+  every limit: `timeout_min` starts again, and `max_steps`, `max_tokens` and `max_cost_usd` count
+  from the totals at that moment (`base_steps`, `base_tokens`, `base_cost_usd`). The totals keep
+  counting, and `continued` counts the Continues. Each attempt of a step keeps its own record. A
+  `rejected` run (a person's no) and a `passed` run cannot be continued. A session waiting at its
+  own approval prompt still uses up `timeout_min`, so Continue is the way on after a long wait.
 - **Sessions.** Session tags must match `[a-z0-9-]{1,24}`, so a flow's sessions carry the tags
   `flow` and the flow id (cut to 24 characters) instead of `flow:<id>`.
 - **Approvals.** The inbox item (kind `flow-approve`) has Approve / Reject in the bell list while it

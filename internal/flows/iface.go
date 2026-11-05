@@ -83,6 +83,15 @@ type SessionRunner interface {
 	Stop(id string) error
 }
 
+// SessionResumer is optional on a SessionRunner. Resume starts a new
+// attempt of a stopped or finished session the runner started, in its
+// existing workspace (and conversation, for agents that keep one); the
+// step then waits for it like a new session. Continue uses it for a run
+// that stopped inside a session step.
+type SessionResumer interface {
+	Resume(ctx context.Context, id string) error
+}
+
 // SessionMeter is optional on a SessionRunner. Meter calls fn with the
 // usage of every model call recorded under session id from now until stop
 // is called; after stop returns, fn is not called again. The engine

@@ -25,6 +25,12 @@ type runCtx struct {
 	lim     Limits
 	outputs map[string]any
 	known   map[string]bool
+	// resume is the session the step at resumePC continues (Continue), once.
+	resume   string
+	resumePC int
+	// bases are the totals when the run was last continued (see Run).
+	baseTokens int
+	baseCost   float64
 }
 
 func (rc *runCtx) link() string { return "#/flows/runs/" + rc.id }
@@ -92,7 +98,8 @@ func (e *Engine) releaseLocked(id string, lr *liveRun) {
 // loop runs steps from r.PC until the run ends or waits.
 func (e *Engine) loop(ctx context.Context, r Run, lr *liveRun) outcome {
 	rc := &runCtx{id: r.ID, live: lr, snap: r.Snapshot, input: r.Input, lim: r.Snapshot.Limits.Effective(),
-		outputs: map[string]any{}, known: map[string]bool{}}
+		outputs: map[string]any{}, known: map[string]bool{}, resume: r.Resume, resumePC: r.PC,
+		baseTokens: r.BaseTokens, baseCost: r.BaseCostUSD}
 	for _, s := range rc.snap.Steps {
 		rc.known[s.ID] = true
 	}
@@ -114,7 +121,7 @@ func (e *Engine) loop(ctx context.Context, r Run, lr *liveRun) outcome {
 			return stopOutcome(context.Cause(ctx), rc)
 		}
 		stepsRun++
-		if stepsRun > rc.lim.MaxSteps {
+		if stepsRun-r.BaseSteps > rc.lim.MaxSteps {
 			return outcome{StateLimited, fmt.Sprintf("more than %d steps", rc.lim.MaxSteps)}
 		}
 		if s.Kind == KindApprove {
@@ -127,7 +134,10 @@ func (e *Engine) loop(ctx context.Context, r Run, lr *liveRun) outcome {
 		if remaining <= 0 {
 			return outcome{StateLimited, fmt.Sprintf("timeout after %d min", rc.lim.TimeoutMin)}
 		}
-		e.update(r.ID, func(x *Run) { x.Step, x.PC, x.StepsRun = s.ID, pc, stepsRun })
+		if pc != rc.resumePC {
+			rc.resume = ""
+		}
+		e.update(r.ID, func(x *Run) { x.Step, x.PC, x.StepsRun, x.Resume = s.ID, pc, stepsRun, rc.resume })
 		sctx, scancel := context.WithTimeoutCause(ctx, remaining, errTimeout)
 		n++
 		rec := StepRecord{N: n, ID: s.ID, Kind: s.Kind, Name: s.Name, Started: e.clock.Now().UTC(), Items: []ItemRecord{}}
@@ -164,9 +174,10 @@ func (e *Engine) loop(ctx context.Context, r Run, lr *liveRun) outcome {
 		default:
 			pc = rc.snap.stepIndex(jump)
 		}
-		if pc >= len(rc.snap.Steps) {
-			e.update(r.ID, func(x *Run) { x.PC = len(rc.snap.Steps) })
-		}
+		// The next step to run, so a run stopped between steps continues
+		// from there (Continue), not from the step that just passed.
+		next := min(pc, len(rc.snap.Steps))
+		e.update(r.ID, func(x *Run) { x.PC = next })
 	}
 	return outcome{StatePassed, ""}
 }
@@ -295,10 +306,10 @@ func (e *Engine) charge(rc *runCtx, reply ModelReply, model string) error {
 	r.Updated = e.clock.Now().UTC()
 	e.persistLocked(r)
 	switch {
-	case r.Tokens > rc.lim.MaxTokens:
-		return &limitError{fmt.Sprintf("used %d tokens, over the limit of %d", r.Tokens, rc.lim.MaxTokens)}
-	case r.CostUSD > rc.lim.MaxCostUSD:
-		return &limitError{fmt.Sprintf("cost $%.4f, over the limit of $%.2f", r.CostUSD, rc.lim.MaxCostUSD)}
+	case r.Tokens-rc.baseTokens > rc.lim.MaxTokens:
+		return &limitError{fmt.Sprintf("used %d tokens, over the limit of %d", r.Tokens-rc.baseTokens, rc.lim.MaxTokens)}
+	case r.CostUSD-rc.baseCost > rc.lim.MaxCostUSD:
+		return &limitError{fmt.Sprintf("cost $%.4f, over the limit of $%.2f", r.CostUSD-rc.baseCost, rc.lim.MaxCostUSD)}
 	}
 	return nil
 }
@@ -793,13 +804,29 @@ func (e *Engine) session(ctx context.Context, rc *runCtx, s Step, agent, model, 
 	if e.o.Sessions == nil {
 		return nil, errors.New("agent sessions are not available")
 	}
-	id, err := e.o.Sessions.Start(ctx, SessionRequest{
-		Agent: agent, Model: model, Workspace: s.workspace(), Repo: s.Repo, Folder: s.Folder, Task: task,
-		Name: rc.snap.Name + " · " + name, Tags: []string{"flow:" + rc.snap.ID}, Run: rc.id, Flow: rc.snap.ID, Step: s.ID,
-		Owner: rc.snap.Owner,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("session not started: %w", err)
+	id, err := "", error(nil)
+	// Only a session step resumes (fan-out items run in parallel and
+	// never touch rc.resume).
+	resume := ""
+	if s.Kind == KindSession {
+		resume, rc.resume = rc.resume, ""
+	}
+	if rs, ok := e.o.Sessions.(SessionResumer); ok && resume != "" {
+		// Continue: the step stopped inside this session; carry on in its
+		// workspace and conversation rather than starting over.
+		id = resume
+		if err = rs.Resume(ctx, id); err != nil {
+			return nil, fmt.Errorf("session %s not continued: %w", id, err)
+		}
+	} else {
+		id, err = e.o.Sessions.Start(ctx, SessionRequest{
+			Agent: agent, Model: model, Workspace: s.workspace(), Repo: s.Repo, Folder: s.Folder, Task: task,
+			Name: rc.snap.Name + " · " + name, Tags: []string{"flow:" + rc.snap.ID}, Run: rc.id, Flow: rc.snap.ID, Step: s.ID,
+			Owner: rc.snap.Owner,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("session not started: %w", err)
+		}
 	}
 	e.update(rc.id, func(x *Run) {
 		if !slices.Contains(x.Sessions, id) {

@@ -8,7 +8,7 @@ import {
   STEP_KINDS, KIND_FIELDS, stepFields, newStep, uniqueId, duplicateStep, moveStep, removeStep, renameStepRefs,
   placeholdersFor, cleanStep, cleanFlow, blankFlow, fromTemplate, limitsText, stepSummary, clip,
   indexProblems, problemsAt, problemSummary, problemText,
-  isFinalRun, canCancelRun, runTone, stateText, fmtDuration, runDuration, usageText, stepUsage, outputText,
+  isFinalRun, canCancelRun, canContinueRun, runTone, stateText, fmtDuration, runDuration, usageText, stepUsage, outputText,
   stepRows, sessionLinks, draftGraph, previewChip, runEventFor, isZeroTime,
   selectDefault, setStepField, rowKey, itemKey, runLog, runLogName, retriedText,
 } from '../dist/assets/js/flows.js';
@@ -318,6 +318,12 @@ test('run states: final, tones and words', () => {
   for (const s of ['passed', 'failed', 'rejected', 'limited', 'canceled']) assert.equal(isFinalRun(s), true, s);
   for (const s of ['queued', 'running', 'waiting']) { assert.equal(isFinalRun(s), false, s); assert.equal(canCancelRun(s), true, s); }
   assert.equal(canCancelRun(''), false);
+  const snap = { steps: [{ id: 'a' }, { id: 'b' }] };
+  for (const st of ['failed', 'limited', 'canceled']) assert.equal(canContinueRun({ state: st, pc: 1, snapshot: snap }), true, st);
+  for (const st of ['passed', 'rejected', 'running', 'waiting', 'queued']) assert.equal(canContinueRun({ state: st, pc: 1, snapshot: snap }), false, st);
+  assert.equal(canContinueRun({ state: 'failed', pc: 2, snapshot: snap }), false);
+  assert.equal(canContinueRun({ state: 'failed', pc: 0 }), false);
+  assert.equal(canContinueRun(null), false);
   assert.equal(runTone('passed'), 'ok');
   assert.equal(runTone('rejected'), 'err');
   assert.equal(runTone('limited'), 'warn');

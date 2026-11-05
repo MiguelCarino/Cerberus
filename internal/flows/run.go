@@ -102,6 +102,16 @@ type Run struct {
 	// engine right now ("waiting for qwen: 1 of 1 slots busy"; for a
 	// fan-out step, a summary of its waiting items); "" when it is not.
 	Waiting string `json:"waiting,omitempty"`
+	// Continued counts Continue calls. Each one gives the run a fresh
+	// allowance of its limits: the Base* fields are the totals when it was
+	// continued, and limits count from them (ActiveMS starts again at 0).
+	Continued   int     `json:"continued,omitempty"`
+	BaseTokens  int     `json:"base_tokens,omitempty"`
+	BaseCostUSD float64 `json:"base_cost_usd,omitempty"`
+	BaseSteps   int     `json:"base_steps,omitempty"`
+	// Resume is the session the step at PC continues instead of starting
+	// a new one (set by Continue when that step stopped inside a session).
+	Resume string `json:"resume,omitempty"`
 }
 
 // Approval is the pending (or decided) approval of an approve step.

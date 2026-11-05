@@ -1,7 +1,9 @@
 // Flow run page (#/flows/runs/<run>): the run's live graph (the Flow
 // view's panel from views/flow.js over GET /api/flows/runs/{run}/flow),
 // its state, tokens, cost and energy, Approve / Reject while it waits,
-// Cancel while it goes, links to the sessions it started and each step's
+// Cancel while it goes, Continue once it stopped short (failed, limited
+// or canceled: it goes on from the step it stopped at), links to the
+// sessions it started and each step's
 // input and output (collapsible, with copy; fan-out items inside their
 // step). Kept live from the store's flowrun events for this run, one
 // fetch at most every second and none while the page is hidden.
@@ -14,7 +16,7 @@ import { flowPanel } from './flow.js';
 import { copyText, downloadText } from './chatdom.js';
 import { askInput } from './flows.js';
 import {
-  runTone, stateText, usageText, stepUsage, outputText, stepRows, sessionLinks, isFinalRun, canCancelRun,
+  runTone, stateText, usageText, stepUsage, outputText, stepRows, sessionLinks, isFinalRun, canCancelRun, canContinueRun,
   fmtDuration, runDuration, isZeroTime, kindLabel, runEventFor, clip, rowKey, itemKey, runLog, runLogName, retriedText,
 } from '../flows.js';
 
@@ -115,7 +117,7 @@ export function mount(root, r) {
   }
 
   function renderActions(run) {
-    const key = `${run.state}|${!!run.test}`;
+    const key = `${run.state}|${!!run.test}|${canContinueRun(run)}`;
     if (key === actionsKey) return;
     actionsKey = key;
     keepFocus(actionsEl, () => {
@@ -127,6 +129,14 @@ export function mount(root, r) {
       }
       if (canCancelRun(run.state)) {
         actionsEl.append(h('button', { class: 'btn btn-ghost', type: 'button', 'data-fkey': 'cancel', onclick: () => cancel() }, 'Cancel run'));
+      }
+      if (canContinueRun(run)) {
+        const at = run.snapshot.steps[run.pc];
+        actionsEl.append(h('button', {
+          class: 'btn btn-primary', type: 'button', 'data-fkey': 'continue',
+          title: `Go on from step ${(at && (at.name || at.id)) || run.step}, with fresh limits; earlier steps keep their output`,
+          onclick: () => cont(),
+        }, '↻ Continue'));
       }
       if (isFinalRun(run.state) && !run.test) {
         actionsEl.append(h('button', { class: 'btn', type: 'button', 'data-fkey': 'again', onclick: () => again2(run) }, '▶ Run again'));
@@ -285,6 +295,15 @@ export function mount(root, r) {
       const run = await api(`/api/flows/runs/${enc(id)}/approve`, { method: 'POST', body: { ok, note } });
       if (data) { data.run = { ...data.run, ...run, snapshot: data.run.snapshot }; render(); }
       toast(ok ? 'Approved: the run goes on' : 'Rejected: the run ends', ok ? 'ok' : 'warn');
+      load();
+    } catch (e) { toast(errText(e), 'err'); load(); }
+  }
+
+  async function cont() {
+    try {
+      const run = await api(`/api/flows/runs/${enc(id)}/continue`, { method: 'POST', body: {} });
+      if (data) { data.run = { ...data.run, ...run, snapshot: data.run.snapshot }; render(); }
+      toast('Continued: the run goes on', 'ok');
       load();
     } catch (e) { toast(errText(e), 'err'); load(); }
   }

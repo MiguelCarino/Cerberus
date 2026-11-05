@@ -586,6 +586,19 @@ func sessionResult(in session.Info) flows.SessionResult {
 // Stop stops a session the flow started.
 func (s flowSessionRunner) Stop(id string) error { return s.h.d.Sessions.Stop(id) }
 
+// Resume starts a new attempt of a session the flow started, in its
+// workspace (flows.SessionResumer: a continued run). A session manager
+// without Resume answers an error, and the step fails with it.
+func (s flowSessionRunner) Resume(ctx context.Context, id string) error {
+	rs, ok := s.h.d.Sessions.(interface {
+		Resume(ctx context.Context, id, text string) error
+	})
+	if !ok {
+		return errors.New("sessions cannot be resumed here")
+	}
+	return rs.Resume(context.WithoutCancel(ctx), id, "")
+}
+
 // Meter hands fn the usage of every model call recorded under session id
 // until stop (flows.SessionMeter).
 func (s flowSessionRunner) Meter(id string, fn func(flows.ModelReply)) func() {

@@ -143,6 +143,7 @@ type fakeSessions struct {
 	block   bool
 	release chan struct{}
 	stopped []string
+	resumed []string
 	started chan string
 	failErr error
 
@@ -430,3 +431,14 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 var errBoom = errors.New("boom")
+
+// Resume makes fakeSessions a SessionResumer: it records the id.
+func (s *fakeSessions) Resume(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failErr != nil {
+		return s.failErr
+	}
+	s.resumed = append(s.resumed, id)
+	return nil
+}

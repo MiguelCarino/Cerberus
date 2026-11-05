@@ -78,6 +78,8 @@ package api
 //	GET    /api/flows/runs/{run}       → {run: Run, steps: [StepRecord]}
 //	POST   /api/flows/runs/{run}/cancel           → Run (409 when already final)
 //	POST   /api/flows/runs/{run}/approve {ok, note} → Run (409 unless waiting)
+//	POST   /api/flows/runs/{run}/continue          → Run, queued again from the step
+//	                                     it stopped at (409 unless failed, limited or canceled)
 //	GET    /api/flows/runs/{run}/flow  → Graph (live states)
 //	GET    /api/flows/{id}             → FlowView
 //	PUT    /api/flows/{id}             Flow with the version it was read at → FlowView
@@ -136,6 +138,7 @@ func (s *server) flowsRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/flows/runs/{run}", s.handleFlowRun)
 	mux.HandleFunc("POST /api/flows/runs/{run}/cancel", s.handleFlowCancel)
 	mux.HandleFunc("POST /api/flows/runs/{run}/approve", s.handleFlowApprove)
+	mux.HandleFunc("POST /api/flows/runs/{run}/continue", s.handleFlowContinue)
 	mux.HandleFunc("GET /api/flows/runs/{run}/flow", s.handleFlowRunGraph)
 	mux.HandleFunc("GET /api/flows/{id}", s.handleFlowGet)
 	mux.HandleFunc("PUT /api/flows/{id}", s.handleFlowPut)
@@ -365,6 +368,23 @@ func (s *server) handleFlowCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteAudit(r, "cancel", run.Flow, id)
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (s *server) handleFlowContinue(w http.ResponseWriter, r *http.Request) {
+	if !s.flowReady(w) {
+		return
+	}
+	id, ok := runID(w, r)
+	if !ok {
+		return
+	}
+	run, err := s.flows.Continue(flowActor(r), id)
+	if err != nil {
+		flowError(w, err)
+		return
+	}
+	noteAudit(r, "continue", run.Flow, id)
 	writeJSON(w, http.StatusOK, run)
 }
 

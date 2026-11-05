@@ -5,8 +5,9 @@
 // rule the agent offered (WaitingAlways), which saves it for the session's
 // owner (answer "save" + option). The answer goes to POST
 // /api/sessions/{id}/answer with the prompt's number: a prompt already
-// answered (here, in the terminal or by another page) is a 409, said in a
-// toast. The buttons arm after 600 ms, so a tap meant for something that
+// answered (here, in the terminal or by another page) or a session stopped
+// meanwhile is a 409: said in a toast, and the session list is read again so
+// the stale buttons go away. The buttons arm after 600 ms, so a tap meant for something that
 // just moved is not taken as an answer.
 
 import { apiResult, sid } from '../api.js';
@@ -14,6 +15,7 @@ import { h, toast, errText } from '../dom.js';
 import { approvalWait } from '../util.js';
 import { approvalMenuItems, ruleWords, normAlways } from '../permits.js';
 import { openMenu } from './alwaysmenu.js';
+import { store } from '../store.js';
 
 const ARM_MS = 600;
 
@@ -47,8 +49,14 @@ export function approvalButtons(s, { onDone = null } = {}) {
         if (onDone) onDone(word);
         return;
       }
-      if (res.status === 409) toast('That prompt was already answered.', 'warn');
-      else toast(res.message, 'err');
+      if (res.status === 409) {
+        // This page's copy of the session was stale (answered elsewhere,
+        // or stopped meanwhile): re-read the list so the card goes away.
+        toast('That prompt is no longer open.', 'warn');
+        store.refreshSessions().catch(() => {});
+        return;
+      }
+      toast(res.message, 'err');
     } catch (e) {
       toast(errText(e), 'err');
     }

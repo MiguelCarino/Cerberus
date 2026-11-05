@@ -507,6 +507,16 @@ export const FINAL_STATES = ['passed', 'failed', 'rejected', 'limited', 'cancele
 export const isFinalRun = (state) => FINAL_STATES.includes(state);
 export const canCancelRun = (state) => !!state && !isFinalRun(state);
 
+// canContinueRun: a run that stopped (failed, limited or canceled) before
+// its last step can go on from there (POST …/continue). A rejected run was
+// a person's no, and a passed one has nothing left.
+export function canContinueRun(run) {
+  if (!run || !['failed', 'limited', 'canceled'].includes(run.state)) return false;
+  const steps = (run.snapshot && run.snapshot.steps) || [];
+  const pc = Number.isInteger(run.pc) ? run.pc : 0;
+  return pc >= 0 && pc < steps.length;
+}
+
 // runTone maps a run or step state to a Branding status tone.
 export function runTone(state) {
   switch (state) {
@@ -603,11 +613,14 @@ export function stepRows(run, records, live) {
   for (const r of records || []) recs.set(r.id, r);
   const final = isFinalRun(run && run.state);
   const rows = steps.map((s, i) => {
-    const rec = recs.get(s.id) || null;
+    // The current step of a going run is running or waiting even when an
+    // earlier attempt left a record (a continued run runs it again).
+    const current = run.step === s.id && i === run.pc && (run.state === 'running' || run.state === 'waiting');
+    const rec = current ? null : recs.get(s.id) || null;
     recs.delete(s.id);
     let state = 'pending';
-    if (rec) state = rec.state;
-    else if (run.step === s.id && i === run.pc && (run.state === 'running' || run.state === 'waiting')) state = run.state;
+    if (current) state = run.state;
+    else if (rec) state = rec.state;
     else if (i < (run.pc || 0) || final) state = 'skipped';
     const row = { step: s, rec, state };
     if (!rec && state === 'running') {

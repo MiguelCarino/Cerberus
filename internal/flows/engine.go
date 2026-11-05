@@ -660,6 +660,62 @@ func (e *Engine) Approve(actor, id string, ok bool, note string) (Run, error) {
 	return copyRun(r), nil
 }
 
+// Continue starts a run that stopped (failed, limited or canceled) again
+// from the step it stopped at: that step runs again, and the steps before
+// it keep their outputs. A step that stopped inside an agent session goes
+// on in that session (its workspace and conversation) when the runner is
+// a SessionResumer. The run gets a fresh allowance of its limits (time,
+// steps, tokens, cost); its totals keep counting. A rejected or passed
+// run, or one still going, answers ErrState.
+func (e *Engine) Continue(actor, id string) (Run, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return Run{}, ErrClosed
+	}
+	if e.disabled {
+		return Run{}, ErrDisabled
+	}
+	r, found := e.index[id]
+	if !found {
+		return Run{}, ErrNotFound
+	}
+	switch r.State {
+	case StateFailed, StateLimited, StateCanceled:
+	default:
+		return Run{}, ErrState
+	}
+	if r.PC < 0 || r.PC >= len(r.Snapshot.Steps) {
+		return Run{}, ErrState
+	}
+	if _, live := e.live[id]; live {
+		return Run{}, ErrState // its execution has not wound down yet
+	}
+	r.Resume = ""
+	if s := r.Snapshot.Steps[r.PC]; s.Kind == KindSession {
+		recs, _ := e.runs.steps(id)
+		for i := len(recs) - 1; i >= 0; i-- {
+			if recs[i].ID == s.ID {
+				if recs[i].State != StepPassed {
+					r.Resume = recs[i].Session
+				}
+				break
+			}
+		}
+	}
+	now := e.clock.Now().UTC()
+	r.Continued++
+	r.BaseTokens, r.BaseCostUSD, r.BaseSteps, r.ActiveMS = r.Tokens, r.CostUSD, r.StepsRun, 0
+	r.State, r.Reason, r.Ended, r.Updated, r.Waiting = StateQueued, "", time.Time{}, now, ""
+	r.Note = fmt.Sprintf("continued by %s from step %s", actor, r.Snapshot.Steps[r.PC].ID)
+	e.persistLocked(r)
+	e.queue = append(e.queue, id)
+	e.audit(actor, "flow.run.continue", r.Snapshot.Steps[r.PC].ID, r.Flow, id)
+	e.changedLocked(r, r.Step)
+	e.startQueuedLocked()
+	return copyRun(r), nil
+}
+
 // resolve tells a Notifier that is also a Resolver that the approval
 // behind inbox item id no longer waits.
 func (e *Engine) resolve(id string) {

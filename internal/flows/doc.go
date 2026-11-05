@@ -33,10 +33,13 @@
 //	runs    RunFlow(actor, id, input), TestRun(actor, draft, input),
 //	        Runs(flow, limit), GetRun(id) RunDetail, Graph(id),
 //	        Cancel(actor, id), Approve(actor, id, ok, note),
+//	        Continue(actor, id) (a failed, limited or canceled run goes on
+//	        from its step, in the same session when the runner is a
+//	        SessionResumer, with a fresh allowance of its limits),
 //	        Wait(ctx, id) (until final or waiting), RunDir(id)
 //	config  SetMaxRuns(n) (flows.max_runs), SetEnabled(on) (flows.enabled)
 //
-// Errors: ErrNotFound, ErrStale, ErrState (cancel/approve in the wrong
+// Errors: ErrNotFound, ErrStale, ErrState (cancel/approve/continue in the wrong
 // state), ErrDisabled, ErrClosed, *ValidationError (with Problems).
 //
 // Every flow change, start, approval, rejection, cancel and scheduled

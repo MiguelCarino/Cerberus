@@ -279,14 +279,13 @@ func stepSub(s Step) string {
 	return clipLine(strings.Join(keep, " · "), graphSubMax)
 }
 
-// stepGraphState is a step's state in a run's graph: its record's state
-// when it ran; "running"/"waiting" for the current step of a going run;
+// stepGraphState is a step's state in a run's graph: "running"/"waiting"
+// for the current step of a going run; else its record's state when it ran;
 // "skipped" for a step the run passed over or never reached before it
 // ended; else "pending".
 func stepGraphState(r *Run, i int, s Step, rec StepRecord, done bool) string {
-	if done {
-		return rec.State
-	}
+	// The current step first: a continued run runs again a step whose
+	// earlier attempt left a record.
 	if r.Step == s.ID && i == r.PC {
 		switch r.State {
 		case StateRunning:
@@ -294,6 +293,9 @@ func stepGraphState(r *Run, i int, s Step, rec StepRecord, done bool) string {
 		case StateWaiting:
 			return StepWaiting
 		}
+	}
+	if done {
+		return rec.State
 	}
 	if i < r.PC || Final(r.State) {
 		return StepSkipped
