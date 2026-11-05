@@ -49,7 +49,13 @@ type ModelInfo struct {
 	// many requests are queued for a slot right now.
 	MaxParallel int
 	Waiting     int
-	Vision      bool
+	// LongestWaitS is how long the oldest queued request has waited (G5).
+	// BusyForS (the oldest request in flight) and Stalls (since start) are
+	// filled by the API from the gateway.
+	LongestWaitS float64
+	BusyForS     float64
+	Stalls       int
+	Vision       bool
 	// Path is a llama.cpp model's .gguf file ("" for other engines). It is
 	// not part of any JSON reply.
 	Path string `json:"-"`

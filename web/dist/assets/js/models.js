@@ -14,3 +14,14 @@ export function deleteModelMessage(m) {
   parts.push('To use it again you have to download it again.');
   return { title: `Delete ${(m && m.ID) || 'model'}`, message: parts.join(' ') };
 }
+
+// busyText is a model's load line (gateway phase G5): how long the oldest
+// request has been answering, the queue and its oldest wait, and stalls.
+export function busyText(m) {
+  const secs = (x) => (x >= 90 ? `${Math.round(x / 60)} min` : `${Math.round(x)} s`);
+  const out = [];
+  if (m.BusyForS >= 60) out.push(`busy for ${secs(m.BusyForS)}`);
+  if (m.Waiting > 0) out.push(`${m.Waiting} queued${m.LongestWaitS >= 1 ? `, oldest ${secs(m.LongestWaitS)}` : ''}`);
+  if (m.Stalls > 0) out.push(`${m.Stalls} stall${m.Stalls === 1 ? '' : 's'} since start`);
+  return out.join(' · ');
+}

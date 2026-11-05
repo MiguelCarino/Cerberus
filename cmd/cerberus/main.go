@@ -119,6 +119,8 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (code in
 		return topCmd(rest, stdin, stdout, stderr), true
 	case "energy":
 		return energyCmd(rest, stdout, stderr), true
+	case "bench":
+		return benchCmd(rest, stdout, stderr), true
 	case "rapl-setup":
 		return raplSetupCmd(rest, stdout, stderr), true
 	case "audit":
@@ -211,6 +213,9 @@ Models and the machine:
                        Hugging Face .gguf URL (--engine --sha256 --detach, --cancel ID)
   top                live CPU, memory, GPU, power, cost, processes, sessions (--once)
   energy             energy totals and the electricity bill estimate
+  bench              time a model through the gateway on a fixed prompt set
+                       (--model --repeat --kinds --prefill --label); bench list,
+                       bench compare A B
   rapl-setup         print the one-time root steps that let Cerberus read CPU watts
 
 Secrets and access:

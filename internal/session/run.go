@@ -171,7 +171,8 @@ func (m *Manager) launch(s *session) error {
 		}
 	}
 	ph := placeholders{Task: task, TaskFile: taskFile, Model: info.Model, BaseURL: baseURL(m.conf().Server.Listen),
-		Cwd: info.Worktree, Session: info.ID, Self: selfPath(), ResumeFile: filepath.Join(s.dir, conversationFile)}
+		ServerURL: serverURL(m.conf().Server.Listen),
+		Cwd:       info.Worktree, Session: info.ID, Self: selfPath(), ResumeFile: filepath.Join(s.dir, conversationFile)}
 	command := p.Command
 	if resume && len(p.ResumeCommand) > 0 {
 		command = p.ResumeCommand
@@ -270,6 +271,10 @@ func (m *Manager) env(info Info, p config.AgentProfile, ph placeholders, sessDir
 		previewTagEnv:          m.previewTag(info.ID), // live preview ownership of servers that leave the agent's tree
 	}
 	for k, v := range p.Env {
+		if v == apiKeyPlaceholder {
+			set[k] = set["OPENAI_API_KEY"]
+			continue
+		}
 		set[k] = ph.expand([]string{v})[0]
 	}
 	for k, v := range secrets {

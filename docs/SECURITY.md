@@ -192,6 +192,30 @@ Residual risk:
 Owner must: use bwrap for agents that run unreviewed model output, keep `Approve: "ask"` for the built-in agent
 on real repos, read diffs before accepting, and keep `git push` in the ask-always list.
 
+### The gateway's agent guard and request records (gateway phase)
+
+- **Agent guard** (`gateway.guard`, off by default;
+  [internal/gateway/guard.go](../internal/gateway/guard.go)). A small local classifier (Qwen3Guard-Gen format)
+  reads each tool result an agent sends back through the gateway. In `hold` mode, a turn with a flagged result
+  does not get a tool call that acts outside the conversation unless the user's own messages asked for it; the
+  reply becomes an assistant message naming what was flagged and which call was not made. It is a second pair of
+  eyes, **not a security boundary**:
+  - an injection it does not flag passes, and so does one that works through a read-only call;
+  - an attack that needs no tool call (a misleading answer) has nothing to hold;
+  - its recall on coding-agent attacks is not measured, nor against an attacker who knows the model;
+  - benign results that instruct (a README's setup steps) can be flagged: say "go ahead";
+  - long results are read in windows and scored by the worst, and long content is where it misses most;
+  - a forced call (`tool_choice` naming the tool) is reported, not held; verdicts that take longer than
+    `wait_ms` let the call out unscreened (logged and counted);
+  - "asked for" is a substring check of the tool name and its main argument in the user's messages, which a
+    result cannot write but a user can trip by accident.
+- **Request records** (`gateway.records`, off by default;
+  [internal/records/records.go](../internal/records/records.go)). One line per gateway request in
+  `records/turns/<day>/`, files 0600. With `text` other than `none` they hold conversation text (known vault
+  secrets and common token shapes masked), which is personal data. Only admins list them; reading a line's text
+  is audited; doctor warns when text is kept while the gateway listens beyond loopback.
+- `/v1` also accepts the token as `x-api-key` (the Anthropic SDKs and Claude Code send it so), on `/v1` only.
+
 ### LLM chats (day phase 5)
 
 A chat runs the built-in agent's tools in the daemon, as your user, in the chat's working folder, with no worktree
@@ -331,7 +355,8 @@ and never creates a config.
   The keyring backend is better, but an unlocked desktop session hands values to any program you run.
 - **Root or a compromised kernel.** Nothing in user space helps there.
 - **The public internet.** Cerberus is not built or tested to face it, even with `AllowPublic` and TLS.
-- **Prompt injection.** Text an agent reads can steer it. Review diffs, keep pushes asked, sandbox agents.
+- **Prompt injection.** Text an agent reads can steer it. The agent guard (above) catches some of it for agents
+  that go through the gateway; it is not a boundary. Review diffs, keep pushes asked, sandbox agents.
 - **Remote model providers.** What you send them is theirs to keep under their terms. Use local models for
   material that must stay on the host.
 - **Spend on a leaked provider key.** Revoke the key at the provider; Cerberus only tracks what passes through it.

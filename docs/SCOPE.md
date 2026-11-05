@@ -42,6 +42,7 @@ cgo, and platform-specific code goes behind build tags, with stubs where a platf
 | 1 (done) | Model hosting and gateway; agent sessions with worktrees, test gates, previews, a resource guard and queue, escalation and remote approval; web UI; CLI; systemd user unit |
 | 2 (done) | Secrets vault; spend tracking (prices, budgets) and subscription gauges; session history (search, resume, retention); fleet tasks; voice tasks (local Whisper); HTTPS for phones; listen retry |
 | Day plan (done) | Monitor; control center; file drop; safety; startup and configuration; LLM chat with mascots; extras; hardening and documentation (day phases 1 to 7, specified below) |
+| Gateway phase (built, browser check pending) | Messages and Responses APIs, agent guard, request records, token-budget hygiene, stall watchdog, a stable bench (G1 to G6, specified and as built at the end) |
 | 3 | GPU power-cap auto-tuner (tokens per joule), speculative-decoding and quantisation presets per GPU, vLLM backend, more than one GPU per box, several hosts (agent mode plus gateway mode) |
 | 4 (client edition) | Plain chat for non-developers (Spanish first), RAG over documents, several users with roles, budgets and audit log (LFPDPPP), fully offline, Carino remote support (health alerts, updates, opt-in support tunnel) |
 | 5 (desktop) | Cerberus desktop client grown from Atrium LLM chat, dynamic-island agent status, launcher "new task", bar readout of GPU power and tok/s; macOS and Windows builds |
@@ -4034,3 +4035,401 @@ Live detection is Linux only. Cookies set by one preview page are visible to oth
 (cookies are not port-scoped); previews are not isolated from each other beyond their origins. The Run
 preview server is not counted by the session guard (`max_sessions`, free memory); its memory cap is the
 session's scope when systemd scopes are available.
+
+---
+
+# Gateway phase specification (G1 to G6)
+
+Ideas taken from halogen-flash-server (github.com/peonist-ai/halogen-flash-server, read 2026-11-05).
+That project ships as a closed container image under an EULA and runs on one AMD GPU, so **nothing is
+copied**: no code, no prompt files, no model files from it. Only the serving design carries over, rebuilt
+on what Cerberus already supervises (llama.cpp, LM Studio, Ollama, cloud providers). "Never write an
+inference engine" still holds: every item below lives in the gateway, the engine manager or the CLI.
+
+The general rules still apply. Config is add-only and every new key carries schema metadata. Every new
+route goes in the route table and the route matrix. State changes are audited. Everything is off or
+cheap when idle: no item adds polling while no request is in flight.
+
+Order: G4 (small, makes G1 cleaner) → G1 → G3 → G5 → G2 → G6.
+
+## G1. Messages and Responses APIs (`internal/gateway`)
+
+Today the gateway serves `/chat/completions`, `/completions` and `/embeddings` only. Add:
+
+- `POST /v1/messages` and `POST /v1/messages/count_tokens` (Anthropic Messages API), and
+- `POST /v1/responses` (OpenAI Responses API),
+
+so that Claude Code, the `anthropic` SDK and Codex CLI can drive a **local** model, or an API-key
+provider, through Cerberus.
+
+**Routing.**
+- A model on the `anthropic` provider gets `/v1/messages` passed through natively to the provider's own
+  Messages endpoint, with the provider's key from the vault (it is an API key, so this is not subscription
+  proxying).
+- An OpenAI-style provider that declares `responses: true` in its `ProviderConfig` gets `/v1/responses`
+  passed through.
+- Everything else is **translated** to `/chat/completions` on the way in and back on the way out, streamed.
+  Translation lives in `internal/gateway/xlate/` (pure, table-tested): `messages.go`, `responses.go`.
+
+**What the Messages translation covers.**
+- `system` (a string or text blocks), and `system` turns inside `messages`, which become user text.
+- `text`, `image` (base64 and URL, only when the model has `Vision`), `tool_use`, `tool_result` (with
+  `is_error`) and `thinking` blocks.
+- `tools` and `tool_choice` (`auto`, `any` becomes `required`, `tool`, `none`); `stop_sequences`;
+  `temperature`, `top_p` and `top_k`; `max_tokens`.
+- `thinking` (`enabled` with `budget_tokens`, `adaptive`, `disabled`) and `output_config.effort` become
+  `reasoning_effort` plus `chat_template_kwargs.enable_thinking`; `output_config.format` (a JSON schema)
+  becomes `response_format`.
+- **Thinking round trip.** A returned `thinking` block's `signature` is the base64 of the model's reasoning
+  text. When a client sends the block back, its text is restored, so the next prompt repeats the last one
+  byte for byte and the backend's prompt cache resumes it.
+- **Streaming.** SSE events in Anthropic's order: `message_start`, then `content_block_start`, `delta` and
+  `stop` per block (thinking, text, tool_use with `input_json_delta`), then `message_delta` with
+  `stop_reason` and usage, then `message_stop`. Keepalive `ping` events go out every 15 s while upstream
+  is quiet.
+- **Errors** come back in the Messages error shape (`{"type":"error","error":{"type","message"}}`), with
+  the real HTTP status.
+- **`count_tokens`** uses the backend's `/tokenize` (llama.cpp) over the rendered prompt when it exists,
+  else an estimate of 4 bytes per token, marked `"estimated": true`.
+- **Dropped, each named once in the log:**
+  - Anthropic server-side tools (web search, code execution); the client's own tools are used;
+  - `cache_control` and `context_management`.
+- **Refused with a 400:** PDF document blocks, and the Batches and Files APIs (404).
+
+**What the Responses translation covers.**
+- Input items, `instructions`, `function_call` and `function_call_output` items, `reasoning` items (with
+  their text kept for the round trip), and `text.format` schemas.
+- There is **no response store**: a `previous_response_id` that comes without the full history is a 400
+  that says so. Cancellation is by disconnect.
+
+**Model names.** The `model` field resolves like any other gateway model. An unknown `claude-*` or `gpt-*`
+name falls back to the profile's or the config's mapped local model (`gateway.model_map`, for example
+`{"claude-*": "default"}`), because clients hard-code their vendor's names. Replies name the model that
+actually served them.
+
+**Agent profiles** (new defaults; config overrides by name as usual):
+- `claude-local`: `claude {task}` with `ANTHROPIC_BASE_URL={gateway_root}`,
+  `ANTHROPIC_AUTH_TOKEN={session_token}`, `ANTHROPIC_MODEL={model}`,
+  `ANTHROPIC_SMALL_FAST_MODEL={model}` and `CLAUDE_CODE_MAX_OUTPUT_TOKENS` set to the model's output cap.
+  `NeedsModel: true`. Its description says "Claude Code against a local or API model through the gateway
+  (no subscription)".
+- `codex`: `codex exec {task}` with a generated `CODEX_HOME/config.toml` that sets `model_provider =
+  "cerberus"`, `base_url = "{base_url}"` and `wire_api = "responses"`. `NeedsModel: true`.
+
+Both work with no Anthropic or OpenAI account. Vendor-neutral holds, because Claude Code is still only an
+optional profile.
+
+**Usage.** `usage.Record` gains `API string` (`chat`, `completions`, `messages`, `responses`,
+`embeddings`). The usage page groups by it.
+
+**Tests.** Table tests for both translators: every block kind both ways; a streamed tool-use reply,
+event by event; a thinking round trip that is byte-identical; error shapes. An end-to-end gateway test
+against the fake engine. A golden transcript of what Claude Code sends (captured once, kept in testdata
+with no secrets).
+
+## G2. Agent guard (`internal/guard`, new)
+
+An agent reads tool results: files, web pages, issues, emails. Any of them can carry text aimed at the
+agent. `docs/SECURITY.md` lists prompt injection as open. The guard is a second reader for that case. It is
+**not a security boundary**, and the UI and docs say so wherever it appears.
+
+**Config** (`gateway.guard`):
+
+| key | meaning |
+|---|---|
+| `mode` | `off` (default), `watch` (score and report, change nothing) or `hold` (as `watch`, and in a turn with a flagged result, hold tool calls that act outside the conversation) |
+| `model` | a local classifier model id. The suggested one is Qwen3Guard-Gen-0.6B as a GGUF (Apache-2.0), and `cerberus doctor` names it when `mode` is on and the model is missing. It goes through `engine.Manager` like any model: loaded on first use, reaped when idle |
+| `threshold` | flag score, default 0.5 |
+| `wait_ms` | longest a tool call waits for pending verdicts, default 10000; after that it goes out unscreened and is logged |
+| `window_tokens` | long results are read in overlapping windows of this size (default 512) and scored by the largest window |
+| `side_effect_tools` | tool-name globs that act outside the conversation (`bash`, `*write*`, `*edit*`, `*send*`, `*post*`, `*delete*`, `mcp__*__create*`, ...). Defaults ship in code; config adds. A name that matches nothing is treated as side-effecting under `hold` |
+
+**What it does.**
+- On a request that carries tool results (`tool` messages, `tool_result` blocks, `function_call_output`
+  items), each result **new since this conversation's last request** is scored. The conversation is keyed
+  by session id plus a hash of the message prefix. Scoring runs in parallel with the main model's prefill,
+  so a clean turn streams with no added wait.
+- **A score** is one forward pass on the classifier: a fixed prompt that ends where the label goes,
+  `max_tokens: 1`, `logprobs` and `top_logprobs`, read as P(unsafe). This is the same logprob-classifier
+  pattern a Flows classify step can reuse later.
+- **In `hold` mode**, a flagged turn ends differently. The gateway buffers the reply's tool calls. For each
+  call that matches `side_effect_tools` and was not asked for in the user's own messages (a plain
+  substring check on the tool name and its main argument), the reply is replaced by an ordinary assistant
+  message, in the API's own shape:
+  - what was flagged (which tool result, its score);
+  - which call was not made, and why;
+  - that nothing was sent or changed, and that the user can say "go ahead".
+
+  A call that reads only, and a forced call (`tool_choice` naming a tool), are reported, not held.
+- The user's next message starts a new turn, and the guard carries no flag into it.
+- **Under Cerberus sessions**, a held call also posts to the session's activity feed and the inbox with
+  "Approve once": it resends the turn with a marker header the guard honours for that one call. It is
+  audited.
+
+**Reporting.**
+- `/v1/chat/completions` replies carry `cerberus_guard` (mode, threshold, one entry per tool result
+  with its score, tainted, calls checked and held). A streamed chat completion carries it in one chunk
+  without choices, ahead of `[DONE]`.
+- `usage.Record` gains `GuardFlagged int` and `GuardHeld int`.
+- `/api/status` gains `guard: {mode, model, screened, flagged, held, errors}` (counters since start).
+- The Monitor page shows the counters; a session's feed shows each hold.
+
+**Limits** (copied into `docs/SECURITY.md`):
+- an injection it does not flag passes;
+- an attack that needs no side-effecting call has nothing to hold;
+- coding-agent recall is unmeasured;
+- benign READMEs that instruct can be flagged;
+- long results are where it misses most.
+
+**Tests.** Use a fake classifier engine that scores by a marker string. Cover: `watch` changes no bytes of
+a reply; `hold` replaces a side-effecting call and keeps a read-only one; a forced call is reported; the
+`wait_ms` timeout lets the call out; approve-once; all three APIs.
+
+## G3. Request records (`internal/records`, new)
+
+`usage.Record` holds counts and timings, and the exchange log (`internal/gateway/exchange.go`) keeps
+cloud chat only, for fine-tuning. Request records answer a different question: **what do my agents and
+clients actually send, and what comes back?** Off by default.
+
+**Config** (`gateway.records`):
+
+| key | meaning |
+|---|---|
+| `enabled` | default false |
+| `text` | `none` (default), `user` (user and assistant text only) or `all` (tool results and system prompts too) |
+| `dir` | default `DATA/records` |
+| `retain_days` | default 14 |
+| `max_mib` | default 1024; the oldest days go first |
+
+**Files.** `turns/<YYYY-MM-DD>/<pid>-<ms>.jsonl` holds one line per request, appended when it finishes,
+with a new file every day (UTC) and every 64 MiB. The files are mode 0600. A line carries:
+
+- **who sent it:** the API (`chat`, `messages`, `responses`, `completions`), streamed or not, the model and
+  backend, the session id, the user (Phase 4a), and the client family read from `User-Agent`
+  (`claude-code`, `codex`, `opencode`, `aider`, `cerberus-agent`, `openai-sdk`, `anthropic-sdk`, `curl`,
+  `other`);
+- **what it asked for:** the message count, the tool count, the image count, prompt tokens and cached
+  tokens (from the backend's usage or `timings`), thinking on or off, the effort, sampled or greedy, and
+  whether a schema was set;
+- **how it ended:** stop, length, length in thinking (G4), tool calls, disconnect, error or held (G2);
+  completion tokens and the reasoning tokens among them; TTFT and duration;
+- **the tools:** the name and id of each tool call in the reply, and, for each tool result sent back,
+  whether it answers one of the previous calls and whether the client marked it an error;
+- **the text:** only at the configured `text` level, clipped to 256 KiB per field, and with the
+  vault's redaction applied (known secrets and token shapes).
+
+**API** (admin only, audited reads of text):
+- `GET /api/records?day=&session=&client=&limit=` lists lines without text.
+- `GET /api/records/{day}/{offset}` returns one line with text.
+- `DELETE /api/records?before=` deletes records.
+
+**Web.** A Records tab under Usage: a table filtered by client and session, with shape charts (prompt size
+over a session, cache-hit ratio, tool-error rate per tool). A row opens the full line.
+
+**Doctor.** Warn when `text` is not `none` while the gateway listens beyond loopback. Users and roles
+(Phase 4a) note: the text is personal data under LFPDPPP, so the Users page shows whether records are on.
+
+**Tests.** Rotation by day and by size; retention; `text=none` writes no text field at all; redaction;
+the client family table; reads of text are audited; non-admins get 403.
+
+## G4. Token budgets (`internal/gateway`)
+
+- **One budget field with three names.** `max_tokens`, `max_completion_tokens` and `max_output_tokens`
+  are read as one. Several that agree are fine. Two different values are a 400 that names both. The
+  upstream gets the name its backend expects (`max_tokens` for llama.cpp, LM Studio and Ollama, the
+  provider's own for cloud).
+- **Per-model defaults.** `ModelConfig.Defaults` (new, add-only): `{reasoning_effort, enable_thinking,
+  max_tokens, max_tokens_cap, temperature, top_p, top_k}`. They are applied only when the request names
+  none of the corresponding fields. Agent harnesses send no thinking control to a custom endpoint, so this
+  is what they run at. `max_tokens_cap` turns a larger request into the cap, logged once per client, the
+  same way Claude Code's maximum output request is clipped.
+- **Length in thinking.** The gateway already counts content deltas. When a reply ends with
+  `finish_reason: length` and produced reasoning but no content, the record says `length_in_thinking`.
+  The Chat view and the built-in agent show "the token budget ran out while the model was thinking:
+  raise the budget or lower the effort" instead of an empty answer. The reply itself is not changed.
+- `GET /v1/models` entries gain `cerberus: {ctx, max_tokens_default, max_tokens_cap, vision,
+  reasoning_efforts}` so clients and the web can read the limits.
+
+**Tests.** The alias matrix (agree, disagree, absent); defaults applied and overridden; cap clipping;
+length-in-thinking from a fake stream.
+
+## G5. Stall watchdog and honest status (`internal/engine`, `internal/gateway`)
+
+A connect is not a health check: a local engine whose GPU queue has hung still accepts TCP, and llama.cpp
+can answer `/health` from its HTTP thread while every slot is stuck.
+
+- **Only while requests are in flight**, for each local model: if a request has had no upstream byte for
+  `Engines.StallSec` (new, default 120; a running prefill counts as progress where the backend reports it,
+  as llama.cpp's `/slots` does), the manager probes `GET /slots` (llama.cpp) or `/api/ps` (Ollama), or the
+  models list (LM Studio), with a 5 s timeout. If the probe also fails or shows no progress, the model is
+  **stalled**:
+  - its waiters fail with 503 `engine_stalled`;
+  - the in-flight requests are cancelled;
+  - the existing crash and reload path restarts it (llama.cpp) or unloads and reloads it (others);
+  - a notification goes out, and the event is audited.
+
+  Nothing polls while the model is idle.
+- `/api/status` models gain `queued`, `longest_wait_s` (the oldest waiter in the model queue), `busy_for_s`
+  (the oldest in-flight request) and `stalls` (a count since start). The Monitor and Models views show
+  them, and a model that has been busy for more than a minute shows a "busy for N s" line.
+- **Long prompts.** For llama.cpp, streamed requests ask for `return_progress` where the build supports
+  it (probed once per binary). `prompt_progress` frames become a "reading prompt P/T" line in the Chat
+  view and in the session's model line. Clients that did not ask for them never see the frames: the
+  gateway strips them.
+
+**Tests.** Use a fake engine that stops writing mid-stream and fails `/slots`. Check that waiters get 503,
+the model reloads and one notification goes out. Check that a slow engine still showing progress is not
+stalled, and that idle means zero probes (a counter in the test).
+
+## G6. Stable bench (`cmd/cerberus bench`, `internal/bench`, new)
+
+The ground for the Phase 3 tokens-per-joule tuner and for the Leaderboard.
+
+- **The prompt set.** `internal/bench/prompts.json` is embedded and written fresh for Cerberus, not
+  copied. It holds six kinds of prompt, two prompts each: code, edit (a whole-file rewrite), proof,
+  procedure, chat and prose (es and en). It also holds three prefill sizes: 8k, 32k and the model's ctx/2,
+  built from fixed filler. **The file is append-only.** A changed prompt gets a new name, so runs across
+  versions stay comparable, and a test fails if an existing entry's hash changes.
+- **The run.** `cerberus bench [--model ID] [--repeat 3] [--kinds code,prose] [--prefill]
+  [--label TEXT] [--json]` drives the gateway with temperature 0 and thinking off, unless the flags say
+  otherwise. Per kind it records:
+  - decode tok/s;
+  - TTFT;
+  - prefill tok/s;
+  - energy from `internal/energy` (J, tok/J), with the medians and the spread.
+
+  It refuses to run while agent sessions are running, unless `--force` is given, and it says why.
+- **The results** go to `DATA/bench/<time>-<model>.json`, carrying the model's config (backend args, ctx,
+  parallel, draft model, power limit, the Cerberus version and llama.cpp build).
+- **Comparing runs.** `cerberus bench compare A B` prints a table per kind: A, B, the change and a
+  plain-language line, such as "decode +6% on code, prefill flat".
+- **Speculative decoding.** `ModelConfig.Draft` already exists. The bench reports, per kind, how much a
+  configured draft model gains, which is the evidence the Phase 3 speculative presets need.
+- **API and web.**
+  - `GET /api/bench` lists runs; `POST /api/bench` (admin, audited) starts a run as a background job;
+    `GET /api/bench/{id}` returns one.
+  - The Leaderboard gains a "Bench" metric: tok/s and tok/J per model at the same label.
+- **Tests** run against the fake engine only. The fleet rule holds: no real model is ever loaded onto the
+  GPU in tests.
+
+## Not taken
+
+These are engine internals for one GPU:
+- custom kernels;
+- the model's own draft head and prompt lookup speculation;
+- the NPU sidecar;
+- the KV pool layout, 1M context and the attention budget;
+- the two-container split;
+- the pause-on-disconnect retry grace;
+- `max_thinking_tokens` (closing a think block mid-stream needs the engine).
+
+**Keep and fork** of KV state for Flows fan-out (llama.cpp `--slot-save-path`) is a Phase 3 candidate,
+not part of this phase.
+
+## Acceptance (gateway phase)
+
+- Claude Code (`claude-local`) and Codex (`codex`) each finish a small edit task in a worktree against
+  a local model, through the gateway, with no vendor account present.
+- With `guard.mode=hold`, a tool result carrying a planted instruction makes the next `bash` call come
+  back as the held message, and "go ahead" continues.
+- Records on with `text=none`: a session's requests appear in Records with client family, sizes, tools
+  and finish reasons, and no text anywhere on disk.
+- Two budget fields that disagree are a 400. A model's `Defaults` apply to a harness that sends nothing.
+  An empty reply that ran out in thinking says so in the Chat view.
+- A fake engine that hangs is detected within `StallSec + 5 s`, its waiters get 503 and it is reloaded.
+  Idle means zero probes.
+- `cerberus bench` and `bench compare` run end to end against the fake engine. `prompts.json` hashes are
+  pinned.
+- The gate in CLAUDE.md passes, and the route matrix classifies every new route.
+
+## Gateway phase: as built (2026-11-05)
+
+Built in the order G4, G1, G3, G5, G2, G6. The gate in CLAUDE.md passes (vet on linux/windows/darwin, race
+tests of every package, `make cross`, node tests, `go test ./web`). Deviations from the specification above:
+
+**G4 token budgets** ([internal/gateway/budget.go](../internal/gateway/budget.go)). As specified. The budget check
+runs before the model is acquired, so a bad budget never loads a model. `/v1/models` entries carry
+`cerberus: {ctx, vision, max_tokens_default, max_tokens_cap, reasoning_effort_default, reasoning_efforts,
+token_budget_aliases}`. The built-in agent (and so the Chat view) shows `ThinkingBudgetNote` as a note event.
+
+**G1 Messages and Responses APIs** ([internal/gateway/xlate/](../internal/gateway/xlate),
+[internal/gateway/apis.go](../internal/gateway/apis.go)).
+- A thinking `signature` (and Responses `encrypted_content`) is `cerberus1:` + base64 of the text, so a real
+  Anthropic signature is never decoded.
+- `/messages/count_tokens` uses llama-server's `/apply-template` + `/tokenize` only for a llama.cpp model that is
+  already loaded (counting never loads a model). A native Messages provider gets it passed through; anything else
+  is an estimate marked `"estimated": true`.
+- Native pass-through (`providers[].apis`) moves the key to `x-api-key` and sets `anthropic-version` for the
+  Anthropic API. Usage of native replies is read from their own events (`message_start`, `message_delta`,
+  `response.*`).
+- The API layer accepts the token as `x-api-key` on `/v1` only.
+- New placeholders: `{server_url}` (the root without `/v1`) and `{api_key}`, which works in a profile's `env`
+  only, never in a command line.
+- The `codex` profile configures its provider with `-c` overrides, not a generated `CODEX_HOME`.
+- Translated streams keep the usage chunk (`request.keepUsage`). The keepalive is a `ping` event (Messages) or
+  an SSE comment (Responses) after 15 s of quiet.
+- Verified with the real Claude Code CLI (`claude -p` against a fake engine: a hard-coded `claude-sonnet-4-5`
+  mapped through `gateway.model_map`, streamed and printed). Codex CLI was not installed, so the Responses route
+  is covered by tests only.
+
+**G3 request records** ([internal/records/](../internal/records),
+[internal/gateway/records.go](../internal/gateway/records.go), [internal/api/records.go](../internal/api/records.go)).
+- A line's address is `GET /api/records/{day}/{file}/{offset}`, because one day can hold several files.
+- The Messages API marks tool errors per result, but a line keeps counts (`results`, `result_errors`,
+  `matched`), so the web shows tool errors per client, not per tool.
+- `/api/status` carries `records` (on, text level, written, dropped) for admins.
+- The web section is admin-only (the `audit` capability).
+
+**G5 stall watchdog** ([internal/gateway/stall.go](../internal/gateway/stall.go)).
+- An engine counts as stalled after two failed probes in a row, past `stall_sec` of quiet.
+- A `/slots` answer of 404 or 501 (llama-server `--no-slots`) counts as healthy, since it gives no signal.
+- A stall sends a notification and a log line, not an audit record (the gateway has no audit log).
+- `prompt_progress` is requested on every streamed llama.cpp request without probing the binary (llama-server
+  ignores unknown fields). It is stripped for clients that did not ask, and it counts as output for the
+  watchdog.
+- **Not done:** the "reading prompt P/T" line in the Chat view and the session's model line.
+- Busy, queue and stall figures show in the Models view only (`busyText`), not in the Monitor.
+
+**G2 agent guard** ([internal/gateway/guard.go](../internal/gateway/guard.go),
+[guard_relay.go](../internal/gateway/guard_relay.go)).
+- The config type is `config.AgentGuardConfig`, because `GuardConfig` is the session guard. It gains
+  `read_only_tools` beside `side_effect_tools`.
+- A tool's class, in order:
+  1. a configured read-only pattern;
+  2. a configured side-effect pattern;
+  3. a named built-in reader (`TodoWrite`, `update_plan`);
+  4. a built-in side-effect pattern;
+  5. a built-in read-only pattern;
+  6. otherwise it acts.
+- "New" tool results are those after the last assistant message, so the guard keeps no state per
+  conversation.
+- The classifier reply is read in Qwen3Guard-Gen's format. A window counts only when its label is Unsafe or
+  Controversial and the categories name Jailbreak. Violent or other unsafe content is not treated as an
+  injection.
+- `watch` never delays a reply: the `cerberus_guard` chunk carries the verdicts if they are in. The usage and
+  records lines wait for them (`finish`).
+- **Not done:** "Approve once" in the inbox and the feed entry. A held call notifies with `Kind: "guard"`, and
+  the user answers "go ahead", which is a new turn with nothing to screen.
+- Counters: `/api/status` → `agent_guard` (admins), the line at the top of Usage → Request records, the usage
+  record (`GuardFlagged`, `GuardHeld`) and the records line (`guard`). Doctor gained `agent_guard`.
+- Tested with a fake classifier only. The suggested model is in `~/models/Qwen3Guard-Gen-0.6B.Q8_0.gguf`
+  (mradermacher's Q8_0 GGUF, Apache-2.0, SHA-256 127e8833…411a), but it has not been run: no llama-server was on
+  PATH, and tests never load models.
+
+**G6 bench** ([internal/bench/](../internal/bench), [cmd/cerberus/bench.go](../cmd/cerberus/bench.go),
+[internal/api/bench.go](../internal/api/bench.go)).
+- Energy per request comes from the usage records, matched by the run's `X-Cerberus-Session` tag.
+- Each run starts with one unmeasured warm-up request, which loads the model.
+- `prompts.json` is pinned per entry by hash in `bench_test.go`.
+- There is no llama.cpp build string in the run's config (the gateway cannot reach the engine's `/props`).
+- The web is a "Bench" section in Usage (runs plus a start form for admins), not a Leaderboard metric.
+- `cerberus bench list` and `bench compare A B` are as specified. Compare names a draft model when only one side
+  has one: that is the speculative-decoding gain.
+
+**Browser check:** not run yet. The three test ports (7381, 7397, 7398) were held by other sessions' static
+servers and the demo harness folder was gone. The new web pieces are:
+- Usage → Request records;
+- Usage → Bench;
+- the Models load line.
+
+Their helpers have node tests.

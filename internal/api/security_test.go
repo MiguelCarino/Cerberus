@@ -616,7 +616,7 @@ func TestDoctorEndpoint(t *testing.T) {
 			t.Errorf("%s: %s without a fix", c.ID, c.Status)
 		}
 	}
-	if ids["git"] != doctor.Fail || ids["config"] != doctor.OK || ids["disk"] != doctor.OK || len(ids) != 21 {
+	if ids["git"] != doctor.Fail || ids["config"] != doctor.OK || ids["disk"] != doctor.OK || len(ids) != 23 {
 		t.Fatalf("checks %v", ids)
 	}
 	if rep.Counts[doctor.Fail] == 0 {

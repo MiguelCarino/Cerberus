@@ -36,6 +36,7 @@ import (
 	"carino.systems/cerberus/internal/notify"
 	"carino.systems/cerberus/internal/permits"
 	"carino.systems/cerberus/internal/platform"
+	"carino.systems/cerberus/internal/records"
 	"carino.systems/cerberus/internal/session"
 	"carino.systems/cerberus/internal/subs"
 	"carino.systems/cerberus/internal/sysmon"
@@ -225,7 +226,22 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		log.Error("fine-tuning examples unavailable", "err", err)
 		ft = nil
 	}
+	rc := cfg.Gateway.Records
+	if rc.Dir == "" {
+		rc.Dir = filepath.Join(data, "records")
+	}
+	recs, err := records.Open(records.Config{Enabled: rc.Enabled, Text: rc.Text, Dir: rc.Dir,
+		RetainDays: rc.RetainDays, MaxMiB: rc.MaxMiB}, secretValues)
+	if err != nil {
+		log.Error("request records unavailable", "err", err)
+		recs = nil
+	}
+	if recs != nil {
+		defer recs.Close()
+		log.Info("request records on", "dir", rc.Dir, "text", recs.TextLevel())
+	}
 	gw := gateway.New(eng, mon, store, log.With("part", "gateway"), gateway.WithConfig(cfg), gateway.WithNotifier(notifier.Send),
+		gateway.WithRecords(recs),
 		gateway.WithExchange(func() bool { return ft != nil && chatCfg.Load().Finetune.Capture == config.CaptureCloud },
 			func(ex gateway.Exchange) { keepExchange(ft, ex, log) }))
 	tracker := subs.New(cfg, log.With("part", "subs"))
@@ -251,7 +267,7 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 
 	deps := api.Deps{Cfg: cfg, Engine: eng, GPU: mon, Usage: store, Sessions: sess, Log: log,
 		Gateway: gw, Version: version, Build: build, Subs: plans, Voice: transcriber, Sysmon: sysmonitor, Energy: acct, Files: dropped,
-		Audit: auditLog, Devices: paired, DataDir: data, Finetune: ft,
+		Audit: auditLog, Devices: paired, DataDir: data, Finetune: ft, Records: recs,
 		// Live reload: each gets the new config after a PATCH /api/config.
 		Chat:      chats,
 		Downloads: pulls, DownloadFeed: dlFeed,

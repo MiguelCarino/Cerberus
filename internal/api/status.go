@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"carino.systems/cerberus/internal/engine"
+	"carino.systems/cerberus/internal/gateway"
 	"carino.systems/cerberus/internal/gpu"
+	"carino.systems/cerberus/internal/records"
 	"carino.systems/cerberus/internal/session"
 	"carino.systems/cerberus/internal/usage"
 	"carino.systems/cerberus/internal/users"
@@ -40,6 +42,11 @@ type Status struct {
 	// FlowsEnabled is false when there is no flows engine or flows.enabled
 	// is off (runs would be refused).
 	FlowsEnabled bool `json:"flows_enabled"`
+
+	// AgentGuard and Records are the gateway's agent guard counters (G2) and
+	// request records state (G3); admins only (omitted for others).
+	AgentGuard *gateway.GuardStats `json:"agent_guard,omitempty"`
+	Records    *records.Stats      `json:"records,omitempty"`
 }
 
 // FilesStatus is what the web UI needs to know about file drop: the inbox
@@ -129,6 +136,14 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st.Guard.SessionMemoryMax = s.conf().Guard.SessionMemoryMax
 	if s.control != nil {
 		st.Guard.MemoryEnforced = s.control.ScopesEnforced()
+	}
+	if role == "admin" {
+		if s.guardStats != nil {
+			g := s.guardStats()
+			st.AgentGuard = &g
+		}
+		rs := s.records.Stats()
+		st.Records = &rs
 	}
 	st.TLS = s.tlsConfigured()
 	st.DefaultAgent = s.conf().DefaultAgent

@@ -58,6 +58,20 @@ type Record struct {
 	CostUSD          float64
 	CachedTokens     int
 	User             string `json:",omitempty"` // the user id charged (Phase 4a; "" = from before users)
+	// Finish is how the reply ended: the upstream finish_reason (stop,
+	// length, tool_calls, ...) or "length_in_thinking" when the budget ran
+	// out inside the model's thinking (gateway phase G4).
+	Finish string `json:",omitempty"`
+	// API is the client API: chat, completions, embeddings, messages or
+	// responses (gateway phase G1; "" = from before it).
+	API string `json:",omitempty"`
+	// ReasoningTokens are the completion tokens spent thinking, when the
+	// upstream reports them.
+	ReasoningTokens int `json:",omitempty"`
+	// GuardFlagged and GuardHeld count the agent guard's flagged tool
+	// results and held tool calls in this request (gateway phase G2).
+	GuardFlagged int `json:",omitempty"`
+	GuardHeld    int `json:",omitempty"`
 }
 
 // Agg summarises the records of one model.

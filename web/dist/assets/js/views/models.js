@@ -9,7 +9,7 @@ import { fmtNum, fmtMiB, fmtEnergy, fmtUptime, relTime, versionLabel } from '../
 import { modelEnergy, fmtMoney } from '../monitor.js';
 import { openGetModels } from './getmodels.js';
 import { trashIcon } from './ctl.js';
-import { deleteModelMessage } from '../models.js';
+import { deleteModelMessage, busyText } from '../models.js';
 
 const REFRESH_MS = 10000;
 
@@ -153,10 +153,12 @@ function modelRow(m, a, busy, toggle, remove) {
   const facts = [m.Backend, m.SizeMiB ? fmtMiB(m.SizeMiB) : '', m.Ctx ? `${Math.round(m.Ctx / 1024)}k ctx` : '',
     m.InFlight ? `${m.InFlight} in flight` : '', m.Loaded && m.LastUsed ? `used ${relTime(m.LastUsed)}` : '', m.Vision ? 'vision' : '']
     .filter(Boolean).join(' · ');
+  const load = busyText(m);
   return h('div', { class: 'model-row' },
     h('div', { class: 'model-main' },
       h('div', { class: 'model-id' }, h('span', { text: m.ID }), where),
       h('div', { class: 'model-facts', text: facts }),
+      load ? h('div', { class: 'model-facts model-busy', text: load }) : null,
       h('div', { class: 'model-perf' },
         perf('tok/s', a && fmtNum(a.AvgTokPerSec)),
         perf('tok/J', a && fmtNum(a.AvgTokPerJ, 2)),

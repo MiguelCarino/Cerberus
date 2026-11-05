@@ -38,6 +38,10 @@ func (f *fakeSource) Models(context.Context) []engine.ModelInfo {
 func (f *fakeSource) Acquire(_ context.Context, id string) (engine.Endpoint, func(), error) {
 	switch id {
 	case "qwen", "default":
+	case "guard": // G2: the guard's classifier, served by the same fake engine
+		f.acquired.Add(1)
+		return engine.Endpoint{BaseURL: f.base + "/v1/", Model: "backend-guard", Local: true, Backend: engine.BackendLlamaCpp},
+			func() { f.released.Add(1) }, nil
 	case "full":
 		return engine.Endpoint{}, nil, engine.ErrNoRoom
 	default:
@@ -80,7 +84,12 @@ type upstream struct {
 
 func (u *upstream) capture(r *http.Request) {
 	var body map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	raw, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(strings.NewReader(string(raw))) // the handler reads it too
+	_ = json.Unmarshal(raw, &body)
+	if body["model"] == "backend-guard" {
+		return // the guard's classifier (G2): keep the main request's body
+	}
 	u.mu.Lock()
 	u.path, u.body, u.headers = r.URL.Path, body, r.Header.Clone()
 	u.mu.Unlock()

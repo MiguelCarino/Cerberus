@@ -300,7 +300,7 @@ func TestDoctorCommand(t *testing.T) {
 	if code := run([]string{"doctor", "-config", cfgPath}, nil, &out, &errb); code != 0 {
 		t.Fatalf("healthy-ish doctor: %d\n%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "21 checks:") || !strings.Contains(out.String(), "fix: ") {
+	if !strings.Contains(out.String(), "23 checks:") || !strings.Contains(out.String(), "fix: ") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	gitOut = "git version 2.9.5"

@@ -14,15 +14,20 @@ import (
 type placeholders struct {
 	Task, TaskFile, Model, BaseURL, Cwd, Session, Self string
 	ResumeFile                                         string // sessions/<id>/conversation.json
+	ServerURL                                          string // the Cerberus root, no /v1 ({server_url}: ANTHROPIC_BASE_URL)
 }
 
-// expand substitutes {task} {task_file} {model} {base_url} {cwd} {session}
-// {self} and {resume_file} in every arg. Substituted text is not re-scanned, so a task
-// containing "{model}" stays literal.
+// apiKeyPlaceholder in a profile's env (only there, never in a command line,
+// where other users could read it) is this session's gateway key.
+const apiKeyPlaceholder = "{api_key}"
+
+// expand substitutes {task} {task_file} {model} {base_url} {server_url}
+// {cwd} {session} {self} and {resume_file} in every arg. Substituted text is
+// not re-scanned, so a task containing "{model}" stays literal.
 func (p placeholders) expand(args []string) []string {
 	r := strings.NewReplacer(
 		"{task}", p.Task, "{task_file}", p.TaskFile, "{model}", p.Model,
-		"{base_url}", p.BaseURL, "{cwd}", p.Cwd, "{session}", p.Session, "{self}", p.Self,
+		"{base_url}", p.BaseURL, "{server_url}", p.ServerURL, "{cwd}", p.Cwd, "{session}", p.Session, "{self}", p.Self,
 		"{resume_file}", p.ResumeFile)
 	out := make([]string, len(args))
 	for i, a := range args {

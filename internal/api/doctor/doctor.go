@@ -217,7 +217,8 @@ func Run(ctx context.Context, e Env) Report {
 		checks = append(checks, modesCheck(e), listenCheck(e), previewPortsCheck(e), tlsCheck(e), tokenAgeCheck(e),
 			localNoAuthCheck(e), sandboxCheck(ctx, e), raplCheck(e), enginesCheck(ctx, e),
 			agentsCheck(e), systemdCheck(e), diskCheck(e), retentionCheck(e), gitCheck(ctx, e),
-			voiceCheck(e), serviceCheck(e), usersCheck(e), usersTLSCheck(e), lingerCheck(e), usersSandboxCheck(ctx, e))
+			voiceCheck(e), serviceCheck(e), usersCheck(e), usersTLSCheck(e), lingerCheck(e), usersSandboxCheck(ctx, e),
+			recordsCheck(e), agentGuardCheck(e))
 	}
 	r := Report{Time: e.Now().UTC(), Checks: checks, Counts: map[Status]int{OK: 0, Warn: 0, Fail: 0}}
 	for _, c := range checks {
@@ -428,6 +429,55 @@ func BoundSafe(addr net.Addr, allowPublic bool) error {
 		return nil
 	}
 	return fmt.Errorf("refusing to serve on public address %s; set server.allow_public only behind your own firewall or proxy", addr)
+}
+
+// recordsCheck (gateway phase G3): request records keeping conversation
+// text while the gateway is reachable from other machines hold whatever
+// anyone sends.
+func recordsCheck(e Env) Check {
+	const id, name = "request_records", "Request records"
+	rc := e.Cfg.Gateway.Records
+	if !rc.Enabled {
+		return ok(id, name, "off")
+	}
+	text := rc.Text
+	if text == "" {
+		text = "none"
+	}
+	if text == "none" {
+		return ok(id, name, "on, counts only (no text)")
+	}
+	for _, a := range listenAddrs(e.Cfg) {
+		h, _, err := net.SplitHostPort(a)
+		if err != nil {
+			continue
+		}
+		if ip := net.ParseIP(h); h != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return warn(id, name, "records keep conversation text ("+text+") and the gateway listens on "+a+
+				": everything clients send from other machines is written to disk",
+				"set gateway.records.text to none, or listen on loopback only")
+		}
+	}
+	return ok(id, name, "on, keeping text ("+text+"), loopback only")
+}
+
+// agentGuardCheck (gateway phase G2): a guard mode needs a classifier model.
+func agentGuardCheck(e Env) Check {
+	const id, name = "agent_guard", "Agent guard"
+	g := e.Cfg.Gateway.Guard
+	mode := strings.ToLower(strings.TrimSpace(g.Mode))
+	switch mode {
+	case "", "off":
+		return ok(id, name, "off")
+	case "watch", "hold":
+	default:
+		return fail(id, name, "gateway.guard.mode is "+g.Mode, "set it to off, watch or hold")
+	}
+	if g.Model == "" {
+		return fail(id, name, mode+" with no model: nothing screens tool results",
+			"put a classifier GGUF such as Qwen3Guard-Gen-0.6B in a llama.cpp model folder and set gateway.guard.model to its id")
+	}
+	return ok(id, name, mode+" with "+g.Model+" (a second pair of eyes, not a security boundary)")
 }
 
 func listenAddrs(c *config.Config) []string {

@@ -1,0 +1,43 @@
+{
+  "_comment": "Cerberus bench prompt set (gateway phase G6). APPEND-ONLY: never edit or remove an entry; a changed prompt gets a new name, so runs across versions stay comparable. bench_test.go pins every entry's hash.",
+  "prompts": [
+    {"name": "code_a", "kind": "code", "max_tokens": 384,
+     "prompt": "Write a Go function that merges two sorted slices of ints into one sorted slice in linear time. Include a doc comment and a short table-driven test."},
+    {"name": "code_b", "kind": "code", "max_tokens": 384,
+     "prompt": "Write a Python function parse_duration(text) that turns strings such as \"1h30m\", \"45s\" or \"2h\" into a number of seconds, raising ValueError on anything else. Include type hints and a docstring."},
+    {"name": "edit_a", "kind": "edit", "max_tokens": 640,
+     "prompt": "Rewrite the whole file below so that every error is wrapped with context using fmt.Errorf and %w, and the function names are in camelCase. Reply with the complete new file only, no explanation.\n\npackage store\n\nimport (\n\t\"encoding/json\"\n\t\"os\"\n)\n\ntype Item struct {\n\tID    string `json:\"id\"`\n\tName  string `json:\"name\"`\n\tCount int    `json:\"count\"`\n}\n\nfunc load_items(path string) ([]Item, error) {\n\tb, err := os.ReadFile(path)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar items []Item\n\tif err := json.Unmarshal(b, &items); err != nil {\n\t\treturn nil, err\n\t}\n\treturn items, nil\n}\n\nfunc save_items(path string, items []Item) error {\n\tb, err := json.MarshalIndent(items, \"\", \"  \")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.WriteFile(path, b, 0o644)\n}\n\nfunc count_all(items []Item) int {\n\tn := 0\n\tfor _, it := range items {\n\t\tn += it.Count\n\t}\n\treturn n\n}\n"},
+    {"name": "edit_b", "kind": "edit", "max_tokens": 512,
+     "prompt": "Rewrite this whole JavaScript module to use async/await instead of .then() chains, keeping its behaviour. Reply with the complete new module only.\n\nexport function loadUser(api, id) {\n  return api.get('/users/' + id)\n    .then((r) => r.json())\n    .then((u) => {\n      if (!u.active) throw new Error('inactive user');\n      return api.get('/teams/' + u.team).then((r) => r.json()).then((t) => ({ ...u, team: t }));\n    })\n    .catch((e) => {\n      console.warn('loadUser failed', e);\n      return null;\n    });\n}\n\nexport function loadAll(api, ids) {\n  return Promise.all(ids.map((id) => loadUser(api, id))).then((list) => list.filter(Boolean));\n}\n"},
+    {"name": "proof_a", "kind": "proof", "max_tokens": 384,
+     "prompt": "Prove that the square root of 3 is irrational. Write the proof step by step."},
+    {"name": "proof_b", "kind": "proof", "max_tokens": 384,
+     "prompt": "Prove that the sum of the first n odd numbers is n squared, by induction."},
+    {"name": "procedure_a", "kind": "procedure", "max_tokens": 384,
+     "prompt": "Give a numbered procedure for moving a Linux home directory to a new disk without losing file permissions."},
+    {"name": "procedure_b", "kind": "procedure", "max_tokens": 384,
+     "prompt": "Enumera los pasos para configurar una red Wi-Fi de invitados separada en un router doméstico, en español."},
+    {"name": "chat_a", "kind": "chat", "max_tokens": 160,
+     "prompt": "hi! I keep putting off cleaning my desk. any quick trick to just start?"},
+    {"name": "chat_b", "kind": "chat", "max_tokens": 160,
+     "prompt": "¿qué opinas de tomar café por la tarde? respóndeme corto y en español"},
+    {"name": "prose_a", "kind": "prose", "max_tokens": 384,
+     "prompt": "Explain in two paragraphs why a model that does not fit in GPU memory can still run, and what it costs in speed."},
+    {"name": "prose_b", "kind": "prose", "max_tokens": 384,
+     "prompt": "Explica en dos párrafos, en español, qué es la decodificación especulativa y cuándo deja de ayudar."}
+  ],
+  "prefill": {
+    "question": "In one sentence, what is the text above about?",
+    "max_tokens": 32,
+    "filler": [
+      "The harbour office opened at seven and the first ferry left at half past.",
+      "Every crate on the quay was counted twice, once by hand and once by the scale.",
+      "A clerk wrote the tides on a slate by the door so the fishermen could read them.",
+      "In winter the lamps along the breakwater were lit before four in the afternoon.",
+      "The ledger listed salt, rope, tar and lamp oil in the same careful columns.",
+      "When the wind turned north the small boats stayed in and the nets were mended.",
+      "Children carried messages between the warehouses for a coin and an apple.",
+      "The customs house kept its own clock, which everyone trusted more than the church's."
+    ]
+  }
+}

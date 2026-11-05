@@ -414,3 +414,37 @@ func TestAgentHelp(t *testing.T) {
 		t.Errorf("help text:\n%s", s)
 	}
 }
+
+// A reply that spends its budget thinking says so instead of ending blank
+// (gateway phase G4).
+func TestThinkingBudgetNote(t *testing.T) {
+	_, base := newFake(t, sse(
+		`{"choices":[{"index":0,"delta":{"reasoning_content":"thinking hard"}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+	))
+	var out bytes.Buffer
+	run(context.Background(), testOptions(t, base), strings.NewReader(""), &out)
+	if !strings.Contains(out.String(), "ran out while the model was thinking") {
+		t.Errorf("no budget note:\n%s", out.String())
+	}
+}
+
+func TestRanOutThinking(t *testing.T) {
+	cases := []struct {
+		finish        string
+		thought       bool
+		answer, calls int
+		want          bool
+	}{
+		{"length", true, 0, 0, true},
+		{"length", true, 3, 0, false},
+		{"length", true, 0, 1, false},
+		{"length", false, 0, 0, false},
+		{"stop", true, 0, 0, false},
+	}
+	for _, c := range cases {
+		if got := ranOutThinking(c.finish, c.thought, c.answer, c.calls); got != c.want {
+			t.Errorf("%+v: got %v", c, got)
+		}
+	}
+}

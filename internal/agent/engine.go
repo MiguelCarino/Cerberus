@@ -519,8 +519,10 @@ func (e *engine) one(ctx context.Context, body chatRequest) (text string, calls 
 	var reply strings.Builder
 	pending := map[int]*pendingCall{}
 	var split thinkSplitter
+	finish, thought := "", false
 	show := func(words, think string) {
 		if think != "" {
+			thought = true
 			e.emit(Event{Type: EvReasoning, Text: think})
 		}
 		if words != "" {
@@ -540,7 +542,11 @@ func (e *engine) one(ctx context.Context, body chatRequest) (text string, calls 
 			if c.Message != nil {
 				d = *c.Message
 			}
+			if c.FinishReason != "" {
+				finish = c.FinishReason
+			}
 			if s := rawString(d.ReasoningContent) + rawString(d.Reasoning); s != "" {
+				thought = true
 				e.emit(Event{Type: EvReasoning, Text: s})
 			}
 			if piece := rawString(d.Content); piece != "" {
@@ -570,7 +576,21 @@ func (e *engine) one(ctx context.Context, body chatRequest) (text string, calls 
 		}
 	})
 	show(split.flush())
+	if err == nil && ranOutThinking(finish, thought, reply.Len(), len(pending)) {
+		e.emit(Event{Type: EvNote, Text: ThinkingBudgetNote})
+	}
 	return reply.String(), assemble(pending), reply.Len() > 0, err
+}
+
+// ThinkingBudgetNote is shown when a reply's token budget ran out while the
+// model was still thinking: the answer is empty, not lost (gateway phase G4).
+const ThinkingBudgetNote = "The token budget ran out while the model was thinking, so there is no answer. " +
+	"Raise the budget or lower the reasoning effort."
+
+// ranOutThinking reports a reply that ended on its budget with thinking but
+// no answer text and no tool call.
+func ranOutThinking(finish string, thought bool, answer, calls int) bool {
+	return finish == "length" && thought && answer == 0 && calls == 0
 }
 
 // readTools never change anything.

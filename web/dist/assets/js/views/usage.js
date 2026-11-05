@@ -9,6 +9,8 @@ import { h, clear, toast, errText } from '../dom.js';
 import { fmtNum, fmtInt, fmtMs, fmtEnergy, relTime } from '../util.js';
 import { fmtUSD, fmtUSDExact, fmtTokens, spendRows, budgetBar, planGauge, resetText, planErrTone } from '../spend.js';
 import { leaderboardSection } from './leaderboard.js';
+import { recordsSection } from './records.js';
+import { benchSection } from './bench.js';
 import { delegationText, finetuneText, fmtTokens as fmtTok, fmtWh, fmtSaved } from '../delegation.js';
 import { store } from '../store.js';
 
@@ -35,6 +37,8 @@ export function mount(root) {
   const plansEl = h('div', { class: 'plan-grid' });
   const wrap = h('div', { class: 'usage-wrap' }, h('p', { class: 't-sec', text: 'Loading…' }));
   const board = leaderboardSection();
+  const recs = store.can('audit') ? recordsSection() : null; // admins: what each client sends (G3)
+  const benches = benchSection(); // G6
   const delegEl = h('div', { class: 'deleg' });
   root.append(h('section', { class: 'view view-pad' },
     h('div', { class: 'view-head' },
@@ -44,8 +48,10 @@ export function mount(root) {
     budgetsEl,
     plansEl,
     board.el,
+    benches.el,
     h('h2', { class: 'group-title', text: 'Delegated to local models' }), delegEl,
-    h('h2', { class: 'group-title', text: 'Recent requests' }), wrap));
+    h('h2', { class: 'group-title', text: 'Recent requests' }), wrap,
+    recs ? recs.el : null));
 
   let gone = false;
   let timer = 0;
@@ -60,6 +66,8 @@ export function mount(root) {
       renderPlans(plansEl, (u && u.plans) || []);
       renderRecent(wrap, (u && u.recent) || []);
       board.load();
+      if (recs) recs.load();
+      benches.load();
       loadDelegation();
     } catch (e) {
       if (!gone) toast(errText(e), 'err');
@@ -100,6 +108,8 @@ export function mount(root) {
   return () => {
     gone = true;
     board.destroy();
+    if (recs) recs.destroy();
+    benches.destroy();
     clearTimeout(timer);
     window.removeEventListener('cerberus:visible', onVisible);
     document.removeEventListener('visibilitychange', onHidden);

@@ -271,6 +271,14 @@ func processErrStatus(err error) int {
 
 // withModelCost fills each model's gateway energy and cost (24 h and month).
 func (s *server) withModelCost(ms []engine.ModelInfo) []engine.ModelInfo {
+	if s.busy != nil && len(ms) > 0 {
+		b := s.busy()
+		for i := range ms {
+			if x, ok := b[ms[i].ID]; ok {
+				ms[i].BusyForS, ms[i].Stalls = x.BusyForS, x.Stalls
+			}
+		}
+	}
 	if s.energy == nil || len(ms) == 0 {
 		return ms
 	}

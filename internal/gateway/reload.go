@@ -10,4 +10,8 @@ func (g *Gateway) Reload(cfg *config.Config) {
 		return
 	}
 	g.SetPricing(cfg.Prices, cfg.Budgets)
+	g.SetModels(cfg.Models)
+	g.SetProviders(cfg.Providers, cfg.Gateway.ModelMap)
+	g.SetStall(cfg.Engines.StallSec)
+	g.SetGuard(cfg.Gateway.Guard)
 }

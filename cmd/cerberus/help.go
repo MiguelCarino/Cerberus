@@ -61,6 +61,16 @@ followed until the download ends; Ctrl-C stops following, not the download.`},
 runs daily. Repo worktrees with unaccepted changes are kept.`},
 	"top": {"top [-config PATH] [--once] [--every 2s]", `Live terminal view: CPU, memory, GPU, power, cost, drives, top processes
 and sessions. q quits. While it is open the monitor samples actively.`},
+	"bench": {"bench [--model ID] [--repeat N] [--kinds K,K] [--prefill] [--label TEXT] [--json] [--force]", `Time a model through the gateway on Cerberus's fixed prompt set (code,
+edit, proof, procedure, chat, prose; with --prefill also 8k, 32k and ctx/2
+prompts) at temperature 0 with thinking off: time to first token, decode and
+prefill speed and energy per request (medians of --repeat runs). It refuses
+while agent sessions are running (--force runs anyway). Runs are saved in the
+data folder's bench/; "bench list" lists them and "bench compare A B" lines
+two up, kind by kind. The model is loaded on the GPU like any request.`},
+	"bench list": {"bench list", `List saved bench runs, newest first.`},
+	"bench compare": {"bench compare A B", `Line two bench runs up kind by kind (run ids or .json files): decode, time
+to first token and tokens per joule, B against A, with a plain summary.`},
 	"energy": {"energy [-config PATH]", `Energy totals (today, yesterday, 7 days, month, 30 days) and the
 electricity bill estimate at the household's marginal tariff tier.`},
 	"rapl-setup": {"rapl-setup", `Print (never run) the one-time root steps that let Cerberus read the CPU

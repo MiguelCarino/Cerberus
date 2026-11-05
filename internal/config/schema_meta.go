@@ -121,6 +121,9 @@ func init() {
 		"How long to wait for a model to load before giving up.", seconds, atLeast(1))
 	d(g, "engines.allow_overcommit", "Allow over-commit",
 		"Load a model even when it looks too big for free GPU memory. It may spill to system memory and run slowly.")
+	d(g, "engines.stall_sec", "Stall check after",
+		"A local request that receives nothing for this long gets its engine checked; an engine that does not answer twice is restarted and its requests fail with a clear error. Nothing is checked while no request is running. 0 turns it off.",
+		seconds)
 	d(g, "engines.wait_for_room_sec", "Wait for room",
 		"When a model does not fit because another loaded model is answering, wait this long for it to finish, then swap. 0 loads at once and lets the engine spill to system memory.",
 		seconds)
@@ -166,6 +169,19 @@ func init() {
 	d(g, "models[].max_parallel", "Requests at once",
 		"How many requests Cerberus sends this model at the same time; the rest wait their turn (0 = automatic: 1 for a model over half the GPU memory, else the engine's slots).",
 		nonNeg)
+	d(g, "models[].defaults.reasoning_effort", "Reasoning effort",
+		"How hard the model thinks when a request does not say (empty = the model's own default). Agent tools usually send none, so this is what they run at.",
+		enum("", "none", "minimal", "low", "medium", "high", "xhigh"))
+	d(g, "models[].defaults.enable_thinking", "Thinking",
+		"Turn the model's thinking on or off when a request does not say (unset = the model's own default).")
+	d(g, "models[].defaults.max_tokens", "Default token budget",
+		"Tokens a reply may use, thinking included, when a request sends no budget (0 = the engine's default).",
+		unit("tokens"), nonNeg)
+	d(g, "models[].defaults.max_tokens_cap", "Largest token budget",
+		"A request asking for more (or for -1, the most allowed) is clipped to this (0 = no cap).", unit("tokens"), nonNeg)
+	d(g, "models[].defaults.temperature", "Temperature", "Sampling temperature when a request does not set one.", nonNeg)
+	d(g, "models[].defaults.top_p", "Top P", "Nucleus sampling when a request does not set it.", nonNeg)
+	d(g, "models[].defaults.top_k", "Top K", "Top-K sampling when a request does not set it (0 = no default).", nonNeg)
 
 	// ---- Gateway & spend
 	g = GroupGateway
@@ -178,6 +194,35 @@ func init() {
 	d(g, "providers[].headers", "Extra headers", "Extra HTTP headers sent with every request.")
 	d(g, "providers[].enabled", "On", "Offer this provider's models.")
 	d(g, "providers[].key_secret", "Key secret", "The vault secret holding the key (default: the provider name).", secretRef)
+	d(g, "providers[].apis", "Native APIs",
+		"Other APIs this provider serves itself, passed through as they are: \"messages\" (Anthropic) or \"responses\" (OpenAI). Others are translated to chat completions.")
+	d(g, "providers[].apis[]", "API", "An API the provider serves natively.", enum("messages", "responses"))
+	d(g, "gateway.records.enabled", "Request records",
+		"Keep one line per gateway request: which client sent it, its size and settings, the tools it called and how it ended. For seeing what your agents actually send.", restart)
+	d(g, "gateway.records.text", "Text in records",
+		"How much of the conversation the records keep: none (counts only), user (user and assistant text) or all (also system prompts and tool results). The text is personal data; known secrets are masked.",
+		enum("", "none", "user", "all"), restart)
+	d(g, "gateway.records.dir", "Records folder", "Where the records go (empty = records/ in the data folder).", isPath, restart)
+	d(g, "gateway.records.retain_days", "Keep records for", "Days of records kept (0 = 14).", unit("days"), nonNeg, restart)
+	d(g, "gateway.records.max_mib", "Records size cap", "The oldest days go once the records pass this size (0 = 1024).", unit("MiB"), nonNeg, restart)
+	d(g, "gateway.guard.mode", "Agent guard",
+		"A small local model reads each tool result an agent sends back, looking for text aimed at the agent (prompt injection). watch reports what it finds; hold also stops a tool call that acts outside the conversation in a turn with a flagged result, and says why. It is a second pair of eyes, not a security boundary.",
+		enum("", "off", "watch", "hold"))
+	d(g, "gateway.guard.model", "Guard model",
+		"The local model that reads tool results: a classifier that answers in Qwen3Guard-Gen's format (Safety: ... Categories: ...), such as Qwen3Guard-Gen-0.6B.")
+	d(g, "gateway.guard.threshold", "Guard threshold", "Score from 0 to 1 at which a tool result is flagged (0 = 0.5).", nonNeg)
+	d(g, "gateway.guard.wait_ms", "Guard wait",
+		"Longest a tool call waits for the guard's verdicts; after that it goes out unscreened and is logged (0 = 10000).", unit("ms"), nonNeg)
+	d(g, "gateway.guard.window_tokens", "Guard window",
+		"Long tool results are read in overlapping windows of about this many tokens and scored by the worst (0 = 512).", unit("tokens"), nonNeg)
+	d(g, "gateway.guard.side_effect_tools", "Tools that act",
+		"Extra tool name patterns (such as deploy_* or mcp__*__send*) that act outside the conversation. Built-in patterns cover shells, writes, edits, sends and deletes; a tool that matches no pattern is treated as acting.")
+	d(g, "gateway.guard.side_effect_tools[]", "Pattern", "A tool name pattern (* matches anything).", glob)
+	d(g, "gateway.guard.read_only_tools", "Tools that only read",
+		"Extra tool name patterns that only read and are never held.")
+	d(g, "gateway.guard.read_only_tools[]", "Pattern", "A tool name pattern (* matches anything).", glob)
+	d(g, "gateway.model_map", "Model name map",
+		"Model names that clients hard-code (a pattern such as claude-* or gpt-*) and the Cerberus model to use when such a name matches no model, e.g. claude-* → default.")
 
 	d(g, "prices", "Prices",
 		"USD per million tokens, by model ID or provider/* for a whole provider. Used to count spend.")

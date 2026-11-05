@@ -26,6 +26,7 @@ import (
 type waiter struct {
 	ch      chan struct{}
 	granted bool
+	since   time.Time // queued at (ModelInfo.LongestWaitS)
 }
 
 // slotter is implemented by local backends that know how many requests one
@@ -118,7 +119,7 @@ func (m *Manager) admit(ctx context.Context, st *modelState) error {
 		m.mu.Unlock()
 		return nil
 	}
-	w := &waiter{ch: make(chan struct{})}
+	w := &waiter{ch: make(chan struct{}), since: time.Now()}
 	st.waiters = append(st.waiters, w)
 	reason := fmt.Sprintf("waiting for %s: %d of %d slots busy", st.info.ID, st.active, lim)
 	m.mu.Unlock()

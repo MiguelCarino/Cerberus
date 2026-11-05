@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"carino.systems/cerberus/internal/engine"
+	"carino.systems/cerberus/internal/records"
 	"carino.systems/cerberus/internal/usage"
 )
 
@@ -31,6 +32,16 @@ type request struct {
 	model       string
 	stream      bool
 	clientUsage bool // the client itself asked for stream_options.include_usage
+
+	// G1: a request translated from another API, or passed through to a
+	// provider that serves it natively.
+	api      string // usage.Record.API: chat | completions | embeddings | messages | responses
+	thinking *bool  // the client's thinking switch (local engines get chat_template_kwargs)
+	effort   string // the client's reasoning effort
+	native   bool   // passed through untranslated: no budget shaping, raw body
+	raw      []byte // the native body
+
+	resultErrors int // G3: tool results the client marked as errors (Messages API)
 }
 
 // call tracks one proxied request for the usage record.
@@ -41,23 +52,74 @@ type call struct {
 	rec    usage.Record
 	deltas int
 
+	finish                      string // the upstream's finish_reason (first choice)
+	contentN, reasoningN, toolN int    // deltas of answer text, reasoning and tool calls
+
 	capture  bool            // keep the answer (WithExchange)
 	messages json.RawMessage // the request's messages, when capturing
-	text     strings.Builder // the answer so far, when capturing
+	text     strings.Builder // the answer so far, when capturing (or keeping text for a record)
+
+	// G3: the request record.
+	shape      *reqShape
+	stream     bool
+	family     string
+	calls      map[int]*records.Call
+	keepText   bool // the record keeps the reply's text
+	keepReason bool // ... and its reasoning
+	reason     strings.Builder
+	guard      *records.Guard // G2's verdict, when the guard ran
+
+	guardRun     *guardRun // G2: the screening of this request's tool results
+	flight       *flight   // G5: the stall watchdog's entry (local requests)
+	dropProgress bool      // G5: the gateway asked llama.cpp for prompt_progress; the client did not
 }
 
 func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request, path string) {
-	c := &call{start: time.Now()}
-	c.rec = usage.Record{Time: c.start, Client: r.Header.Get("X-Cerberus-Client"),
-		SessionID: r.Header.Get("X-Cerberus-Session"), User: r.Header.Get("X-Cerberus-User")}
-
 	req, status, err := readRequest(w, r)
 	if err != nil {
 		writeError(w, status, "invalid_request_error", err.Error())
 		return
 	}
+	req.api = apiOf(path)
+	g.serve(w, r, path, req, nil)
+}
+
+// keepUsage reports whether the stream's usage chunk reaches w: the client
+// asked for it, or a translator (G1) needs it for its own usage event.
+func (req *request) keepUsage() bool {
+	return req.clientUsage || req.api == "messages" || req.api == "responses"
+}
+
+// apiOf names a Chat Completions-family path for the usage record.
+func apiOf(path string) string {
+	switch path {
+	case "/chat/completions":
+		return "chat"
+	case "/completions":
+		return "completions"
+	case "/embeddings":
+		return "embeddings"
+	}
+	return path
+}
+
+// serve runs one parsed request: model resolution, budgets, acquisition,
+// forwarding and the usage record. native, when set, decides per endpoint
+// whether the request goes through untranslated (G1); it returns the
+// upstream path to use, or "" to translate.
+func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req *request, native func(id string, ep engine.Endpoint) string) {
+	c := &call{start: time.Now()}
+	c.rec = usage.Record{Time: c.start, Client: r.Header.Get("X-Cerberus-Client"),
+		SessionID: r.Header.Get("X-Cerberus-Session"), User: r.Header.Get("X-Cerberus-User"), API: req.api}
 	c.rec.Model = req.model
 	defer func() { g.finish(c) }()
+	g.startRecord(c, r, req)
+	if path != "/embeddings" {
+		if _, _, err := req.budget(); err != nil {
+			g.fail(w, c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+	}
 
 	if g.src == nil {
 		g.fail(w, c, http.StatusServiceUnavailable, "server_error", "no model engine configured")
@@ -65,6 +127,12 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request, path string) {
 	}
 	ctx := r.Context()
 	id, info, known := g.resolve(ctx, req.model)
+	if !known {
+		if m := g.mapModel(req.model); m != "" {
+			req.model = m
+			id, info, known = g.resolve(ctx, m)
+		}
+	}
 	c.rec.Model = id
 	checked := false
 	if known && !info.Local {
@@ -90,6 +158,29 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 
+	if native != nil {
+		if p := native(id, ep); p != "" {
+			path, req.native = p, true
+		}
+	}
+	if path != "/embeddings" && !req.native && req.stream && ep.Local && ep.Backend == engine.BackendLlamaCpp {
+		// Progress frames while a long prompt is read: output for the stall
+		// watchdog. Kept from clients that did not ask for them.
+		if _, asked := req.fields["return_progress"]; !asked {
+			req.fields["return_progress"] = json.RawMessage("true")
+			c.dropProgress = true
+		}
+	}
+	if path != "/embeddings" && !req.native {
+		req.hints(ep.Local)
+		if note := req.shape(ep.Local, path, g.defaultsFor(id)); note != "" {
+			g.noteOnce(c.rec.Client+"|"+id, note, "model", id, "client", c.rec.Client)
+		}
+	}
+	g.startRecord(c, r, req) // again: what goes upstream, defaults included
+	if path == "/chat/completions" && !req.native {
+		c.guardRun = g.startGuard(c, req)
+	}
 	body, err := req.encode(ep.Model, path != "/embeddings")
 	if err != nil {
 		g.fail(w, c, http.StatusInternalServerError, "server_error", err.Error())
@@ -99,6 +190,10 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request, path string) {
 		g.localInFlight.Add(1)
 		defer g.localInFlight.Add(-1)
 	}
+	ctx, cancelFlight := context.WithCancelCause(ctx)
+	defer func() { cancelFlight(nil) }()
+	c.flight = g.track(id, ep, cancelFlight)
+	defer func() { g.untrack(c.flight) }()
 	energy0 := g.energyNow()
 	fg, canForget := g.src.(forgetter)
 	if g.forward(ctx, w, r, c, req, ep, path, body, ep.Local && canForget) {
@@ -112,6 +207,8 @@ func (g *Gateway) proxy(w http.ResponseWriter, r *http.Request, path string) {
 			g.fail(w, c, st, typ, err.Error())
 			return
 		}
+		g.untrack(c.flight)
+		c.flight = g.track(id, ep, cancelFlight)
 		if body, err = req.encode(ep.Model, path != "/embeddings"); err != nil {
 			g.fail(w, c, http.StatusInternalServerError, "server_error", err.Error())
 			return
@@ -172,9 +269,19 @@ func (g *Gateway) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 	for k, v := range ep.Headers {
 		up.Header.Set(k, v)
 	}
+	if req.native {
+		nativeHeaders(up.Header, r.Header, path)
+	}
 	c.sent = time.Now()
+	if c.flight != nil {
+		c.flight.touch()
+	}
 	resp, err := g.client.Do(up)
 	if err != nil {
+		if errors.Is(context.Cause(ctx), errStalled) {
+			g.fail(w, c, http.StatusServiceUnavailable, "engine_stalled", stalledText(time.Duration(g.wd.stallNs.Load())))
+			return false
+		}
 		if ctx.Err() != nil {
 			c.rec.Status, c.rec.Error = statusClientClosed, "client cancelled"
 			return false
@@ -189,6 +296,9 @@ func (g *Gateway) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 	defer resp.Body.Close()
 
 	var src io.Reader = resp.Body
+	if c.flight != nil {
+		src = touchReader{r: resp.Body, f: c.flight}
+	}
 	if ep.Local && resp.StatusCode/100 != 2 {
 		head, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		msg := errorMessage(head)
@@ -199,7 +309,7 @@ func (g *Gateway) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 			g.engineFailed(w, c, ep.Gen, msg)
 			return false
 		}
-		src = io.MultiReader(bytes.NewReader(head), resp.Body)
+		src = io.MultiReader(bytes.NewReader(head), src)
 	}
 
 	c.rec.Status = resp.StatusCode
@@ -207,10 +317,21 @@ func (g *Gateway) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 	if resp.StatusCode == http.StatusOK && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(resp.StatusCode)
-		err = g.relayStream(w, src, c, req.clientUsage)
+		err = g.relayStream(w, src, c, req.keepUsage())
 	} else {
 		w.WriteHeader(resp.StatusCode)
-		err = relayBody(w, src, c)
+		err = g.relayBody(w, src, c)
+	}
+	if err != nil && errors.Is(context.Cause(ctx), errStalled) {
+		msg := stalledText(time.Duration(g.wd.stallNs.Load()))
+		c.rec.Error = msg
+		// The reply already started: end it with an in-stream error event,
+		// which chat clients and the translated APIs (G1) show as an error.
+		if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+			b, _ := json.Marshal(map[string]any{"error": map[string]string{"message": msg, "type": "engine_stalled"}})
+			_, _ = w.Write(append(append([]byte("data: "), b...), '\n', '\n'))
+		}
+		return false
 	}
 	if err != nil && c.rec.Error == "" {
 		if ctx.Err() != nil {
@@ -300,7 +421,14 @@ func modelNotLoaded(msg string) bool { return msg != "" && reNotLoaded.MatchStri
 
 // relayBody copies a non-streaming body and reads usage (or the upstream
 // error message) from it.
-func relayBody(w http.ResponseWriter, body io.Reader, c *call) error {
+func (g *Gateway) relayBody(w http.ResponseWriter, body io.Reader, c *call) error {
+	if c.guardRun != nil && c.rec.Status/100 == 2 { // G2: read whole, settle, then relay
+		b, err := g.guardBody(c, body)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
 	var buf capBuffer
 	buf.limit = maxUsageScan
 	c.first = time.Now()
@@ -314,14 +442,48 @@ func relayBody(w http.ResponseWriter, body io.Reader, c *call) error {
 		c.rec.Error = errorMessage(buf.b)
 		return nil
 	}
-	if c.capture {
+	if c.capture || c.keepText {
 		c.addText(bodyText(buf.b))
 	}
 	var res struct {
-		Usage *usageJSON `json:"usage"`
+		Usage   *usageJSON `json:"usage"`
+		Choices []struct {
+			Text         string `json:"text"`
+			FinishReason string `json:"finish_reason"`
+			Message      *struct {
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
+				Reasoning        string          `json:"reasoning"`
+				ToolCalls        json.RawMessage `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
-	if json.Unmarshal(buf.b, &res) == nil && res.Usage != nil {
-		res.Usage.apply(&c.rec)
+	if json.Unmarshal(buf.b, &res) == nil {
+		if res.Usage != nil {
+			res.Usage.apply(&c.rec)
+		}
+		if len(res.Choices) > 0 {
+			ch := res.Choices[0]
+			c.finish = ch.FinishReason
+			if ch.Text != "" {
+				c.contentN++
+			}
+			if m := ch.Message; m != nil {
+				if s := string(m.Content); s != "" && s != "null" && s != `""` {
+					c.contentN++
+				}
+				if m.ReasoningContent != "" || m.Reasoning != "" {
+					c.reasoningN++
+					c.addReason(m.ReasoningContent + m.Reasoning)
+				}
+				if c.shape != nil {
+					c.noteCalls(m.ToolCalls)
+				}
+				if s := string(m.ToolCalls); s != "" && s != "null" && s != "[]" {
+					c.toolN++
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -341,6 +503,12 @@ const minSpeedWindow = 50 * time.Millisecond
 func (g *Gateway) finish(c *call) {
 	defer g.deliver(c)
 	end := time.Now()
+	c.rec.Finish = finishOf(c)
+	if r := c.guardRun; r != nil {
+		r.wait(context.Background()) // the record says what the guard found
+		c.guard = r.recordGuard()
+		c.rec.GuardFlagged, c.rec.GuardHeld = c.guard.Flagged, len(c.guard.Held)
+	}
 	c.rec.DurationMs = end.Sub(c.start).Milliseconds()
 	if !c.first.IsZero() {
 		c.rec.TTFTMs = c.first.Sub(c.start).Milliseconds()
@@ -373,6 +541,12 @@ func (g *Gateway) finish(c *call) {
 		g.log.Debug("gateway request failed", "model", c.rec.Model, "status", c.rec.Status, "err", c.rec.Error)
 	}
 	g.priceCall(c)
+	if c.shape != nil {
+		for _, k := range c.calls {
+			g.issued.add(k.ID)
+		}
+		g.record(c)
+	}
 	if g.store != nil {
 		g.store.Add(c.rec)
 		if c.rec.CostUSD > 0 {
@@ -414,12 +588,16 @@ func readRequest(w http.ResponseWriter, r *http.Request) (*request, int, error) 
 }
 
 // encode rewrites the model and, for streaming generation, asks for usage.
+// A native pass-through keeps its own body, with only the model rewritten.
 func (req *request) encode(model string, generation bool) ([]byte, error) {
 	m, err := json.Marshal(model)
 	if err != nil {
 		return nil, err
 	}
 	req.fields["model"] = m
+	if req.native {
+		return json.Marshal(req.fields)
+	}
 	if generation && req.stream && !req.clientUsage {
 		opts := map[string]json.RawMessage{}
 		if v, ok := req.fields["stream_options"]; ok {

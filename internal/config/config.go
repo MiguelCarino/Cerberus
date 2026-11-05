@@ -72,6 +72,9 @@ type Config struct {
 	// Users and roles, Phase 4a (see users.go).
 	Users UsersConfig `json:"users"`
 
+	// Gateway phase (see gateway.go).
+	Gateway GatewayConfig `json:"gateway"`
+
 	// path is where this config was loaded from (not serialised).
 	path string
 }
@@ -107,14 +110,19 @@ type GPUConfig struct {
 }
 
 type EnginesConfig struct {
-	DefaultModel    string         `json:"default_model"`
-	IdleTTLSec      int            `json:"idle_ttl_sec"`     // default 600
-	LoadTimeoutSec  int            `json:"load_timeout_sec"` // default 180
-	AllowOverCommit bool           `json:"allow_overcommit"`
-	WaitForRoomSec  int            `json:"wait_for_room_sec"` // default 600; 0 = never wait for busy models
-	LlamaCpp        LlamaCppConfig `json:"llamacpp"`
-	LMStudio        LMStudioConfig `json:"lmstudio"`
-	Ollama          OllamaConfig   `json:"ollama"`
+	DefaultModel    string `json:"default_model"`
+	IdleTTLSec      int    `json:"idle_ttl_sec"`     // default 600
+	LoadTimeoutSec  int    `json:"load_timeout_sec"` // default 180
+	AllowOverCommit bool   `json:"allow_overcommit"`
+	WaitForRoomSec  int    `json:"wait_for_room_sec"` // default 600; 0 = never wait for busy models
+	// StallSec (gateway phase G5): a local request with no upstream byte for
+	// this long gets its engine probed; a probe that fails twice marks the
+	// engine stalled (requests fail with 503, the model is reloaded).
+	// Default 120; 0 = off.
+	StallSec int            `json:"stall_sec"`
+	LlamaCpp LlamaCppConfig `json:"llamacpp"`
+	LMStudio LMStudioConfig `json:"lmstudio"`
+	Ollama   OllamaConfig   `json:"ollama"`
 }
 
 type LlamaCppConfig struct {
@@ -156,7 +164,26 @@ type ModelConfig struct {
 	// MaxParallel caps the requests Cerberus sends this model at once; the
 	// rest wait in a FIFO queue (0 = automatic, see engine.Manager).
 	MaxParallel int `json:"max_parallel"`
+	// Defaults are the request settings the gateway applies when a request
+	// names none of its own (gateway phase G4): agent harnesses send no
+	// thinking control to a custom endpoint, so this is what they run at.
+	Defaults ModelDefaults `json:"defaults,omitzero"`
 }
+
+// ModelDefaults are per-model request defaults (gateway phase G4). Zero
+// values and nil pointers mean "no default".
+type ModelDefaults struct {
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"` // none | minimal | low | medium | high | xhigh
+	EnableThinking  *bool    `json:"enable_thinking,omitempty"`  // sent as chat_template_kwargs.enable_thinking
+	MaxTokens       int      `json:"max_tokens,omitempty"`       // budget when the request sends none
+	MaxTokensCap    int      `json:"max_tokens_cap,omitempty"`   // larger budgets (and -1) are clipped to this
+	Temperature     *float64 `json:"temperature,omitempty"`
+	TopP            *float64 `json:"top_p,omitempty"`
+	TopK            int      `json:"top_k,omitempty"`
+}
+
+// ReasoningEfforts are the reasoning_effort values the gateway passes on.
+var ReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
 
 type ProviderConfig struct {
 	Name      string            `json:"name"`     // id prefix, e.g. "anthropic", "openai", "openrouter"
@@ -166,6 +193,9 @@ type ProviderConfig struct {
 	Headers   map[string]string `json:"headers"`
 	Enabled   bool              `json:"enabled"`
 	KeySecret string            `json:"key_secret"` // vault secret name for the key (default: Name)
+	// APIs the provider serves natively beside Chat Completions ("messages",
+	// "responses"): the gateway passes those requests through untranslated.
+	APIs []string `json:"apis,omitempty"`
 }
 
 // AgentProfile is how to start one kind of coding agent in a PTY.
@@ -254,7 +284,7 @@ func Defaults() *Config {
 		Server: ServerConfig{Listen: "127.0.0.1:7340", LocalNoAuth: true},
 		GPU:    GPUConfig{Backend: "auto", ActiveIntervalMs: 1000, IdleIntervalMs: 15000, NvidiaSmi: "nvidia-smi"},
 		Engines: EnginesConfig{
-			IdleTTLSec: 600, LoadTimeoutSec: 180, WaitForRoomSec: 600,
+			IdleTTLSec: 600, LoadTimeoutSec: 180, WaitForRoomSec: 600, StallSec: 120,
 			LlamaCpp: LlamaCppConfig{Enabled: true, Binary: "llama-server", Ctx: 32768, Parallel: 4, PortBase: 39200,
 				ModelDirs: []string{filepath.Join(home, "models")}},
 			LMStudio: LMStudioConfig{Enabled: true, Binary: "lms", BaseURL: "http://127.0.0.1:1234/v1", Ctx: 32768},
@@ -296,6 +326,20 @@ func DefaultAgents() []AgentProfile {
 		{Name: "claude-headless", Command: []string{"claude", "-p", "{task}", "--permission-mode", "acceptEdits"},
 			SandboxRW:   []string{"~/.claude", "~/.claude.json"},
 			Description: "Claude Code, non-interactive (edits accepted, commands per your settings)"},
+		{Name: "claude-local", Command: []string{"claude", "{task}"}, Interactive: true, NeedsModel: true,
+			ResumeCommand: []string{"claude", "--continue"},
+			Env: map[string]string{
+				"ANTHROPIC_BASE_URL": "{server_url}", "ANTHROPIC_AUTH_TOKEN": "{api_key}", "ANTHROPIC_API_KEY": "",
+				"ANTHROPIC_MODEL": "{model}", "ANTHROPIC_SMALL_FAST_MODEL": "{model}", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "{model}",
+				"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+			SandboxRW:   []string{"~/.claude", "~/.claude.json"},
+			Description: "Claude Code against a local or API model through the gateway (no subscription)"},
+		{Name: "codex", NeedsModel: true, SandboxRW: []string{"~/.codex"},
+			Command: []string{"codex", "exec", "--full-auto",
+				"-c", `model_provider="cerberus"`,
+				"-c", `model_providers.cerberus={name="Cerberus",base_url="{base_url}",env_key="OPENAI_API_KEY",wire_api="responses"}`,
+				"-m", "{model}", "{task}"},
+			Description: "Codex CLI against a local or API model through the gateway (Responses API)"},
 		{Name: "opencode", Command: []string{"opencode", "run", "{task}"}, NeedsModel: true,
 			Description: "OpenCode (point it at the gateway via OPENAI_BASE_URL)"},
 		{Name: "aider", Command: []string{"aider", "--model", "openai/{model}", "--message", "{task}", "--yes-always"}, NeedsModel: true,

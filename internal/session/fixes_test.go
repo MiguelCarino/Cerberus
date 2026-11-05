@@ -201,3 +201,25 @@ func TestGuardReserve(t *testing.T) {
 		t.Fatalf("reserve(false) = %+v", g)
 	}
 }
+
+// {api_key} in a profile's env is the session's gateway key, and
+// {server_url} is the root without /v1 (G1: claude-local).
+func TestAgentEnvAPIKeyPlaceholder(t *testing.T) {
+	e := newTestEnv(t, nil, func(e *testEnv) {
+		agent := e.script("envk.sh", "printf '%s\\n%s\\n%s\\n' \"$ANTHROPIC_AUTH_TOKEN\" \"$ANTHROPIC_BASE_URL\" \"$ANTHROPIC_API_KEY\" > env.txt\nexit 0\n")
+		e.profiles(config.AgentProfile{Name: "envk", Command: []string{"bash", agent}, Env: map[string]string{
+			"ANTHROPIC_AUTH_TOKEN": "{api_key}", "ANTHROPIC_BASE_URL": "{server_url}", "ANTHROPIC_API_KEY": ""}})
+	})
+	t.Setenv("ANTHROPIC_API_KEY", "a-real-key")
+	id := e.createOne("env")
+	info := e.waitState(id, StatePassed)
+	raw, err := os.ReadFile(filepath.Join(info.Worktree, "env.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(raw), "\n") // three lines and the final newline
+	if len(lines) != 4 || lines[0] != e.cfg.SessionAgentToken(id) || strings.HasSuffix(lines[1], "/v1") ||
+		!strings.HasPrefix(lines[1], "http://") || lines[2] != "" {
+		t.Fatalf("agent env = %q", raw)
+	}
+}

@@ -158,6 +158,24 @@ can be installed as an app.
 - **Subscriptions** used through an official CLI are only observed. For Claude Code, Cerberus reads
   the CLI's local transcripts and shows tokens in the current 5-hour block and the rolling week
   against limits you estimate yourself. Nothing is enforced.
+- **Three APIs:** besides Chat Completions, `/v1/messages` (Anthropic Messages, with `count_tokens`) and
+  `/v1/responses` (OpenAI Responses, no response store) are translated for any model, or passed through to
+  a provider that lists them in `providers[].apis`. The `claude-local` and `codex` agent profiles run Claude
+  Code and Codex against local models this way, with no vendor account. `gateway.model_map` maps
+  hard-coded names (`claude-*` → `default`).
+- **Budgets and defaults:** `max_tokens`, `max_completion_tokens` and `max_output_tokens` are one field (two
+  different values are a 400). `models[].defaults` sets the thinking, effort, budget, cap and sampling a
+  model gets when a request names none. A reply that spent its budget thinking says so.
+- **Stalls:** while local requests run, one that gets nothing for `engines.stall_sec` (120 s) has its engine
+  checked through its work queue. An engine that does not answer twice is reloaded and its requests fail
+  with `503 engine_stalled`. Nothing is checked while idle.
+- **Agent guard** (`gateway.guard`, off): a small local classifier (such as Qwen3Guard-Gen-0.6B) reads the
+  tool results agents send back. `watch` reports; `hold` also stops a tool call that acts outside the
+  conversation in a flagged turn and says why. Not a security boundary ([docs/SECURITY.md](docs/SECURITY.md)).
+- **Request records** (`gateway.records`, off): a line per request (client, sizes, cache hits, tools,
+  finish reason; text only if you ask) in **Usage → Request records** (admins).
+- **Bench:** `cerberus bench --model ID` (or **Usage → Bench**) times a model on a fixed prompt set;
+  `cerberus bench compare A B` lines two runs up.
 
 ```json
 "prices":  { "openrouter/*": { "in": 3, "out": 15, "cached_in": 0.3 } },
@@ -179,7 +197,8 @@ A session is one agent run in one workspace:
     or download a zip at any time. Discarding deletes it.
   - Folders must be inside your home, not on `agent.deny_paths`, and not Cerberus' own data.
 - **Profiles:** `cerberus` (the built-in agent through the gateway, any model), `claude` and
-  `claude-headless`, `opencode`, `aider` and `shell`. A profile is a plain argv template; add your
+  `claude-headless`, `claude-local` and `codex` (through the gateway's Messages and Responses APIs, any
+  model), `opencode`, `aider` and `shell`. A profile is a plain argv template; add your
   own under `agents`. A profile whose binary is missing shows as unavailable.
 - **Approvals:** the built-in agent asks before it runs a command or writes a file. The session turns
   `waiting`, a notification goes out, and you answer from the UI. Paths on `agent.deny_paths` are

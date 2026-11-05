@@ -83,6 +83,7 @@ import (
 	"carino.systems/cerberus/internal/gpu"
 	"carino.systems/cerberus/internal/inbox"
 	"carino.systems/cerberus/internal/permits"
+	"carino.systems/cerberus/internal/records"
 	"carino.systems/cerberus/internal/session"
 	"carino.systems/cerberus/internal/subs"
 	"carino.systems/cerberus/internal/sysmon"
@@ -130,6 +131,8 @@ type Deps struct {
 	// Delegation and fine-tuning examples (finetune may be nil: capture off
 	// and no export).
 	Finetune *finetune.Store
+	// Records are the gateway's request records (G3; nil = off).
+	Records *records.Store
 
 	Audit   *audit.Logger
 	Devices *devices.Store
@@ -336,7 +339,11 @@ type server struct {
 	delegate   delegateState
 	delegation delegationSource
 	finetune   *finetune.Store
-	usageFeed  *usageFeed // "usage" hints on /api/events (usagefeed.go)
+	records    *records.Store
+	busy       func() map[string]gateway.Busy // G5: in-flight age and stalls per model
+	guardStats func() gateway.GuardStats      // G2: the agent guard's counters
+	bench      benchJobs                      // G6: the bench run going now
+	usageFeed  *usageFeed                     // "usage" hints on /api/events (usagefeed.go)
 
 	// Flows (flows.go).
 	flows    *flows.Engine
@@ -373,8 +380,11 @@ func New(d Deps) http.Handler {
 		d.Usage.OnAdd(s.usageFeed.publish)
 	}
 	s.finetune = d.Finetune
+	s.records = d.Records
 	if d.Gateway != nil {
 		s.gateway, s.budgets = d.Gateway.Handler(), d.Gateway
+		s.busy = d.Gateway.Busy
+		s.guardStats = d.Gateway.GuardStats
 	}
 	if d.Vault != nil {
 		s.secrets = d.Vault
@@ -492,6 +502,12 @@ func (s *server) apiRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/usage/watch", s.handleUsageWatch)
 	mux.HandleFunc("GET /api/repos", s.handleRepos)
 	mux.HandleFunc("GET /api/repos/find", s.handleRepoFind)
+	mux.HandleFunc("GET /api/bench", s.handleBenchList)
+	mux.HandleFunc("POST /api/bench", s.handleBenchStart)
+	mux.HandleFunc("GET /api/bench/{id}", s.handleBenchGet)
+	mux.HandleFunc("GET /api/records", s.handleRecords)
+	mux.HandleFunc("GET /api/records/{day}/{file}/{offset}", s.handleRecord)
+	mux.HandleFunc("DELETE /api/records", s.handleRecordsDelete)
 	mux.HandleFunc("GET /api/secrets", s.handleSecretList)
 	mux.HandleFunc("PUT /api/secrets/{name}", s.handleSecretPut)
 	mux.HandleFunc("DELETE /api/secrets/{name}", s.handleSecretDelete)

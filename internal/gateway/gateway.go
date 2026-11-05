@@ -25,6 +25,7 @@ import (
 	"carino.systems/cerberus/internal/engine"
 	"carino.systems/cerberus/internal/gpu"
 	"carino.systems/cerberus/internal/notify"
+	"carino.systems/cerberus/internal/records"
 	"carino.systems/cerberus/internal/usage"
 )
 
@@ -88,6 +89,21 @@ type Gateway struct {
 
 	exOn func() bool    // WithExchange: keep cloud answers now?
 	exFn func(Exchange) // WithExchange: where they go
+
+	defaults map[string]config.ModelDefaults // G4: per-model request defaults (under priceMu)
+	noted    map[string]bool                 // G4: notes already logged (under priceMu)
+
+	wd watchdog // G5: the stall watchdog
+
+	guardCfg  guardSettings           // G2: live guard settings (under priceMu)
+	guardUser config.AgentGuardConfig // G2: the configured lists (under priceMu)
+	gc        guardCounters           // G2: counters since start
+
+	records *records.Store // G3: request records (nil = off)
+	issued  issuedCalls    // G3: tool call ids returned, to match results sent back
+
+	providerAPIs map[string][]string // G1: provider → native APIs (under priceMu)
+	modelMap     [][2]string         // G1: client name pattern → model id, most specific first (under priceMu)
 }
 
 // Option configures optional gateway features.
@@ -99,6 +115,10 @@ func WithConfig(cfg *config.Config) Option {
 	return func(g *Gateway) {
 		if cfg != nil {
 			g.SetPricing(cfg.Prices, cfg.Budgets)
+			g.SetModels(cfg.Models)
+			g.SetProviders(cfg.Providers, cfg.Gateway.ModelMap)
+			g.SetStall(cfg.Engines.StallSec)
+			g.SetGuard(cfg.Gateway.Guard)
 		}
 	}
 }
@@ -147,6 +167,9 @@ func (g *Gateway) Handler() http.Handler {
 	for _, p := range []string{"/chat/completions", "/completions", "/embeddings"} {
 		mux.HandleFunc("POST "+p, func(w http.ResponseWriter, r *http.Request) { g.proxy(w, r, p) })
 	}
+	mux.HandleFunc("POST /messages", g.handleMessages)
+	mux.HandleFunc("POST /messages/count_tokens", g.handleCountTokens)
+	mux.HandleFunc("POST /responses", g.handleResponses)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "unknown endpoint "+r.Method+" "+r.URL.Path)
 	})
@@ -162,14 +185,31 @@ type modelEntry struct {
 	Loaded  bool   `json:"loaded"`
 	Vision  bool   `json:"vision,omitempty"`
 	Ctx     int    `json:"context_length,omitempty"`
+
+	Cerberus modelLimits `json:"cerberus"` // G4: what a client may ask of this model
+}
+
+// modelLimits is the cerberus block of a /v1/models entry.
+type modelLimits struct {
+	Ctx              int      `json:"ctx,omitempty"`
+	Vision           bool     `json:"vision"`
+	MaxTokensDefault int      `json:"max_tokens_default,omitempty"`
+	MaxTokensCap     int      `json:"max_tokens_cap,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort_default,omitempty"`
+	ReasoningEfforts []string `json:"reasoning_efforts"`
+	BudgetNames      []string `json:"token_budget_aliases"`
 }
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	data := []modelEntry{}
 	if g.src != nil {
 		for _, m := range g.src.Models(r.Context()) {
+			d := g.defaultsFor(m.ID)
 			data = append(data, modelEntry{ID: m.ID, Object: "model", OwnedBy: m.Backend,
-				Local: m.Local, Loaded: m.Loaded, Vision: m.Vision, Ctx: m.Ctx})
+				Local: m.Local, Loaded: m.Loaded, Vision: m.Vision, Ctx: m.Ctx,
+				Cerberus: modelLimits{Ctx: m.Ctx, Vision: m.Vision, MaxTokensDefault: d.MaxTokens,
+					MaxTokensCap: d.MaxTokensCap, ReasoningEffort: d.ReasoningEffort,
+					ReasoningEfforts: config.ReasoningEfforts, BudgetNames: budgetNames}})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})

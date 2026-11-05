@@ -609,10 +609,15 @@ func (s *server) validToken(t string) bool {
 	return subtle.ConstantTimeCompare([]byte(t), []byte(want)) == 1
 }
 
+// bearer returns the request's token: Authorization: Bearer, or on /v1
+// x-api-key, which the Anthropic SDKs and Claude Code send (gateway phase G1).
 func bearer(r *http.Request) string {
 	h := r.Header.Get("Authorization")
 	if len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
 		return strings.TrimSpace(h[7:])
+	}
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 	}
 	return ""
 }

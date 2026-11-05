@@ -143,7 +143,7 @@ func (f *fixture) run() map[string]Check {
 func TestHealthyFixtureAllOK(t *testing.T) {
 	f := newFixture(t)
 	rep := Run(context.Background(), f.envFor())
-	if len(rep.Checks) != 21 {
+	if len(rep.Checks) != 23 {
 		t.Fatalf("%d checks", len(rep.Checks))
 	}
 	for _, c := range rep.Checks {
@@ -154,7 +154,7 @@ func TestHealthyFixtureAllOK(t *testing.T) {
 			t.Errorf("%s: empty name or detail", c.ID)
 		}
 	}
-	if rep.Worst() != OK || rep.Counts[OK] != 21 {
+	if rep.Worst() != OK || rep.Counts[OK] != 23 {
 		t.Fatalf("counts %v", rep.Counts)
 	}
 }
@@ -511,5 +511,43 @@ func TestPreviewPortsCheck(t *testing.T) {
 	env.Bindable = func(string) bool { return true }
 	if got := previewPortsCheck(Defaults(env)); got.Status != Fail {
 		t.Fatalf("public: %+v", got)
+	}
+}
+
+func TestRecordsCheck(t *testing.T) {
+	cases := []struct {
+		on     bool
+		text   string
+		listen []string
+		want   Status
+	}{
+		{false, "all", []string{"0.0.0.0:7340"}, OK},
+		{true, "none", []string{"0.0.0.0:7340"}, OK},
+		{true, "all", []string{"127.0.0.1:7340"}, OK},
+		{true, "user", []string{"127.0.0.1:7340", "100.64.0.1:7340"}, Warn},
+		{true, "all", []string{":7340"}, Warn},
+	}
+	for _, c := range cases {
+		cfg := config.Defaults()
+		cfg.Gateway.Records.Enabled, cfg.Gateway.Records.Text = c.on, c.text
+		cfg.Server.Listen, cfg.Server.ExtraListen = c.listen[0], c.listen[1:]
+		if got := recordsCheck(Env{Cfg: cfg}); got.Status != c.want {
+			t.Errorf("%+v: %s (%s)", c, got.Status, got.Detail)
+		}
+	}
+}
+
+func TestAgentGuardCheck(t *testing.T) {
+	for _, c := range []struct {
+		mode, model string
+		want        Status
+	}{
+		{"", "", OK}, {"off", "", OK}, {"hold", "", Fail}, {"watch", "qwen3guard", OK}, {"shout", "x", Fail},
+	} {
+		cfg := config.Defaults()
+		cfg.Gateway.Guard.Mode, cfg.Gateway.Guard.Model = c.mode, c.model
+		if got := agentGuardCheck(Env{Cfg: cfg}); got.Status != c.want {
+			t.Errorf("%+v: %s (%s)", c, got.Status, got.Detail)
+		}
 	}
 }

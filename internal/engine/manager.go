@@ -173,6 +173,9 @@ func (m *Manager) view(st *modelState) ModelInfo {
 	info.InFlight = st.inFlight
 	info.MaxParallel = m.limitLocked(st)
 	info.Waiting = len(st.waiters)
+	if len(st.waiters) > 0 && st.waiters[0] != nil && !st.waiters[0].since.IsZero() {
+		info.LongestWaitS = time.Since(st.waiters[0].since).Seconds()
+	}
 	if st.lastUsed.After(info.LastUsed) {
 		info.LastUsed = st.lastUsed
 	}
