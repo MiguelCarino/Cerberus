@@ -56,6 +56,10 @@
     <a data-tab="monitor" href="#/monitor">Monitor</a>
     <button type="button" data-tab="more" data-tab-also="flows models usage settings account" data-more aria-haspopup="dialog">More</button>
   </nav>
+  <!-- carino-navbar.js loads carino-clock.js relative to the page; the UI keeps
+       it under assets/, so it is loaded here and the navbar, seeing the
+       data-carino-clock tag, skips its own load. -->
+  <script src="assets/carino-clock.js" data-carino-clock defer></script>
   <script src="assets/carino-navbar.js" data-app="Cerberus" data-repo="Cerberus" data-license="AGPL-3.0" defer></script>
   <!-- Third-party code in this UI, for the About window's Licence tab
        (assets/vendor/VERSIONS.txt has the versions and notices). -->
