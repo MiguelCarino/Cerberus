@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- The page sends nothing anywhere: every file is on this site, no analytics.
+       The CSP backs that up (connect-src 'none'). Styles allow inline because
+       carino-navbar.js injects its own <style>. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Carino Cerberus</title>
+  <!-- The baseline head block (canonical, OG, JSON-LD) is written by
+       Carino-Systems/baseline/apply.py once the site is in sites.json; see docs/SITE.md. -->
+  <meta name="description" content="Cerberus is a self-hosted LLM runtime: it runs local models on demand, serves one OpenAI-compatible gateway, and runs coding agents in their own git worktrees that you steer from your phone.">
+  <meta name="carino:line" content="Your own LLMs and coding agents, steered from your phone.">
+  <link rel="icon" type="image/webp" href="site/cerberus.webp">
+  <meta name="theme-color" content="#050505" id="carinoThemeColor">
+  <script src="site/theme-boot.js"></script>
+  <link rel="stylesheet" href="site/fonts/carino-fonts.css">
+  <link rel="stylesheet" href="site/carino-ui.css">
+  <link rel="stylesheet" href="site/site.css">
+  <!-- Colourful theme + the switch; nothing applies until data-carino-theme="color". -->
+  <link rel="stylesheet" href="site/carino-theme.css">
+</head>
+<body>
+<!-- carino-navbar.js loads carino-clock.js relative to the page; this page keeps
+     the shared files under site/, so the clock is loaded here and the navbar
+     sees the data-carino-clock tag and skips its own load. -->
+<script src="site/carino-clock.js" data-carino-clock defer></script>
+<script src="site/carino-navbar.js" data-app="Cerberus" data-repo="Cerberus" data-license="AGPL-3.0" defer></script>
+<script src="site/carino-theme.js" data-mark="site/cerberus.svg" data-mark-color="site/cerberus-color.svg" defer></script>
+<script src="site/carino-ui.js" defer></script>
+<script src="site/site.js" defer></script>
+<script type="module" src="site/mascot-stage.js"></script>
+
+<!-- Page jumps, moved into the navbar by carino-navbar.js. -->
+<div data-carino-strip>
+  <nav class="lp-jumps" data-carino-actions aria-label="On this page">
+    <a class="cs-btn" href="#parts">Parts</a>
+    <a class="cs-btn" href="#chat">Chat</a>
+    <a class="cs-btn" href="#screens">Screens</a>
+    <a class="cs-btn" href="#faq">FAQ</a>
+    <a class="cs-btn primary" href="#install" data-priority="1">Install</a>
+  </nav>
+</div>
+
+<header class="landing-hero">
+  <div class="lh-wrap">
+    <div class="lh-mark" aria-hidden="true">
+      <img class="mark mk-gold" src="site/cerberus.svg" alt="" width="100" height="100" decoding="async">
+      <img class="mark mk-color" src="site/cerberus-color.svg" alt="" width="100" height="100" decoding="async">
+      <!-- the motif: three heads (models, gateway, agents) joining one line -->
+      <svg class="lh-motif" viewBox="0 0 250 50" fill="none" stroke-linecap="round">
+        <g class="mo-base">
+          <path d="M2 8 C60 8 82 25 125 25"/>
+          <path d="M2 25 H125"/>
+          <path d="M2 42 C60 42 82 25 125 25"/>
+          <path d="M125 25 H248"/>
+        </g>
+        <g class="mo-run">
+          <path class="mo-a" pathLength="100" d="M2 8 C60 8 82 25 125 25 H248"/>
+          <path class="mo-b" pathLength="100" d="M2 25 H248"/>
+          <path class="mo-c" pathLength="100" d="M2 42 C60 42 82 25 125 25 H248"/>
+        </g>
+        <circle class="mo-node" cx="125" cy="25" r="3.2"/>
+      </svg>
+    </div>
+    <h1><span>Your own LLMs and coding agents,</span><br><span class="gold">steered from your phone.</span></h1>
+    <p class="lh-lede"><strong>Carino Cerberus</strong> is one small self-hosted service: it runs local models, serves one OpenAI-compatible gateway, and runs coding agents in their own git worktrees.</p>
+    <ul class="lh-situations">
+      <li>An agent is halfway through a task when you leave your desk? Answer its question, read the diff and accept it from your phone.</li>
+      <li>Several apps each want their own model server? Point them all at one <code>/v1</code> endpoint, local or cloud.</li>
+      <li>Wondering what a model really costs you? Every request shows tokens, money and watts.</li>
+    </ul>
+    <p class="sys-line">Pre-release · Linux first · builds for macOS and Windows · one static Go binary · AGPL-3.0</p>
+    <div class="lh-actions">
+      <a class="btn btn-primary" href="#install">Install</a>
+      <a class="btn" href="#parts">The three parts</a>
+      <a class="btn" href="https://github.com/MiguelCarino/Cerberus/blob/main/docs/SECURITY.md" target="_blank" rel="noopener">Security model ↗</a>
+    </div>
+  </div>
+</header>
+
+<main class="lp">
+
+  <!-- 01 · the three parts -->
+  <section class="lp-sec" id="parts" aria-labelledby="h-parts">
+    <div class="lp-head">
+      <div class="lp-kicker">01 · Three parts, one service</div>
+      <h2 id="h-parts">Three heads, as the name says.</h2>
+      <p class="lp-sub">Each part works on its own, and together they let an agent run on a model your own machine hosts.</p>
+    </div>
+    <div class="parts">
+      <article class="part">
+        <div class="part-num">1</div>
+        <h3>Models</h3>
+        <p>Cerberus runs local LLMs through the engines you already have: llama.cpp (<code>llama-server</code>), LM Studio and Ollama. It never ships an inference engine of its own.</p>
+        <ul>
+          <li>Loads a model on the first request and unloads it when it goes idle.</li>
+          <li>Makes room in VRAM before a load, so two models never fight over the card.</li>
+          <li>Records time to first token, tokens per second and energy for every request.</li>
+        </ul>
+        <button type="button" class="btn btn-ghost part-more" data-open="dlgModels">More about models</button>
+      </article>
+      <article class="part">
+        <div class="part-num">2</div>
+        <h3>Gateway</h3>
+        <p>One OpenAI-compatible endpoint, <code>/v1</code>, for every app on the machine. Each request goes to a local model or to a cloud provider you reach with your own API key.</p>
+        <ul>
+          <li>Local models by their own ID, cloud models as <code>provider/model</code>.</li>
+          <li>Keys live in a vault (the desktop keyring, or an encrypted file).</li>
+          <li>Prices, budgets and spend per model, session and day.</li>
+        </ul>
+        <button type="button" class="btn btn-ghost part-more" data-open="dlgGateway">More about the gateway</button>
+      </article>
+      <article class="part">
+        <div class="part-num">3</div>
+        <h3>Agents</h3>
+        <p>Coding-agent sessions run in a repo's detached git worktree behind a test gate, in a folder of yours, or in a scratch folder. Leave them running and steer them from any browser.</p>
+        <ul>
+          <li>The built-in agent works with any model the gateway serves; other CLI agents are optional profiles.</li>
+          <li>Live terminal, approvals, diff review, then accept or discard.</li>
+          <li>Accept fast-forwards <code>main</code>. Cerberus never creates branches.</li>
+        </ul>
+        <button type="button" class="btn btn-ghost part-more" data-open="dlgAgents">More about agents</button>
+      </article>
+    </div>
+  </section>
+
+  <!-- 02 · LLM chat + mascots -->
+  <section class="lp-sec" id="chat" aria-labelledby="h-chat">
+    <div class="lp-head">
+      <div class="lp-kicker">02 · LLM chat</div>
+      <h2 id="h-chat">A chat that can do things, and asks first.</h2>
+      <p class="lp-sub">The desktop LLM chat, in any browser. It talks to any model the gateway serves, local or cloud, and keeps running when you close the tab.</p>
+    </div>
+    <div class="split">
+      <ul class="facts">
+        <li><b>Tools on your machine.</b> The model can read files, search and run commands in the folder you pick. Anything that changes something shows a card first: allow once, allow for this session, or deny with a note.</li>
+        <li><b>Four modes.</b> Ask me, Auto (read-only commands run on their own), Accept edits, and Plan.</li>
+        <li><b>Pick up where you were.</b> Recent chats with search; chats from the desktop app open read-only or continue here. <code>??</code> gives a quick one-line answer.</li>
+        <li><b>A mascot, if you like.</b> Eleven of them, drawn in text, reacting to what the model does. Try them here: this is the code the app runs.</li>
+      </ul>
+      <div class="mstage" id="mascotStage">
+        <div class="ms-panel" role="img" aria-label="Mascot">
+          <div class="ms-bubble" hidden></div>
+          <div class="ms-grid" aria-hidden="true"></div>
+        </div>
+        <div class="ms-bar ms-states" role="group" aria-label="What the model is doing"></div>
+        <div class="ms-bar ms-themes" role="group" aria-label="Mascot"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 03 · screenshots -->
+  <section class="lp-sec" id="screens" aria-labelledby="h-screens">
+    <div class="lp-head">
+      <div class="lp-kicker">03 · The web UI</div>
+      <h2 id="h-screens">Made for a phone first, roomy on a desktop.</h2>
+      <p class="lp-sub">The UI is built into the binary and does no work while it is closed. Tap a picture to see it full size.</p>
+    </div>
+    <div class="shots">
+      <figure class="shot s-wall">
+        <button type="button" class="shot-btn" data-shot="site/img/wall.webp" data-cap="The wall: every agent&#39;s terminal at once. All three are waiting for an answer."><img src="site/img/wall.webp" alt="The wall view: three agent terminals side by side, each marked waiting" width="1280" height="800" loading="lazy" decoding="async"></button>
+        <figcaption>The wall: every agent at once, the waiting ones flagged.</figcaption>
+      </figure>
+      <figure class="shot s-phone">
+        <button type="button" class="shot-btn" data-shot="site/img/session-phone.webp" data-cap="A session on a phone: the agent asks a question; answer with the quick keys."><img src="site/img/session-phone.webp" alt="A session on a phone: controls, the live terminal and quick keys" width="390" height="844" loading="lazy" decoding="async"></button>
+        <figcaption>A session on a phone: answer the agent with quick keys.</figcaption>
+      </figure>
+      <figure class="shot s-bell">
+        <button type="button" class="shot-btn" data-shot="site/img/bell-phone.webp" data-cap="The bell on any page: approve an agent&#39;s command or answer the chat without opening either."><img src="site/img/bell-phone.webp" alt="The notification bell on a phone: 'Waiting for you', a session asking to run wc -l *.go with Yes, Always and No, and a chat permission card" width="390" height="844" loading="lazy" decoding="async"></button>
+        <figcaption>The bell: approve from any page.</figcaption>
+      </figure>
+      <figure class="shot s-sessions">
+        <button type="button" class="shot-btn" data-shot="site/img/sessions.webp" data-cap="Sessions: what needs you first. Approve an agent&#39;s command right from the list."><img src="site/img/sessions.webp" alt="The sessions list: a 'needs you' group where one session asks to run wc -l *.go, with Yes, Always and No buttons" width="1280" height="800" loading="lazy" decoding="async"></button>
+        <figcaption>Sessions: what needs you first.</figcaption>
+      </figure>
+      <figure class="shot s-chat">
+        <button type="button" class="shot-btn" data-shot="site/img/chat.webp" data-cap="LLM chat: the model asks before it runs a command."><img src="site/img/chat.webp" alt="The chat view: a conversation with a tool call and a mascot panel" width="1280" height="800" loading="lazy" decoding="async"></button>
+        <figcaption>LLM chat: the model asks before it runs a command.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 04 · also in the box -->
+  <section class="lp-sec" id="more" aria-labelledby="h-more">
+    <div class="lp-head">
+      <div class="lp-kicker">04 · Also in the box</div>
+      <h2 id="h-more">The small things that make it work from a phone.</h2>
+    </div>
+    <div class="extras">
+      <div class="extra"><h3>Drop files</h3><p>Drop, paste or pick files (the camera too, on a phone) and they land in the agent&#39;s <code>inbox/</code>. Other Carino pages can hand files over.</p></div>
+      <div class="extra"><h3>One bell</h3><p>Finished, failed and waiting sessions land in the bell, and on your phone through ntfy or the desktop notifier.</p></div>
+      <div class="extra"><h3>Replay</h3><p>Each agent run is recorded. Scrub back through the terminal to see what it did and when.</p></div>
+      <div class="extra"><h3>Get models</h3><p>Pull from LM Studio, Ollama or a Hugging Face GGUF link, with resume, checksums and a disk check. Downloading never loads a model.</p></div>
+      <div class="extra"><h3>Agents start agents</h3><p>An agent can start child sessions through MCP, within the limits you set, and you approve the tree.</p></div>
+      <div class="extra"><h3>Install as an app</h3><p>Over HTTPS (your tailnet, for example) the UI installs on a phone home screen and opens offline.</p></div>
+      <div class="extra"><h3>Every option explained</h3><p>Settings shows each option with its help, checks it before saving and says when a restart is needed. <code>cerberus config</code> does the same in a terminal.</p></div>
+      <div class="extra"><h3>A leaderboard</h3><p>Which session, agent, model or repo spent the most tokens, money, energy or time this week.</p></div>
+    </div>
+  </section>
+
+  <!-- 05 · energy -->
+  <section class="lp-sec" id="energy" aria-labelledby="h-energy">
+    <div class="lp-head">
+      <div class="lp-kicker">05 · Energy</div>
+      <h2 id="h-energy">All the energy goes to the models.</h2>
+      <p class="lp-sub">The control plane is built to stay out of the way, and it tells you what the work costs.</p>
+    </div>
+    <div class="split">
+      <ul class="facts">
+        <li><b>Quiet when idle.</b> Measured: about 18 MB of memory and 0.01 s of CPU a minute with nothing running, and nothing more with a browser tab open. The page stops its streams and timers when you switch away. Nothing runs a browser engine in the background.</li>
+        <li><b>Models leave when idle.</b> A model unloads after its idle time, so the GPU drops back to rest.</li>
+        <li><b>Watts at the wall.</b> CPU, GPU and the rest, kWh per day and month, and what the PC adds to your electricity bill at your tariff.</li>
+        <li><b>Cost per request.</b> Tokens, tokens per second, joules and money for each request, session, model and repo.</li>
+      </ul>
+      <figure class="shot s-side">
+        <button type="button" class="shot-btn" data-shot="site/img/monitor.webp" data-cap="Monitor: watts at the wall, kWh, and what the PC adds to the electricity bill."><img src="site/img/monitor.webp" alt="The Monitor view: 155 W at the wall split into CPU, GPU and rest, with kWh and bill estimates" width="1280" height="800" loading="lazy" decoding="async"></button>
+        <figcaption>Monitor: watts, kWh and the bill.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 06 · safety -->
+  <section class="lp-sec" id="safety" aria-labelledby="h-safety">
+    <div class="lp-head">
+      <div class="lp-kicker">06 · Safety</div>
+      <h2 id="h-safety">It runs commands for you, so it is locked down.</h2>
+      <p class="lp-sub">Treat Cerberus like an SSH login to your own account. The threat model says what it protects, from whom, and where it stops.</p>
+    </div>
+    <div class="split rev">
+      <ul class="facts">
+        <li><b>Private by default.</b> It listens on 127.0.0.1. You add your LAN or tailnet address on purpose, and a token guards everything.</li>
+        <li><b>One token per device.</b> Pair each phone or laptop with a QR code, revoke a lost one, rotate the admin token.</li>
+        <li><b>A sandbox for agents.</b> Sessions can run inside bubblewrap, with a command policy for the built-in agent.</li>
+        <li><b>An audit log and a doctor.</b> An audit log records who did what, and <code>cerberus doctor</code> checks the setup and prints the fix for each problem.</li>
+      <li><b>Tested route by route.</b> A test walks all 116 routes and checks sign-in, the cross-site guard, what an agent&#39;s token may reach, and that every change is audited. Data files are private to your user.</li>
+      </ul>
+      <figure class="shot s-side">
+        <button type="button" class="shot-btn" data-shot="site/img/doctor.webp" data-cap="The doctor: each safety check with its status and the fix to copy."><img src="site/img/doctor.webp" alt="The doctor list: warnings and passes, each with a fix to copy" width="1280" height="800" loading="lazy" decoding="async"></button>
+        <figcaption>The doctor: each check with its fix.</figcaption>
+      </figure>
+    </div>
+    <p class="lp-link"><a class="btn" href="https://github.com/MiguelCarino/Cerberus/blob/main/docs/SECURITY.md" target="_blank" rel="noopener">Read the threat model (SECURITY.md) ↗</a></p>
+  </section>
+
+  <!-- 07 · install -->
+  <section class="lp-sec" id="install" aria-labelledby="h-install">
+    <div class="lp-head">
+      <div class="lp-kicker">07 · Install</div>
+      <h2 id="h-install">Build it, answer six questions, start it.</h2>
+      <p class="lp-sub">Needs Go 1.26 or newer to build, plus <code>git</code> and <code>bash</code> for sessions. Optional: <code>llama-server</code>, LM Studio, Ollama, and <code>nvidia-smi</code> or the amdgpu driver for GPU readings.</p>
+    </div>
+
+    <div class="tabbar os-tabs" role="tablist" aria-label="Operating system">
+      <button type="button" class="tabbtn" role="tab" id="tab-linux" data-os="linux" aria-controls="pane-linux" aria-selected="true">Linux</button>
+      <button type="button" class="tabbtn" role="tab" id="tab-macos" data-os="macos" aria-controls="pane-macos" aria-selected="false" tabindex="-1">macOS</button>
+      <button type="button" class="tabbtn" role="tab" id="tab-windows" data-os="windows" aria-controls="pane-windows" aria-selected="false" tabindex="-1">Windows</button>
+    </div>
+
+    <div class="os-pane" id="pane-linux" role="tabpanel" aria-labelledby="tab-linux">
+      <ol class="steps">
+        <li><b>Get the source.</b>
+          <div class="terminal-wrapper band"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">git clone https://github.com/MiguelCarino/Cerberus &amp;&amp; cd Cerberus</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the command"><span>Copy</span></button></div>
+        </li>
+        <li><b>Build.</b> A static binary in <code>dist/cerberus</code>, no cgo.
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">make build</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the command"><span>Copy</span></button></div>
+        </li>
+        <li><b>First run.</b> It looks at the machine (engines, models, GPU, agents, Tailscale), asks up to six questions, writes the config and prints a sign-in link with a QR code. <code>--yes</code> takes the defaults.
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">./dist/cerberus init</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the command"><span>Copy</span></button></div>
+        </li>
+        <li><b>Keep it running.</b> Installs the binary in <code>~/.local/bin</code> and starts a systemd user service.
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">./dist/cerberus install-service</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the command"><span>Copy</span></button></div>
+        </li>
+        <li><b>Open it.</b> Prints a sign-in link for every listen address. Open it on this machine, or pair a phone with <code>cerberus pair --name phone</code>.
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">cerberus url</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the command"><span>Copy</span></button></div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="os-pane" id="pane-macos" role="tabpanel" aria-labelledby="tab-macos" hidden>
+      <p class="os-note">macOS builds and runs, agent sessions included. The service installer and the Linux-only extras (the bubblewrap sandbox, CPU power readings) are not there yet, so start it by hand or from your own launch agent.</p>
+      <ol class="steps">
+        <li><b>Get the source and build.</b>
+          <div class="terminal-wrapper band"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">git clone https://github.com/MiguelCarino/Cerberus &amp;&amp; cd Cerberus</span>
+<span class="prompt">$ </span><span class="cmd">make build</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the commands"><span>Copy</span></button></div>
+        </li>
+        <li><b>First run, then start it.</b>
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">$ </span><span class="cmd">./dist/cerberus init</span>
+<span class="prompt">$ </span><span class="cmd">./dist/cerberus serve</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the commands"><span>Copy</span></button></div>
+        </li>
+      </ol>
+    </div>
+
+    <div class="os-pane" id="pane-windows" role="tabpanel" aria-labelledby="tab-windows" hidden>
+      <p class="os-note">Windows builds and serves models and the gateway. Agent sessions need a terminal device (PTY) that Windows support does not have yet, and there is no service installer.</p>
+      <ol class="steps">
+        <li><b>Build</b> (in PowerShell, with Go and git installed).
+          <div class="terminal-wrapper band"><div class="terminal"><code><span class="prompt">&gt; </span><span class="cmd">git clone https://github.com/MiguelCarino/Cerberus; cd Cerberus</span>
+<span class="prompt">&gt; </span><span class="cmd">$env:CGO_ENABLED="0"; go build -o dist\cerberus.exe .\cmd\cerberus</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the commands"><span>Copy</span></button></div>
+        </li>
+        <li><b>First run, then start it.</b>
+          <div class="terminal-wrapper"><div class="terminal"><code><span class="prompt">&gt; </span><span class="cmd">.\dist\cerberus.exe init</span>
+<span class="prompt">&gt; </span><span class="cmd">.\dist\cerberus.exe serve</span></code></div><button type="button" class="copy-btn term-copy" aria-label="Copy the commands"><span>Copy</span></button></div>
+        </li>
+      </ol>
+    </div>
+
+  </section>
+
+  <!-- 08 · FAQ -->
+  <section class="lp-sec" id="faq" aria-labelledby="h-faq">
+    <div class="lp-head">
+      <div class="lp-kicker">08 · Questions</div>
+      <h2 id="h-faq">Short answers.</h2>
+    </div>
+    <div class="faq">
+      <details>
+        <summary>Why one service instead of separate tools?</summary>
+        <p>Running coding agents in their own git worktrees is a known idea. Cerberus puts it next to the rest: it is a background service you reach from any browser, your phone included; it hosts the models and one OpenAI-compatible gateway, so agents can run on a model your own machine serves; and it measures what each request costs in tokens, money and energy.</p>
+      </details>
+      <details>
+        <summary>Can I use my LLM subscription?</summary>
+        <p>Yes, but only through the vendor's official command-line tool, run as an agent session. Cerberus never proxies a consumer subscription. API keys are different: they go through the gateway, from the vault.</p>
+      </details>
+      <details>
+        <summary>Do I need a particular vendor's software?</summary>
+        <p>No. Everything works with no vendor CLI installed: the built-in agent uses whatever model the gateway serves, local or cloud. Other CLI agents and cloud providers are optional profiles you add.</p>
+      </details>
+      <details>
+        <summary>Which systems does it run on?</summary>
+        <p>Linux first. The code is pure Go with no cgo, so it builds for macOS and Windows today. macOS runs the service and agent sessions, without the Linux-only extras. Windows has no agent sessions yet. A desktop client comes later; until then any OpenAI-compatible chat app can use the gateway.</p>
+      </details>
+      <details>
+        <summary>Do I need a GPU?</summary>
+        <p>Not to start. Cerberus reads NVIDIA and AMD cards when they are there, and plans model loads around free VRAM. Without one, you can run small models on the CPU through your engine, or use cloud models through the gateway with your own keys.</p>
+      </details>
+      <details>
+        <summary>Can I put it on the internet?</summary>
+        <p>Please don't. Keep it on loopback, your LAN or your tailnet, use TLS for anything that is not loopback (for example <code>tailscale cert</code>), and pair each device instead of sharing the admin token. The threat model explains why.</p>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<!-- Feature dialogs (Product: features, docs, technical). -->
+<div class="modal-scrim" id="dlgModels" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dlgModelsT">
+    <div class="modal-head"><div><div class="modal-title" id="dlgModelsT">Models</div><div class="modal-sub">llama.cpp · LM Studio · Ollama</div></div><button type="button" class="modal-x" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <ul class="dlg-list">
+        <li>Supervises <code>llama-server</code>, <code>lms</code> and Ollama; vLLM is planned. It starts and stops them, it does not replace them.</li>
+        <li>On-demand loading with an idle timeout per engine, and a default model that <code>default</code> resolves to.</li>
+        <li>A resource guard and queue: sessions and loads wait when memory or VRAM is short.</li>
+        <li>Usage per request: time to first token, tokens per second, energy, and cost when you set prices.</li>
+        <li><code>cerberus top</code> and the Monitor view show CPU, GPU, power and what is running.</li>
+      </ul>
+    </div>
+    <div class="modal-foot"><a class="btn" href="https://github.com/MiguelCarino/Cerberus#readme" target="_blank" rel="noopener">README ↗</a><button type="button" class="btn btn-primary" data-close>Done</button></div>
+  </div>
+</div>
+<div class="modal-scrim" id="dlgGateway" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dlgGatewayT">
+    <div class="modal-head"><div><div class="modal-title" id="dlgGatewayT">Gateway</div><div class="modal-sub">OpenAI-compatible /v1</div></div><button type="button" class="modal-x" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <ul class="dlg-list">
+        <li>One base URL for editors, scripts and chat apps: <code>http://127.0.0.1:7340/v1</code>.</li>
+        <li>Routes by model ID: a local backend ID, or <code>&lt;provider&gt;/&lt;model&gt;</code> for any OpenAI-compatible cloud provider. A unique prefix or suffix also works.</li>
+        <li>Keys come from an environment variable or the vault, never from the request. Values are never printed.</li>
+        <li>Prices, budgets and subscription gauges, with alerts before a budget runs out.</li>
+      </ul>
+    </div>
+    <div class="modal-foot"><a class="btn" href="https://github.com/MiguelCarino/Cerberus#configuration" target="_blank" rel="noopener">Configuration ↗</a><button type="button" class="btn btn-primary" data-close>Done</button></div>
+  </div>
+</div>
+<div class="modal-scrim" id="dlgAgents" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="dlgAgentsT">
+    <div class="modal-head"><div><div class="modal-title" id="dlgAgentsT">Agents</div><div class="modal-sub">worktrees · test gates · remote steering</div></div><button type="button" class="modal-x" data-close aria-label="Close">✕</button></div>
+    <div class="modal-body">
+      <ul class="dlg-list">
+        <li>Three places to work: a repo's detached worktree behind its checks, a folder of yours edited in place, or a scratch folder you save or discard later.</li>
+        <li>Steer from the browser: live terminal, quick keys, approvals, escalation to a stronger model, diff review, accept or discard.</li>
+        <li>Fleet tasks start one session per matching repo; agents can start and steer child sessions.</li>
+        <li>History with search and resume, voice tasks through local Whisper, and file drop into a session.</li>
+        <li>Notifications when a session finishes, waits or fails.</li>
+      </ul>
+    </div>
+    <div class="modal-foot"><a class="btn" href="https://github.com/MiguelCarino/Cerberus#cli" target="_blank" rel="noopener">CLI reference ↗</a><button type="button" class="btn btn-primary" data-close>Done</button></div>
+  </div>
+</div>
+
+<!-- Screenshot viewer -->
+<div class="modal-scrim shot-scrim" id="dlgShot" hidden>
+  <div class="modal shot-modal" role="dialog" aria-modal="true" aria-labelledby="dlgShotT">
+    <div class="modal-head"><div><div class="modal-title" id="dlgShotT">Screenshot</div><div class="shot-cap" id="dlgShotCap"></div></div><button type="button" class="modal-x" data-close aria-label="Close">✕</button></div>
+    <div class="shot-view"><img id="dlgShotImg" src="site/img/wall.webp" alt=""></div>
+  </div>
+</div>
+
+<!-- Moved into the navbar's About popup by carino-navbar.js. -->
+<div data-carino-about hidden>
+  <p><span>This page runs in your browser and sends nothing anywhere.</span>&nbsp;<span class="pl-also">Cerberus itself listens on 127.0.0.1:7340 and talks only to the engines, providers and notification targets you set up.</span></p>
+  <p>Pre-release software, built and tested on Linux. Screenshots show sample sessions on a test machine.</p>
+  <p><a href="https://github.com/MiguelCarino/Cerberus#readme" target="_blank" rel="noopener">README</a> · <a href="https://github.com/MiguelCarino/Cerberus/blob/main/docs/SECURITY.md" target="_blank" rel="noopener">Threat model</a> · <a href="https://github.com/MiguelCarino/Cerberus/blob/main/docs/SCOPE.md" target="_blank" rel="noopener">Scope</a></p>
+  <p>This page makes no outside requests and has no analytics.</p>
+</div>
+</body>
+</html>

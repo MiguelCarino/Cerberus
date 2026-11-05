@@ -1,0 +1,25 @@
+# Optional Quadlet unit: Ollama next to Cerberus, on the private
+# cerberus network only (no published port).
+#
+# NVIDIA GPU: install nvidia-container-toolkit on the host and generate the
+# CDI spec once (sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml).
+# Without a GPU, remove the AddDevice line and Ollama runs on the CPU.
+#
+# Pull a model:  podman exec cerberus cerberus pull qwen3:8b
+
+[Unit]
+Description=Ollama for Cerberus
+
+[Container]
+ContainerName=cerberus-ollama
+Image=docker.io/ollama/ollama:latest
+Network=cerberus.network
+Volume=cerberus-ollama:/root/.ollama
+AddDevice=nvidia.com/gpu=all
+SecurityLabelDisable=true
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,34 @@
+# The golden frame spread for the day-phase-5 theme ports (luna, orbit,
+# seasons, orchard, orchard-dark): STATE TOOL TICK COLS ROWS [MOOD [SCENE]],
+# the same format as ../frames.txt, about 30 frames so each theme's
+# fixtures stay small. Regenerate: see web/test/mascots-themes-b.test.mjs.
+idle - 0 48 14
+idle - 77 80 20
+idle - 163 160 24 happy day,sun
+idle - 260 80 20 excited
+idle - 255 80 20 shy night
+idle - 33 80 20 curious cloud
+idle - 5 80 20 worried fog,hot,clock
+idle - 3 80 20 sad rain
+idle - 256 80 20 sleepy night,music
+idle - 345 80 20 focused game
+idle - 30 80 20 calm cold,snow
+idle - 20 80 20 calm party,festive
+idle - 48 160 24 calm storm,day
+idle - 1234 80 20 excited day,rain,party,festive,clock,music,cold,hot
+idle - 436 80 20 happy
+thinking - 29 80 20
+thinking - 300 160 24 excited night
+tool Bash 47 48 14
+tool Read 120 80 20
+tool Edit 33 80 20 shy
+tool Grep 18 80 20
+tool WebSearch 222 160 24
+tool WebFetch 13 80 20
+tool Task 60 80 20 worried clock
+tool TodoWrite 50 80 20
+tool mcp__x__y 9 48 14
+writing - 140 80 20 focused rain
+done - 30 80 20 excited party
+error - 107 80 20 sad storm
+error - 25 48 14

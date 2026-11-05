@@ -1,0 +1,5 @@
+# Quadlet network shared by cerberus.container and cerberus-ollama.container,
+# so Cerberus reaches Ollama by name (http://cerberus-ollama:11434) without
+# opening Ollama to the host or the LAN.
+[Network]
+NetworkName=cerberus

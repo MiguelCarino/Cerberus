@@ -1,0 +1,42 @@
+/* Workspace picker and session workspace bits. Loaded by views/picker.js
+   (kept out of app.css, which holds the navbar-relocation rules). */
+
+.ws-choice { display: flex; gap: 8px; flex-wrap: wrap; }
+.ws-choice .toggle-btn { flex: 1 1 140px; min-height: 44px; }
+
+.fp { display: flex; flex-direction: column; gap: 10px; }
+.fp-label { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+.fp-quick { display: flex; flex-direction: column; gap: 6px; }
+.fp-quick:empty { display: none; }
+.fp-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 96px; overflow-y: auto; }
+.fp-chips .fchip { min-height: 32px; }
+.fp-bar { display: flex; align-items: center; gap: 8px; }
+.fp-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; font-family: var(--mono); font-size: var(--fs-sm); }
+.fp-crumbs::-webkit-scrollbar { display: none; }
+.fp-crumb { background: none; border: 0; color: var(--text-sec); padding: 6px 4px; font: inherit; cursor: pointer; white-space: nowrap; }
+.fp-crumb:not(:last-child)::after { content: "/"; margin-left: 6px; color: var(--text-muted); }
+.fp-crumb:hover { color: var(--accent); }
+.fp-crumb.current { color: var(--text); cursor: default; }
+.fp-list { display: flex; flex-direction: column; max-height: min(38vh, 320px); overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); }
+.fp-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; background: none; border: 0; border-bottom: 1px solid var(--border); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.fp-row:last-child { border-bottom: 0; }
+.fp-row:hover, .fp-row:focus-visible { background: var(--accent-faint); outline: none; }
+.fp-row.up .fp-name { color: var(--text-sec); font-family: var(--mono); }
+.fp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-git { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.08em; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--accent-dim); color: var(--accent); }
+.fp-go { color: var(--text-muted); }
+.fp-empty { padding: 14px; font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-muted); }
+.fp-foot { display: flex; justify-content: flex-end; }
+.fp-foot .btn { min-height: 40px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-chosen { display: flex; flex-direction: column; gap: 8px; }
+.fp-chosen:empty { display: none; }
+.fp-sel { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.fp-sel code { font-family: var(--mono); font-size: var(--fs-sm); color: var(--text); word-break: break-all; }
+
+.ws-path { margin: 6px 0; font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-sec); overflow-wrap: anywhere; }
+.ws-tag { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-sec); }
+
+@media (max-width: 640px) {
+  .fp-list { max-height: 34vh; }
+  .fp-foot .btn { width: 100%; justify-content: center; }
+}

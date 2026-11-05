@@ -1,0 +1,62 @@
+# Quadlet unit: podman runs Cerberus as a systemd service.
+#
+# Rootless (your user):  copy cerberus.container and cerberus.network to
+#                        ~/.config/containers/systemd/
+# Rootful (whole host):  /etc/containers/systemd/
+# Then:  systemctl --user daemon-reload && systemctl --user start cerberus
+# (drop --user for rootful). A rootless service that keeps running after
+# you log out also needs:  loginctl enable-linger $USER
+#
+# Build the image first (make container), or point Image= at a registry.
+# docs/CONTAINER.md explains every line.
+
+[Unit]
+Description=Cerberus self-hosted LLM runtime
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=cerberus
+Image=localhost/cerberus:latest
+Network=cerberus.network
+# Loopback only. For a LAN or tailnet, put HTTPS in front (tailscale serve,
+# Caddy) rather than publishing plain HTTP on a shared network.
+PublishPort=127.0.0.1:7340:7340
+# Work previews: each open preview (a session's site or dev server) gets its
+# own origin on one of these ports (server.preview_ports), loopback too.
+PublishPort=127.0.0.1:7350-7369:7350-7369
+Volume=cerberus-data:/var/lib/cerberus
+# Repositories the agents may work in (an admin shares them per user):
+#Volume=%h/Github:/repos:z
+#Environment=CERBERUS_PUBLIC_URL=https://cerberus.example.ts.net
+
+# Models. With cerberus-ollama.container on the same network:
+Environment=CERBERUS_OLLAMA_URL=http://cerberus-ollama:11434
+# Or Ollama on the host. This maps ALL of the host's loopback ports into the
+# container, where agents can reach them too; use it only when nothing else
+# on the host's 127.0.0.1 trusts local callers:
+#Network=pasta:--map-host-loopback,169.254.1.2
+#Environment=CERBERUS_OLLAMA_URL=http://host.containers.internal:11434
+
+# First admin account, created once while there are none:
+#   printf '%s' 'a long password' | podman secret create cerberus_admin_password -
+#Environment=CERBERUS_ADMIN_USER=admin
+#Secret=cerberus_admin_password
+
+# The session sandbox (bubblewrap) mounts its own /proc and /dev/pts inside
+# the container. These two settings allow that; the default seccomp profile
+# stays on. Non-admin users' sessions refuse to start without the sandbox.
+SecurityLabelDisable=true
+Unmask=/proc/*
+
+HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:7340/healthz
+HealthInterval=30s
+HealthStartPeriod=60s
+AutoUpdate=local
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

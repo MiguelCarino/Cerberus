@@ -1,0 +1,179 @@
+/* Monitor view: power overview, bill, stacked power chart, system panels,
+   drives and the task table. Tokens come from carino-ui.css. Chart series
+   are the one place several hues carry meaning (CPU / GPU / rest). */
+
+.mon {
+  --s-cpu: var(--accent);
+  --s-gpu: var(--info);
+  --s-rest: #8b8b8b;
+}
+.mon .group-title { margin-top: 26px; }
+.mon-usage-link { white-space: nowrap; }
+/* Usage as a section of Monitor: phones only (the bottom bar has no Usage). */
+.mon-usage { display: none; margin-top: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
+.mon-usage-sum { cursor: pointer; padding: 12px 14px; list-style-position: inside; }
+.mon-usage-sum .group-title { display: inline; margin: 0; }
+.mon-usage-body { padding: 0 12px 12px; }
+.mon-usage-body .view-pad { padding: 0; max-width: none; }
+.mon-usage-body .view-title, .mon-usage-body .view-sub { display: none; }
+.mon-usage-body .view-head { margin-bottom: 8px; }
+
+/* ---------- overview ---------- */
+.mon-power {
+  display: grid; grid-template-columns: minmax(220px, auto) 1fr; gap: 18px; align-items: center;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+}
+.mon-wall { display: flex; flex-direction: column; gap: 4px; }
+.mon-wall-lbl, .mon-bill-lbl { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+.mon-wall-val { font-family: var(--display); font-weight: 900; font-size: 2.6rem; line-height: 1; color: var(--text); }
+.mon-wall-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.mon-split { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mon-splitbar { display: flex; height: 14px; border-radius: 999px; overflow: hidden; background: var(--bg-elev); border: 1px solid var(--border); }
+.mon-splitbar .seg { display: block; height: 100%; flex-grow: 0; flex-shrink: 0; transition: flex-basis 0.4s ease; }
+.mon-splitlegend, .mon-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-sec); }
+.mon-key { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.mon-key i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; background: currentColor; }
+.mon-key b { color: var(--text); font-weight: 700; }
+.k-cpu { --c: var(--s-cpu); } .k-gpu { --c: var(--s-gpu); } .k-rest { --c: var(--s-rest); }
+.mon-key.k-cpu i, .seg.k-cpu { background: var(--s-cpu); }
+.mon-key.k-gpu i, .seg.k-gpu { background: var(--s-gpu); }
+.mon-key.k-rest i, .seg.k-rest { background: var(--s-rest); }
+
+.mon-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.mon-tile { min-width: 0; padding: 10px 12px; }
+.mon-tile .st-value { font-size: var(--fs-lg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mon-tile-sub { font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-sec); }
+.mon-tile.t-accent { border-color: var(--accent-dim); background: var(--accent-faint); }
+.mon-tile.t-accent .mon-tile-sub { color: var(--accent); }
+
+/* ---------- bill ---------- */
+.mon-bill { margin-top: 12px; }
+.mon-bill-card {
+  display: grid; grid-template-columns: auto 1fr; gap: 10px 22px; align-items: center;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px;
+}
+.mon-bill-main { display: flex; flex-direction: column; gap: 2px; }
+.mon-bill-rate { font-family: var(--mono); font-size: var(--fs-h3, 1.4rem); font-weight: 700; color: var(--accent); }
+.mon-bill-facts { display: flex; flex-wrap: wrap; gap: 10px 26px; }
+.mon-fact { display: flex; flex-direction: column; gap: 2px; font-family: var(--mono); font-size: var(--fs-sec); }
+.mon-bill-dac { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mon-approx { margin: 10px 0 0; }
+
+/* ---------- chart ---------- */
+.mon-chart-head, .mon-tasks-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.mon-chart-head .group-title, .mon-tasks-head .group-title { margin-bottom: 10px; }
+.mon-ranges { display: flex; gap: 6px; margin-bottom: 10px; }
+.mon-chart-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 12px; }
+.mon-chart-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px; }
+.mon-axis { display: flex; flex-direction: column; justify-content: space-between; font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); text-align: right; height: 180px; }
+.mon-plot { position: relative; height: 180px; touch-action: pan-y; cursor: crosshair; }
+.mon-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.mon-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.mon-area { stroke: none; opacity: 0.85; }
+.mon-area.k-cpu { fill: var(--s-cpu); }
+.mon-area.k-gpu { fill: var(--s-gpu); }
+.mon-area.k-rest { fill: var(--s-rest); }
+.mon-cursor { stroke: var(--text); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.7; }
+.mon-tip {
+  position: absolute; top: 4px; transform: translateX(-50%); pointer-events: none; z-index: 2;
+  display: flex; flex-direction: column; gap: 2px; min-width: 130px;
+  background: rgba(10,10,10,0.95); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-sec);
+}
+.mon-tip b { color: var(--text); }
+.mon-times { display: flex; justify-content: space-between; font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); margin: 4px 0 8px; padding-left: 48px; }
+.mon-empty { padding: 40px 0; text-align: center; }
+
+/* ---------- system ---------- */
+.mon-system { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.mon-card .gpu-stats { grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); }
+.mon-card-sub { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.stat-val.tone-ok { color: var(--text); }
+.stat-val.tone-warn { color: var(--warn); }
+.stat-val.tone-err { color: var(--err); }
+.progress.tone-warn > span { background: var(--warn); }
+.progress.tone-err > span { background: var(--err); box-shadow: none; }
+.cores { display: grid; grid-template-columns: repeat(auto-fill, minmax(10px, 1fr)); gap: 3px; height: 42px; align-items: end; }
+.core { height: 100%; background: var(--bg-elev); border-radius: 2px; display: flex; align-items: flex-end; overflow: hidden; }
+.core-fill { display: block; width: 100%; background: var(--s-cpu); opacity: 0.85; transition: height 0.3s ease; }
+.mon-note { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); margin: 6px 0 0; }
+
+/* ---------- drives ---------- */
+.mon-disks { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.disk { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.disk-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.disk-name { font-family: var(--mono); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.disk-tags { display: flex; gap: 6px; flex-shrink: 0; }
+.disk-sub { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); overflow-wrap: anywhere; }
+.disk-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-sec); }
+
+/* ---------- tasks ---------- */
+.mon-tools { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.mon-search { width: 290px; max-width: 100%; }
+.mon-sort { width: auto; }
+.mon-tasks { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.mon-tasks > .t-sec, .mon-tasks > .alert { margin: 14px; }
+.tt-head, .tt-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px 96px 90px 92px; gap: 10px; align-items: center; padding: 8px 14px; }
+.tt-head { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.tt-head span:nth-child(n+2), .tt-cell { text-align: right; }
+.tt-row { border-bottom: 1px solid var(--border); font-size: var(--fs-sec); }
+.tt-block:last-child .tt-row:last-child, .mon-tasks > .tt-row:last-child { border-bottom: 0; }
+.tt-group.is-cerberus, .tt-proc.is-cerberus { background: var(--accent-faint); }
+.tt-proc { background: rgba(255,255,255,0.015); font-size: var(--fs-sm); }
+.tt-name { display: flex; align-items: center; gap: 8px; min-width: 0; background: none; border: 0; color: var(--text); padding: 0; font: inherit; text-align: left; cursor: pointer; }
+.tt-pname { cursor: default; padding-left: 22px; }
+.tt-caret { color: var(--text-muted); width: 14px; flex-shrink: 0; }
+.tt-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-count { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); }
+.tt-pid { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); min-width: 52px; }
+.tt-cmd { font-family: var(--mono); color: var(--text-sec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tt-more { display: block; font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); padding-left: 36px; }
+.tt-nice { font-family: var(--mono); font-size: var(--fs-micro); color: var(--info); white-space: nowrap; }
+.tt-cell { font-family: var(--mono); color: var(--text-sec); white-space: nowrap; }
+.tt-act { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+.tt-link { font-family: var(--mono); font-size: var(--fs-micro); color: var(--accent); }
+.tt-menu { height: 30px; min-width: 34px; padding: 0 8px; }
+.tt-lock { font-size: 0.9rem; opacity: 0.7; width: 34px; text-align: center; }
+.proc-menu { display: flex; flex-direction: column; gap: 8px; }
+.proc-menu .btn { justify-content: flex-start; }
+.mon-cmd { font-size: var(--fs-sm); color: var(--text-sec); overflow-wrap: anywhere; margin: 0 0 4px; max-height: 6em; overflow: auto; }
+
+/* ---------- session and model energy ---------- */
+.ss-energy { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); }
+.ss-energy-line { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); overflow-wrap: anywhere; line-height: 1.35; }
+.ss-energy-line[hidden] { display: none; }
+.model-energy { font-family: var(--mono); font-size: var(--fs-sm); color: var(--text-sec); }
+
+@media (max-width: 900px) {
+  .mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mon-power { grid-template-columns: 1fr; }
+  .mon-bill-card { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .mon .view-head { flex-wrap: wrap; }
+  .mon-usage-link { display: none; }
+  .mon-usage { display: block; }
+  .mon-wall-val { font-size: 2.2rem; }
+  .mon-tiles { gap: 8px; }
+  .mon-tile .st-value { font-size: var(--fs-body); }
+  .mon-axis, .mon-plot { height: 150px; }
+  .mon-times { padding-left: 40px; }
+  .mon-system, .mon-disks { grid-template-columns: 1fr; }
+  .mon-tools, .mon-search { width: 100%; }
+  .mon-search { flex: 1 1 100%; }
+  .mon-sort { flex: 1; }
+  .tt-head { display: none; }
+  /* Each row: name across the top, the figures and actions under it. */
+  .tt-row { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; grid-template-areas: "name name name name" "c1 c2 c3 act"; gap: 4px 8px; padding: 10px 12px; }
+  .tt-row > .tt-name { grid-area: name; }
+  .tt-row > .tt-cell[data-label="CPU"] { grid-area: c1; }
+  .tt-row > .tt-cell[data-label="Memory"] { grid-area: c2; }
+  .tt-row > .tt-cell[data-label="GPU"] { grid-area: c3; }
+  .tt-row > .tt-act { grid-area: act; }
+  /* Label above the figure so a long value never runs into the next column. */
+  .tt-cell { text-align: left; font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; }
+  .tt-cell::before { content: attr(data-label); display: block; color: var(--text-muted); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.06em; line-height: 1.3; }
+  .tt-pname { padding-left: 0; }
+  .tt-row.tt-more { display: block; padding-left: 12px; }
+}

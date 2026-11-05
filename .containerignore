@@ -1,0 +1,10 @@
+# Only the Go sources, packaging and the embedded UI go into the build.
+.git
+dist
+cerberus
+CLAUDE.md
+index.html
+site
+docs
+web/test
+*.test

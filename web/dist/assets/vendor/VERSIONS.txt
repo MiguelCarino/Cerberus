@@ -1,0 +1,13 @@
+Vendored front-end packages (self-hosted; never loaded from a CDN).
+Fetched with `npm pack` into a scratch directory, only the built files copied.
+The trailing `//# sourceMappingURL=` comment was removed from each .mjs
+(the maps are not shipped); nothing else was changed.
+
+@xterm/xterm      6.0.0   lib/xterm.mjs -> xterm/xterm.mjs, css/xterm.css -> xterm/xterm.css   MIT (xterm/LICENSE)
+                          tarball sha256 908e66e04af6c8dc6b00dd3b54de088e2e81e5ed866284fd6c2fb3c2d1c7a3f6
+@xterm/addon-fit  0.11.0  lib/addon-fit.mjs -> addon-fit/addon-fit.mjs                             MIT (addon-fit/LICENSE)
+                          tarball sha256 26003b4517a132b64e4ff228fd88a5fda3fff5e606c76093f6dcff772e9ecec0
+
+Also copied from ~/Github/Branding (Carino design system):
+carino-ui.css            byte-for-byte copy of Branding/carino-ui.css (keep it identical; update by re-copying)
+fonts/carino-fonts.css   pruned from Branding/fonts/carino-fonts.css (latin only, 6 faces), SIL OFL 1.1 (fonts/OFL.txt)

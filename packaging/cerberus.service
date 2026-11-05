@@ -1,0 +1,33 @@
+# Cerberus: Carino Systems' self-hosted LLM runtime (systemd user unit).
+# Installed by `cerberus install-service` to ~/.config/systemd/user/.
+[Unit]
+Description=Cerberus LLM runtime (models, gateway, agent sessions)
+Documentation=https://carino.systems
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cerberus serve
+# The user manager's PATH is bare; agents (claude, aider…) usually live in
+# ~/.local/bin. `serve` adds it too, this covers other user tools.
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+# Tells the daemon systemd supervises it, so a self-restart exits 75 for
+# systemd to start it again (without it, it re-executes in place).
+Environment=CERBERUS_SUPERVISOR=systemd
+# The vault's Secret Service backend reaches the keyring over the session bus
+# the user manager provides. With vault.backend "auto", the first start picks
+# one and later starts stay with whichever already holds secrets; if that is
+# the keyring and it does not answer yet, the daemon runs without the vault
+# and says so. Set vault.backend to "secret-service" or "file" to pin one.
+Restart=on-failure
+# Exit 75 is a requested self-restart (Settings › Restart, `cerberus config
+# restart`): always start again, whatever Restart= says.
+RestartForceExitStatus=75
+RestartSec=5
+Slice=app.slice
+# SIGTERM to the daemon only: it stops sessions and unloads the models it
+# spawned itself, then exits. Anything left after the timeout is killed.
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

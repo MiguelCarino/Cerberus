@@ -1,0 +1,11 @@
+# The shorter spread for the spring, summer and winter seasons fixtures (the
+# autumn ones use frames.txt): same format as ../frames.txt.
+idle - 77 80 20
+idle - 12 80 20 happy day,sun
+idle - 255 80 20 shy night
+idle - 3 80 20 sad rain
+idle - 30 80 20 calm cold,snow
+thinking - 29 80 20
+tool Read 120 48 14
+writing - 140 80 20 focused rain
+error - 25 48 14

@@ -1,0 +1,53 @@
+# The golden frame spread every theme is generated at (gen.sh THEME).
+# One frame per line: STATE TOOL TICK COLS ROWS [MOOD [SCENE]]
+# TOOL, MOOD and SCENE take "-" for none; SCENE is tag,tag (mascot_mood.SCENES).
+# A theme without moods ignores MOOD and SCENE (its frames are still compared).
+# A theme may add frames-THEME.txt with more lines of its own.
+idle - 0 48 14
+idle - 77 80 20
+idle - 85 160 24
+idle - 163 80 20 happy
+idle - 200 80 20 excited
+idle - 215 80 20 excited
+idle - 40 48 14 shy
+idle - 33 80 20 curious
+idle - 10 80 20 focused
+idle - 5 80 20 worried
+idle - 3 80 20 sad
+idle - 64 160 24 sleepy
+idle - 250 80 20 calm night,music
+idle - 12 80 20 happy day,sun
+idle - 90 160 24 calm game
+idle - 30 80 20 calm cold,snow
+idle - 20 80 20 calm party,festive
+idle - 44 160 24 calm rain
+idle - 48 80 20 calm storm,day
+idle - 61 80 20 calm fog,hot,clock
+idle - 1234 80 20 excited day,rain,party,festive,clock,music,cold,hot
+thinking - 0 48 14
+thinking - 29 80 20
+thinking - 300 160 24 excited
+tool Bash 0 48 14
+tool Bash 47 80 20
+tool Read 120 80 20
+tool Edit 33 160 24
+tool Write 91 80 20 shy
+tool Grep 18 80 20
+tool Glob 5 48 14
+tool WebSearch 222 160 24
+tool WebFetch 13 80 20
+tool Task 60 80 20
+tool Agent 7 160 24 worried clock
+tool TodoWrite 50 80 20
+tool mcp__x__y 9 80 20
+tool Unknown 31 48 14 sad
+tool - 2 80 20
+writing - 0 48 14
+writing - 140 80 20
+writing - 999 160 24 focused rain
+done - 3 48 14
+done - 4 80 20 excited
+done - 30 160 24 calm party
+error - 0 48 14
+error - 25 80 20 worried
+error - 107 160 24 sad storm

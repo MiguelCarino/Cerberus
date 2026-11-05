@@ -1,0 +1,149 @@
+/* Flow view: the graph of who handed what to whom (views/flow.js).
+   Carino tokens only, so Gold & Black and Colourful (light and dark) both
+   read; the SVG fills its stage and never scrolls the page sideways. */
+
+.ss-flow-box { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.ss-flow-box[hidden] { display: none; }
+
+.fl-panel { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.fl-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 6px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.fl-bar-end { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.fl-updated { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); margin-right: 4px; white-space: nowrap; }
+.fl-legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-family: var(--mono); font-size: var(--fs-label); color: var(--text-sec); }
+.fl-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.fl-legend-line { flex-shrink: 0; overflow: visible; }
+
+.fl-stage { position: relative; flex: 1 1 auto; min-height: 260px; min-width: 0; overflow: hidden; background: var(--bg); }
+.fl-svg {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab;
+}
+.fl-svg:active { cursor: grabbing; }
+.fl-dot { fill: var(--border); }
+.fl-status {
+  position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); max-width: calc(100% - 32px);
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card);
+  color: var(--text-sec); font-size: var(--fs-sm); text-align: center; pointer-events: none;
+}
+.fl-status[hidden] { display: none; }
+.fl-status.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+
+/* ---------- edges ---------- */
+.fl-line { fill: none; stroke: var(--text-muted); stroke-width: 1.6; stroke-linecap: round; }
+.fl-arrow { fill: var(--text-muted); }
+.fl-dashed .fl-line { stroke-dasharray: 7 5; stroke-linecap: butt; }
+.fl-dotted .fl-line { stroke-dasharray: 0.1 5; stroke-width: 2.4; }
+.fl-edge-spawn .fl-line, .fl-edge-task .fl-line { stroke: var(--text-sec); }
+.fl-edge-spawn .fl-arrow, .fl-edge-task .fl-arrow { fill: var(--text-sec); }
+.fl-edge-ask .fl-line, .fl-legend-line.fl-dashed .fl-line { stroke: var(--accent); }
+.fl-edge-ask .fl-arrow { fill: var(--accent); }
+.fl-edge-answer .fl-line, .fl-legend-line.fl-dotted .fl-line { stroke: var(--info); }
+.fl-edge-answer .fl-arrow { fill: var(--info); }
+.fl-legend-line.fl-solid .fl-line { stroke: var(--text-sec); }
+
+/* Colourful: blue means "act here" (carino-colourful-accents), so the asks
+   (not clickable) take the one quiet purple instead of --accent. Gold keeps
+   its gold accent. */
+:root[data-carino-theme="color"] .fl-edge-ask .fl-line,
+:root[data-carino-theme="color"] .fl-legend-line.fl-dashed .fl-line { stroke: var(--ct-purple); }
+:root[data-carino-theme="color"] .fl-edge-ask .fl-arrow { fill: var(--ct-purple); }
+:root[data-carino-theme="color"] .fl-chip-ask rect { stroke: color-mix(in srgb, var(--ct-purple) 40%, transparent); }
+
+.fl-chip rect { fill: var(--bg-elev); stroke: var(--border); stroke-width: 1; }
+.fl-chip text { fill: var(--text-sec); font-family: var(--mono); font-size: 11px; }
+.fl-chip-ask rect { stroke: var(--accent-dim); }
+.fl-chip-answer rect { stroke: color-mix(in srgb, var(--info) 40%, transparent); }
+
+/* ---------- nodes ---------- */
+.fl-node { cursor: default; }
+.fl-node.fl-nav { cursor: pointer; }
+.fl-node:focus { outline: none; }
+.fl-card { fill: var(--bg-card); stroke: var(--border); stroke-width: 1.2; }
+.fl-node.fl-nav:hover .fl-card, .fl-node:focus-visible .fl-card { stroke: var(--border-hv); }
+.fl-node:focus-visible .fl-card, .fl-node:focus-visible .fl-circle { stroke-width: 2.4; }
+.fl-iconbox { fill: var(--accent-faint); stroke: var(--accent-dim); stroke-width: 1; }
+.fl-icon path { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.fl-label { fill: var(--text); font-family: var(--sans); font-size: 13px; font-weight: 600; }
+.fl-sub { fill: var(--text-muted); font-family: var(--mono); font-size: 11px; }
+.fl-port { fill: var(--bg); stroke: var(--text-muted); stroke-width: 1.4; }
+
+.fl-circle { fill: var(--bg-card); stroke: var(--accent-dim); stroke-width: 1.6; }
+.fl-node-you .fl-circle { fill: var(--accent-faint); stroke: var(--accent); }
+/* Colourful: "You" is a mark, not a control: purple, never the action blue. */
+:root[data-carino-theme="color"] .fl-node-you .fl-circle { fill: color-mix(in srgb, var(--ct-purple) 8%, transparent); stroke: var(--ct-purple); }
+:root[data-carino-theme="color"] .fl-node-you .fl-icon path { stroke: var(--ct-purple); }
+.fl-node.fl-nav:hover .fl-circle, .fl-node:focus-visible .fl-circle { stroke: var(--border-hv); }
+.fl-node-model .fl-icon path { stroke: var(--info); }
+.fl-node-model .fl-circle.fl-tone-muted { stroke: var(--border); }
+.fl-node-model .fl-circle.fl-tone-ok { stroke: color-mix(in srgb, var(--ok) 55%, transparent); }
+.fl-node-model .fl-circle.fl-tone-info { stroke: color-mix(in srgb, var(--info) 55%, transparent); }
+.fl-dotstate { stroke: var(--bg); stroke-width: 2; fill: var(--text-muted); }
+.fl-dotstate.fl-tone-ok { fill: var(--ok); }
+.fl-dotstate.fl-tone-info { fill: var(--info); }
+.fl-dotstate.fl-tone-warn { fill: var(--warn); }
+.fl-dotstate.fl-tone-err { fill: var(--err); }
+
+.fl-pill rect { fill: transparent; stroke: var(--border); stroke-width: 1; }
+.fl-pill text { fill: var(--text-muted); font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; }
+.fl-pill.fl-tone-ok rect { stroke: color-mix(in srgb, var(--ok) 45%, transparent); fill: color-mix(in srgb, var(--ok) 8%, transparent); }
+.fl-pill.fl-tone-ok text { fill: var(--ok); }
+.fl-pill.fl-tone-warn rect { stroke: color-mix(in srgb, var(--warn) 45%, transparent); fill: color-mix(in srgb, var(--warn) 8%, transparent); }
+.fl-pill.fl-tone-warn text { fill: var(--warn); }
+.fl-pill.fl-tone-err rect { stroke: color-mix(in srgb, var(--err) 45%, transparent); fill: color-mix(in srgb, var(--err) 8%, transparent); }
+.fl-pill.fl-tone-err text { fill: var(--err); }
+.fl-pill.fl-tone-info rect { stroke: color-mix(in srgb, var(--info) 45%, transparent); fill: color-mix(in srgb, var(--info) 8%, transparent); }
+.fl-pill.fl-tone-info text { fill: var(--info); }
+
+/* ---------- the chat's sheet (the .modal is at most min(90vh, 640px) tall) ---------- */
+.fl-sheet { display: flex; flex-direction: column; height: calc(min(90vh, 640px) - 128px); min-height: 220px; min-width: 0; }
+.fl-sheet .fl-bar { padding: 0 0 8px; border-bottom: 0; }
+.fl-sheet .fl-stage { border: 1px solid var(--border); border-radius: var(--radius); }
+
+@media (max-width: 640px) {
+  .fl-bar { padding: 6px 8px; }
+  .fl-legend { gap: 8px; }
+  .fl-updated { display: none; }
+  /* The session header takes most of a phone screen: give the graph room
+     of its own and let the page scroll to it. */
+  .ss-flow-box .fl-stage { min-height: max(260px, 62vh); }
+  .fl-sheet { height: calc(var(--app-h, 100dvh) - 150px); }
+}
+
+/* ---------- expand (fill the window) and full screen ---------- */
+.fl-panel.fl-max {
+  position: fixed; inset: 0; z-index: 2147483100; /* above the pinned navbar */
+  background: var(--bg); padding-bottom: env(safe-area-inset-bottom);
+}
+:root.fl-max-open, :root.fl-max-open body { overflow: hidden; }
+.fl-panel.fl-max .fl-stage, .fl-panel.fl-fs .fl-stage { min-height: 0; }
+.fl-panel.fl-fs { background: var(--bg); }
+.fl-panel:fullscreen { background: var(--bg); }
+.fl-expand[aria-pressed="true"] { color: var(--accent); }
+@media (max-width: 480px) { .fl-full { display: none; } }
+
+/* ---------- live: what is executing now ---------- */
+.fl-node.fl-live .fl-card, .fl-node.fl-live .fl-circle {
+  stroke: var(--info); stroke-width: 2.2;
+  animation: fl-pulse 1.6s ease-in-out infinite;
+}
+.fl-node.fl-live .fl-iconbox { fill: color-mix(in srgb, var(--info) 14%, transparent); stroke: var(--info); }
+.fl-node.fl-live .fl-icon path { stroke: var(--info); }
+.fl-node.fl-wait .fl-card, .fl-node.fl-wait .fl-circle { stroke: var(--warn); stroke-width: 2; }
+.fl-edge.fl-live .fl-line {
+  stroke: var(--info); stroke-width: 2.4; stroke-dasharray: 8 6; stroke-linecap: butt;
+  animation: fl-flow 0.9s linear infinite;
+}
+.fl-edge.fl-live .fl-arrow { fill: var(--info); }
+@keyframes fl-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); stroke-opacity: 1; }
+  50% { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--info) 70%, transparent)); stroke-opacity: 0.55; }
+}
+@keyframes fl-flow { to { stroke-dashoffset: -14; } }
+@media (prefers-reduced-motion: reduce) {
+  .fl-node.fl-live .fl-card, .fl-node.fl-live .fl-circle, .fl-edge.fl-live .fl-line { animation: none; }
+}
+.fl-legend-line.fl-live .fl-line { stroke: var(--info); stroke-width: 2.4; stroke-dasharray: 8 6; stroke-linecap: butt; animation: fl-flow 0.9s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .fl-legend-line.fl-live .fl-line { animation: none; } }

@@ -1,0 +1,100 @@
+/* Security view (#/security) and the Monitor doctor card. Mobile first;
+   tokens from carino-ui.css. */
+
+.btn-xs { height: 26px; padding: 0 8px; font-size: var(--fs-micro); }
+.t-muted { color: var(--text-muted); }
+
+.sec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 26px 0 10px; }
+.sec-head .group-title { margin: 0; margin-right: auto; }
+.sec-hint { margin: 0 0 10px; }
+.sec-card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+.sec-sum { font-family: var(--mono); font-size: var(--fs-sm); }
+
+/* ---------- devices ---------- */
+.dev-list { display: flex; flex-direction: column; gap: 8px; }
+.dev-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card);
+}
+.dev-main { flex: 1 1 200px; min-width: 0; }
+.dev-name { display: flex; align-items: center; gap: 8px; font-weight: 600; overflow-wrap: anywhere; }
+.dev-actions .btn { min-height: 40px; }
+.btn-danger.armed { background: rgba(239,68,68,0.16); border-color: var(--err); color: var(--err); }
+
+/* ---------- pairing and rotation ---------- */
+.pair-result { display: flex; flex-direction: column; gap: 12px; }
+.qr-box { display: flex; justify-content: center; }
+.qr-svg, .qr-img { width: min(280px, 72vw); height: auto; aspect-ratio: 1; background: #fff; border-radius: 6px; image-rendering: pixelated; }
+.qr-ascii-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 100%; }
+.qr-ascii {
+  margin: 0; padding: 12px; overflow: auto; max-width: 100%;
+  font-family: ui-monospace, 'DejaVu Sans Mono', Menlo, monospace; font-size: 8px; line-height: 1; letter-spacing: 0;
+  background: #000; color: #fff; border-radius: 6px;
+}
+.qr-ascii.inverted { background: #fff; color: #000; }
+.pair-url-row { display: flex; gap: 8px; }
+.pair-others { display: grid; gap: 8px; }
+.pair-others > summary { cursor: pointer; list-style: none; color: var(--text-sec); font-size: var(--fs-sm); padding: 6px 0; }
+.pair-others > summary::-webkit-details-marker { display: none; }
+.pair-others > summary::before { content: "▸ "; color: var(--text-muted); }
+.pair-others[open] > summary::before { content: "▾ "; }
+.pair-url { flex: 1; min-width: 0; font-size: max(16px, var(--fs-sm)); }
+.rot-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-sm); color: var(--text-sec); }
+
+/* ---------- doctor ---------- */
+.doc-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.doc-row { padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; background: var(--bg-card); }
+.doc-row.tone-ok { border-left-color: var(--ok); }
+.doc-row.tone-warn { border-left-color: var(--warn); }
+.doc-row.tone-err { border-left-color: var(--err); }
+.doc-top { display: flex; align-items: center; gap: 8px; }
+.doc-title { font-weight: 600; overflow-wrap: anywhere; }
+.doc-detail { margin: 6px 0 0; font-size: var(--fs-sm); color: var(--text-sec); overflow-wrap: anywhere; }
+.doc-fix { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.doc-fix-text { flex: 1 1 180px; min-width: 0; font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere; }
+.doc-counts { display: inline-flex; gap: 12px; font-family: var(--mono); font-size: var(--fs-sm); }
+.doc-n { color: var(--text-sec); }
+.doc-n b { font-weight: 700; }
+.doc-n.ok b { color: var(--ok); }
+.doc-n.warn b { color: var(--warn); }
+.doc-n.err b { color: var(--err); }
+
+.doc-card {
+  display: flex; align-items: center; gap: 12px; width: 100%; margin: 12px 0 14px; padding: 12px 14px; min-height: 52px;
+  text-align: left; cursor: pointer; color: inherit; font: inherit;
+  border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 10px; background: var(--bg-card);
+}
+.doc-card:hover, .doc-card:focus-visible { border-color: var(--accent-dim); outline: none; }
+.doc-card.tone-ok { border-left-color: var(--ok); }
+.doc-card.tone-warn { border-left-color: var(--warn); }
+.doc-card.tone-err { border-left-color: var(--err); }
+.doc-card .doc-card-title { margin: 0; } /* beats .mon .group-title's top margin */
+.doc-card-body { flex: 1; min-width: 0; }
+.doc-card-go { color: var(--text-muted); font-size: 1.2rem; }
+
+/* ---------- audit ---------- */
+.aud-tools { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+/* The chips reuse .fchips for their look, not its sticky filter bar. */
+.fchips.aud-ranges { position: static; padding: 0; border-bottom: 0; background: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.aud-actor-row { display: flex; align-items: center; gap: 8px; }
+.aud-actor-row .select { flex: 0 0 auto; width: auto; height: 34px; min-height: 34px; }
+.aud-actor { flex: 1 1 140px; width: auto; min-width: 0; }
+.aud-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.aud-row { padding: 8px 12px; border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; background: var(--bg-card); min-width: 0; }
+.aud-row.tone-warn { border-left-color: var(--warn); }
+.aud-row.tone-err { border-left-color: var(--err); }
+.aud-row.tone-info { border-left-color: var(--info); }
+.aud-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aud-time { font-family: var(--mono); font-size: var(--fs-micro); color: var(--text-muted); min-width: 64px; }
+.aud-actor-pill { cursor: pointer; font: inherit; font-family: var(--mono); font-size: var(--fs-micro); max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.aud-route { margin-top: 4px; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.aud-method { color: var(--accent); margin-right: 6px; }
+.aud-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: var(--fs-sm); color: var(--text-sec); }
+.aud-meta span { overflow-wrap: anywhere; min-width: 0; }
+.aud-more { display: flex; justify-content: center; margin-top: 12px; }
+.aud-more .btn[hidden] { display: none; }
+
+@media (min-width: 640px) {
+  .aud-tools { flex-direction: row; align-items: center; justify-content: space-between; }
+  .aud-actor-row { flex: 0 1 440px; }
+}

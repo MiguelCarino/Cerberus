@@ -1,0 +1,48 @@
+# Cerberus with podman compose (or docker compose).
+#   podman compose -f packaging/container/compose.yaml up -d --build
+# Quadlet (cerberus.container) is the recommended way on a systemd host;
+# this file is for quick trials and non-systemd hosts. See docs/CONTAINER.md.
+name: cerberus
+
+services:
+  cerberus:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    image: localhost/cerberus:latest
+    container_name: cerberus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7340:7340"
+      - "127.0.0.1:7350-7369:7350-7369" # work previews (server.preview_ports)
+    volumes:
+      - cerberus-data:/var/lib/cerberus
+      # - ~/Github:/repos:z
+    environment:
+      CERBERUS_OLLAMA_URL: http://ollama:11434
+      # CERBERUS_PUBLIC_URL: https://cerberus.example.ts.net
+      # CERBERUS_ADMIN_USER: admin
+    # secrets: [cerberus_admin_password]
+    security_opt:
+      - label=disable     # the session sandbox (bubblewrap) needs these two
+      - unmask=/proc/*
+    depends_on: [ollama]
+
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    container_name: cerberus-ollama
+    restart: unless-stopped
+    volumes:
+      - cerberus-ollama:/root/.ollama
+    security_opt: [label=disable]
+    # NVIDIA GPU through CDI (nvidia-container-toolkit); remove for CPU only.
+    devices:
+      - nvidia.com/gpu=all
+
+# secrets:
+#   cerberus_admin_password:
+#     file: ./admin_password.txt
+
+volumes:
+  cerberus-data:
+  cerberus-ollama:

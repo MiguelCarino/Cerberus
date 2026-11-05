@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#050505" id="carinoThemeColor">
+  <!-- The fleet no-flash theme snippet (Gold & Black or Colourful), before the styles paint. -->
+  <script src="assets/theme-boot.js"></script>
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Cerberus: self-hosted LLM runtime with models, gateway and coding-agent sessions.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icons/cerberus.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <title>Cerberus</title>
+  <link rel="stylesheet" href="assets/fonts/carino-fonts.css">
+  <link rel="stylesheet" href="assets/carino-ui.css">
+  <link rel="stylesheet" href="assets/vendor/xterm/xterm.css">
+  <link rel="stylesheet" href="assets/app.css">
+  <link rel="stylesheet" href="assets/features.css">
+  <link rel="stylesheet" href="assets/monitor.css">
+  <link rel="stylesheet" href="assets/control.css">
+  <link rel="stylesheet" href="assets/files.css">
+  <link rel="stylesheet" href="assets/security.css">
+  <link rel="stylesheet" href="assets/settings.css">
+  <link rel="stylesheet" href="assets/chat.css">
+  <link rel="stylesheet" href="assets/extras.css">
+  <link rel="stylesheet" href="assets/flow.css">
+  <link rel="stylesheet" href="assets/flows.css">
+  <link rel="stylesheet" href="assets/users.css">
+  <link rel="stylesheet" href="assets/preview.css">
+  <!-- Colourful theme: nothing applies until data-carino-theme="color". -->
+  <link rel="stylesheet" href="assets/carino-theme.css">
+  <!-- Carino Bridge (fleet page-to-page file handoff); deferred, so it runs before the app module. -->
+  <script src="assets/carino-bridge.js" defer></script>
+  <script type="module" src="assets/js/app.js"></script>
+</head>
+<body>
+  <!-- App views: carino-navbar.js moves this block into the shared navbar. -->
+  <nav class="cn-tabs" data-carino-actions aria-label="Views">
+    <a data-tab="chat" href="#/chat">Chat</a>
+    <a data-tab="sessions" href="#/sessions">Sessions <span class="nav-badge" hidden></span></a>
+    <a data-tab="flows" href="#/flows">Flows</a>
+    <a data-tab="models" href="#/models">Models</a>
+    <a data-tab="monitor" href="#/monitor">Monitor</a>
+    <a data-tab="usage" href="#/usage">Usage</a>
+    <a data-tab="settings" href="#/settings">Settings</a>
+  </nav>
+  <main id="app"></main>
+  <!-- Phones keep four bottom tabs (they fit at 360 px); "More" opens a
+       sheet with Flows, Models, Usage, Settings, Account and any later
+       views. Each role sees only the tabs it can open (app.js). -->
+  <nav class="bottom-tabs" aria-label="Views">
+    <a data-tab="chat" href="#/chat">Chat</a>
+    <a data-tab="sessions" href="#/sessions">Sessions <span class="nav-badge" hidden></span></a>
+    <a data-tab="monitor" href="#/monitor">Monitor</a>
+    <button type="button" data-tab="more" data-tab-also="flows models usage settings account" data-more aria-haspopup="dialog">More</button>
+  </nav>
+  <script src="assets/carino-navbar.js" data-app="Cerberus" data-repo="Cerberus" data-license="AGPL-3.0" defer></script>
+  <!-- Third-party code in this UI, for the About window's Licence tab
+       (assets/vendor/VERSIONS.txt has the versions and notices). -->
+  <ul data-carino-libs hidden><li data-licence="MIT">xterm.js</li><li data-licence="MIT">xterm.js addon-fit</li></ul>
+  <!-- The Cerberus mark before "Carino" in the navbar; it is also the theme switch. -->
+  <script src="assets/carino-theme.js" data-mark="assets/icons/cerberus.svg" data-mark-color="assets/icons/cerberus-color.svg" defer></script>
+  <noscript><p style="padding:16px">Cerberus needs JavaScript.</p></noscript>
+</body>
+</html>

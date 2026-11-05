@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#050505" id="carinoThemeColor">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <!-- Served by the daemon (status 404) for any unknown non-API path, at any
+       depth: every link is absolute and only public, same-origin files load.
+       No data, and it works without JavaScript (the script only picks the
+       Gold or Colourful theme). -->
+  <script src="/assets/theme-boot.js"></script>
+  <title>Not found · Cerberus</title>
+  <link rel="icon" href="/assets/icons/cerberus.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/fonts/carino-fonts.css">
+  <link rel="stylesheet" href="/assets/carino-ui.css">
+  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/carino-theme.css">
+  <style>
+    body { overflow-y: auto; }
+    .nf-wrap { flex: 1 0 auto; display: flex; align-items: flex-start; justify-content: center; padding: 12vh 16px 32px; }
+    .nf-card { width: 100%; max-width: 460px; display: flex; flex-direction: column; gap: 14px; padding: 26px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; }
+    .nf-card p { margin: 0; }
+    .nf-code { font-family: var(--display); font-weight: 900; font-size: 3rem; line-height: 1; color: var(--accent); }
+    .nf-brand { font-family: var(--mono); font-size: var(--fs-label, 0.75rem); text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-muted); }
+    .nf-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .nf-actions .btn { text-decoration: none; }
+    @media (max-width: 640px) { .nf-actions .btn { flex: 1; justify-content: center; } }
+  </style>
+</head>
+<body>
+  <main class="nf-wrap">
+    <div class="nf-card">
+      <p class="nf-brand">Cerberus</p>
+      <p class="nf-code" aria-hidden="true">404</p>
+      <h1 class="view-title">Not found</h1>
+      <p class="t-sec">There is no page at this address on this Cerberus host.</p>
+      <div class="nf-actions">
+        <a class="btn btn-primary" href="/">Open Cerberus</a>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

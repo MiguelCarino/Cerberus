@@ -1,0 +1,180 @@
+/* Cerberus web UI, users and roles (phase 4a): the sign-in screens, the
+   account button and menu, Account, Settings → Users, owner chips, the
+   read-only marks and the Not found view. Tokens come from carino-ui.css
+   (and carino-theme.css remaps them for Colourful); breakpoints 640/900 as
+   in app.css. */
+
+/* ---------- bare screens (login, first admin, forced password) ---------- */
+/* No tabs, bell or account button before someone is signed in; and no
+   flash of every tab while GET /api/me is still on its way. */
+body[data-bare] .bell-btn, body[data-bare] .acct-btn,
+body[data-bare] #carinoNav .cn-tabs > a, body[data-bare] .cn-tabs > a,
+body:not([data-role]) .cn-tabs > a, body:not([data-role]) .bottom-tabs > * { visibility: hidden; }
+body[data-bare] .bottom-tabs { display: none; }
+[data-tab][hidden] { display: none !important; }
+.app-loading { padding: 24px 20px; }
+
+.login-form { display: flex; flex-direction: column; gap: 14px; margin: 0; }
+.login-form[hidden] { display: none; }
+.login-pw { display: flex; gap: 6px; align-items: stretch; }
+.login-pw .input { flex: 1; min-width: 0; }
+.login-show { flex-shrink: 0; min-width: 64px; justify-content: center; }
+.login-err { margin: 0; color: var(--err); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.login-err[hidden] { display: none; }
+.login-first { margin: 0; }
+.login-first[hidden] { display: none; }
+.login-token { border-top: 1px solid var(--border); padding-top: 12px; }
+.login-token summary { cursor: pointer; font-family: var(--mono); font-size: var(--fs-btn); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-sec); }
+.login-token summary:hover { color: var(--accent); }
+.login-token[open] summary { margin-bottom: 12px; }
+.login-card .btn-big { justify-content: center; }
+.login-card .field-hint { margin: 0; }
+.login-card .field { display: flex; flex-direction: column; gap: 6px; }
+.view-login .input { font-size: max(16px, var(--fs-sm)); }
+
+/* ---------- account button and menu (navbar) ---------- */
+#carinoNav .icon-btn.acct-btn, .acct-btn { display: inline-flex; align-items: center; gap: 8px; color: var(--text-sec); width: auto; padding: 0 8px 0 4px; max-width: 220px; }
+#carinoNav .acct-btn svg { width: 16px; height: 16px; margin-left: 4px; }
+.acct-btn[hidden] { display: none !important; }
+.acct-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.acct-initial {
+  width: 24px; height: 24px; border-radius: 999px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-weight: 700; font-size: 12px; color: var(--accent); background: var(--accent-faint); border: 1px solid var(--accent-dim);
+}
+.acct-name { font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@media (max-width: 900px) { .acct-name { display: none; } #carinoNav .icon-btn.acct-btn, .acct-btn { padding: 0 4px; } }
+
+.acct-menu {
+  position: fixed; z-index: 72; top: calc(var(--nav-h, 56px) + 6px); right: 12px; width: min(260px, calc(100vw - 24px));
+  display: flex; flex-direction: column; padding: 6px; gap: 2px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+}
+.acct-menu[hidden] { display: none; }
+.acct-menu-head { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; min-width: 0; }
+.acct-menu-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-menu-role { font-family: var(--mono); font-size: var(--fs-label); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-menu-item {
+  display: flex; align-items: center; min-height: 40px; padding: 0 10px; border-radius: 8px; border: 0; background: none; cursor: pointer;
+  font-family: var(--mono); font-size: var(--fs-btn); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-sec); text-decoration: none; text-align: left;
+}
+.acct-menu-item:hover, .acct-menu-item:focus-visible { color: var(--accent); background: var(--accent-faint); outline: none; }
+
+/* ---------- Account page ---------- */
+.acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 14px; align-items: start; }
+.acct-card { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.acct-card .group-title { margin: 0; }
+.acct-card .field-hint { margin: 0; }
+.acct-card .form-actions { margin: 0; }
+.acct-card .dev-list { margin: 0; }
+.acct-who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.acct-who > div { min-width: 0; }
+.acct-avatar {
+  width: 48px; height: 48px; border-radius: 999px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-weight: 900; font-size: 22px; color: var(--accent); background: var(--accent-faint); border: 1px solid var(--accent-dim);
+}
+.acct-name-big { font-size: var(--fs-h3, 1.15rem); font-weight: 700; overflow-wrap: anywhere; }
+.acct-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 4px; font-size: var(--fs-label); color: var(--text-muted); }
+.acct-facts { display: flex; flex-wrap: wrap; gap: 6px 22px; }
+.acct-fact { display: flex; flex-direction: column; gap: 2px; }
+.acct-fact-k { font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+.acct-fact-v { font-size: var(--fs-sm); }
+.acct-pw .field { display: flex; flex-direction: column; gap: 6px; }
+.acct-spend { margin: 0; font-family: var(--mono); font-size: var(--fs-sec); }
+.acct-meter { height: 8px; border-radius: 999px; background: var(--bg-elev); overflow: hidden; border: 1px solid var(--border); }
+.acct-meter span { display: block; height: 100%; background: var(--ok); border-radius: inherit; }
+.acct-meter.near span { background: var(--warn); }
+.acct-meter.over span { background: var(--err); }
+.acct-pair .btn[hidden] { display: none; }
+
+/* ---------- Settings → Users ---------- */
+.usr .sec-head { margin-top: 4px; }
+.usr .sec-head .group-title { margin-right: 0; }
+.usr-count { margin-right: auto; }
+.usr-list { margin-top: 10px; }
+.usr-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.usr-table th {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap;
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted);
+}
+.usr-table td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.usr-table .num { text-align: right; font-family: var(--mono); }
+.usr-table td .pill { display: inline-block; max-width: 100%; line-height: 1.35; text-align: center; }
+.usr-row.off td { opacity: 0.6; }
+.usr-row.off td.usr-act { opacity: 1; }
+.usr-name { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-weight: 700; }
+.usr-display { margin-top: 2px; font-size: var(--fs-label); }
+.usr-role { min-width: 120px; height: 34px; }
+.usr-spend { font-family: var(--mono); font-size: var(--fs-label); white-space: nowrap; }
+.usr-spend.near { color: var(--warn); }
+.usr-spend.over { color: var(--err); }
+.usr-act { text-align: right; white-space: nowrap; }
+.usr-actions { display: flex; flex-direction: column; gap: 8px; }
+.usr-actions .alert { margin: 0; }
+.usr-action {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px; min-height: 52px; justify-content: center; text-align: left;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card); color: inherit; cursor: pointer; width: 100%;
+}
+.usr-action:hover:not(:disabled), .usr-action:focus-visible { border-color: var(--accent-dim); outline: none; }
+.usr-action.danger .more-label { color: var(--err); }
+.usr-action:disabled { opacity: 0.45; cursor: not-allowed; }
+.usr-pwchoice { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.usr-pwchoice legend { padding: 0; margin-bottom: 6px; }
+.usr-rolehelp { margin: 0; }
+.usr-repos, .usr-agents { display: flex; flex-direction: column; gap: 10px; }
+.usr-repo { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; }
+.usr-repo-main { text-transform: none; font-family: var(--sans); min-width: 0; align-items: flex-start; }
+.usr-repo-main > span { display: flex; flex-direction: column; min-width: 0; }
+.usr-repo-path { font-size: var(--fs-micro); color: var(--text-muted); overflow-wrap: anywhere; }
+.usr-repo-acc { font-size: var(--fs-micro); }
+.usr-agents .check { text-transform: none; font-family: var(--mono); }
+
+@media (max-width: 640px) {
+  /* Each user becomes a card. */
+  .usr-table thead { display: none; }
+  .usr-table, .usr-table tbody, .usr-table tr, .usr-table td { display: block; width: 100%; }
+  .usr-table tr { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; padding: 6px 0; background: var(--bg-card); }
+  .usr-table td { display: flex; justify-content: space-between; align-items: center; gap: 12px; border: 0; padding: 4px 12px; text-align: right; min-width: 0; }
+  .usr-table td::before {
+    content: attr(data-label); flex-shrink: 0; text-align: left;
+    font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted);
+  }
+  .usr-table td.usr-who { display: block; text-align: left; padding-top: 8px; }
+  .usr-table td.usr-who::before { display: none; }
+  .usr-table td.usr-act { justify-content: stretch; padding-top: 8px; }
+  .usr-table td.usr-act::before { display: none; }
+  .usr-table td.usr-act .btn { width: 100%; justify-content: center; }
+  .usr-spend { white-space: normal; text-align: right; }
+  .usr-role { min-width: 0; max-width: 60%; }
+  .acct-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- owners and read-only marks ---------- */
+.owner-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-sec); background: var(--bg-elev);
+  font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.owner-chip::before { content: '@'; color: var(--text-muted); }
+button.owner-chip { cursor: pointer; }
+button.owner-chip:hover { border-color: var(--accent-dim); color: var(--accent); }
+.usr-name .owner-chip::before, .dev-name .owner-chip::before { content: none; }
+.owner-filter { max-width: 180px; }
+.owner-filter.active { border-color: var(--accent); color: var(--accent); }
+.ro-label {
+  display: inline-flex; align-items: center; margin-left: 10px; padding: 2px 8px; border-radius: 6px; vertical-align: middle;
+  border: 1px solid var(--accent-dim); color: var(--accent); background: var(--accent-faint);
+  font-family: var(--mono); font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.ss-readonly { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.ss-readonly .ro-label { margin-left: 0; }
+.rc-scope { margin-bottom: 8px; }
+
+/* ---------- Not found ---------- */
+.view-notfound { display: flex; justify-content: center; padding-top: 8vh; }
+.nf-card { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px; padding: 26px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; }
+.nf-card .t-sec, .nf-card .view-title { margin: 0; }
+.nf-code { margin: 0; font-family: var(--display); font-weight: 900; font-size: 3rem; line-height: 1; color: var(--accent); }
+.nf-path { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-elev); border: 1px solid var(--border); overflow-wrap: anywhere; font-size: var(--fs-sm); }
+
+/* Parts a role does not get stay hidden even where a class sets display. */
+.fp-bar[hidden], .fp-list[hidden], .fp-foot[hidden], .toggle-btn[hidden], .mon-usage[hidden] { display: none !important; }
