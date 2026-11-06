@@ -491,4 +491,16 @@ func init() {
 	d(g, "flows.enabled", "Flows",
 		"Let flows run, by hand or on their schedule. Off refuses new runs and fires no schedules; runs already going finish.")
 	d(g, "flows.max_runs", "Flow runs at once", "How many flow runs execute at the same time; more wait in a queue.", between(1, 16))
+
+	// ---- Evals (agent work judged against criteria)
+	d(g, "evals.enabled", "Evals",
+		"Let eval runs start: agent sessions judged against an eval's criteria by a judge model. Off refuses new runs and flows' judge steps; runs already going finish.")
+	d(g, "evals.judge_model", "Judge model",
+		"The model that judges eval runs. Empty uses the default model; an eval's own judge model wins.")
+	d(g, "evals.max_parallel", "Eval sessions at once", "How many sessions of one eval run go at the same time; the others wait.", between(1, 8))
+	d(g, "evals.evidence_kb", "Evidence per judgement",
+		"How much text from the workspace (files, checks, transcript, diff) the judge reads for one criterion.", unit("KiB"), between(4, 1024))
+	d(g, "evals.personas", "Feedback personas",
+		"Named voices for the judge's feedback between iterations (an eval's or a judge step's persona): a name and its instructions, at most 2000 characters. With none named, a plain reviewer writes it.")
+	d(g, "evals.personas.*", "Instructions", "How this persona writes feedback, at most 2000 characters.")
 }

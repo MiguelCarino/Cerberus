@@ -34,7 +34,9 @@ export const store = {
   // 'usage' ({session}: a gateway request charged to that session finished;
   // a refresh hint for the Flow graph) and 'flowrun' ({run, flow, state,
   // step}: a flow run or one of its steps changed; a resync with
-  // what: 'flows' means some were missed) and 'asks' (the open chat
+  // what: 'flows' means some were missed), 'evalrun' ({run, eval, state,
+  // session}: an eval run or one of its sessions changed; resync what:
+  // 'evals') and 'asks' (the open chat
   // permission requests changed: store.asks()).
   // 'me' (the signed-in person changed: role, caps, must-change).
   subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
@@ -125,6 +127,7 @@ export const store = {
       download: (data) => { const it = parseJSON(data); if (it) emit('download', it); },
       usage: (data) => { const u = parseJSON(data); if (u && u.session) emit('usage', u); },
       flowrun: (data) => { const f = parseJSON(data); if (f && f.run) emit('flowrun', f); },
+      evalrun: (data) => { const f = parseJSON(data); if (f && f.run) emit('evalrun', f); },
       // The server dropped us behind the inbox, the downloads or the flows: refetch.
       resync: (data) => { const r = parseJSON(data); if (r) emit('resync', r); },
       session: (data) => {

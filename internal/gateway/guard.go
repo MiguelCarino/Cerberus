@@ -290,6 +290,35 @@ func (g *Gateway) screen(ctx context.Context, s guardSettings, text string) (flo
 	return best, label, nil
 }
 
+// ScreenText scores one text through the guard classifier path (phase G2):
+// the worst of its windows, using the same prompt and window rules as live
+// screening. model overrides the configured guard model (""=configured). It
+// is the red-team suite's entry (evals phase E5); the caller applies the
+// threshold and decides what is flagged. Loading the model is the owner's
+// step, so an unloaded or missing model surfaces as the error.
+func (g *Gateway) ScreenText(ctx context.Context, model, text string) (float64, string, error) {
+	s := g.guardSettings()
+	if model != "" {
+		s.model = model
+	}
+	if s.model == "" {
+		return 0, "", fmt.Errorf("guard: no classifier model (set gateway.guard.model or pass --model)")
+	}
+	if g.src == nil {
+		return 0, "", fmt.Errorf("guard: no model source")
+	}
+	if s.windowChars <= 0 {
+		s.windowChars = 512 * 4
+	}
+	if s.windowsCap <= 0 {
+		s.windowsCap = 32
+	}
+	if s.scoreMaxToken <= 0 {
+		s.scoreMaxToken = 24
+	}
+	return g.screen(ctx, s, text)
+}
+
 // windows cuts text into overlapping windows of about n bytes (a quarter
 // overlaps), at most max of them, cut at UTF-8 boundaries.
 func windows(text string, n, max int) []string {

@@ -75,7 +75,7 @@ type run struct {
 // agent. Folder and scratch sessions already know their folder.
 func (m *Manager) start(s *session) {
 	m.mu.Lock()
-	id, repo, wt, ws := s.info.ID, s.info.Repo, s.info.Worktree, s.info.Workspace
+	id, repo, wt, ws, pinned := s.info.ID, s.info.Repo, s.info.Worktree, s.info.Workspace, s.info.BaseCommit
 	m.mu.Unlock()
 	if ws == WorkspaceScratch && wt != "" {
 		// A scratch folder deleted by hand (or before a restart) comes back empty.
@@ -85,7 +85,11 @@ func (m *Manager) start(s *session) {
 		}
 	}
 	if wt == "" && ws == WorkspaceRepo {
-		base, err := mainHead(m.ctx, repo)
+		// A pinned base (TaskSpec.Base, checked at Create) wins over main.
+		base, err := pinned, error(nil)
+		if base == "" {
+			base, err = mainHead(m.ctx, repo)
+		}
 		if err == nil {
 			wt = filepath.Join(m.wtDir, id)
 			err = addWorktree(m.ctx, repo, wt, base)
@@ -197,6 +201,8 @@ func (m *Manager) launch(s *session) error {
 	if plan.fallback != nil {
 		m.sandboxWarn(s, "running the agent", plan.fallback)
 	}
+	setupHash := m.writeSetup(s.dir, setupInput{info: info, profile: p, command: command, resume: resume,
+		argv: argv, mcp: extra, sandbox: plan.bin != "", secrets: secrets})
 	// The scope goes outside, bwrap inside, the agent's command last.
 	argv, unit := m.wrapScope(plan.wrap(append(argv, extra...)), info)
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -234,7 +240,11 @@ func (m *Manager) launch(s *session) error {
 	if s.info.RunStarted.IsZero() {
 		s.info.RunStarted = r.started
 	}
+	s.info.AttemptStarted = r.started
 	s.next = ""
+	if setupHash != "" {
+		s.info.SetupHash = setupHash
+	}
 	s.info.Attempt++
 	s.agentAttempts++
 	s.info.ExitCode = nil

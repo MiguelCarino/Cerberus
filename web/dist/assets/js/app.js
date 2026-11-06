@@ -34,6 +34,7 @@ import * as notfound from './views/notfound.js';
 import * as flows from './views/flows.js';
 import * as flowedit from './views/flowedit.js';
 import * as flowrun from './views/flowrun.js';
+import * as evalrun from './views/evalrun.js';
 import { initDrop } from './views/drop.js';
 import { initBridgeReceive } from './views/bridge.js';
 import { initBell } from './views/bell.js';
@@ -41,7 +42,7 @@ import { initAccount } from './views/accountmenu.js';
 import { initPWA } from './pwa.js';
 
 const VIEWS = {
-  sessions, session, diff, batch, wall, chat, models, monitor, usage, secrets, settings, login, flows, flowedit, flowrun,
+  sessions, session, diff, batch, wall, chat, models, monitor, usage, secrets, settings, login, flows, flowedit, flowrun, evalrun,
   'first-admin': firstadmin, password, account, notfound,
 };
 

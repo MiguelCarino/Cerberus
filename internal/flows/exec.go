@@ -447,6 +447,8 @@ func (e *Engine) runStep(ctx context.Context, rc *runCtx, s Step, rec *StepRecor
 			rec.Output = out
 		}
 		return "", err
+	case KindJudge:
+		return "", e.stepJudge(ctx, rc, s, rec)
 	case KindIf:
 		return e.stepIf(rc, s, rec)
 	case KindOutput:
@@ -872,6 +874,78 @@ func (e *Engine) session(ctx context.Context, rc *runCtx, s Step, agent, model, 
 	return out, err
 }
 
+// stepJudge judges the workspace of the session step s.On (E2). The
+// judge's calls are charged to the run as they happen, and so is the usage
+// of attempts the feedback resumes (SessionMeter): past a limit the
+// judging stops and the session is stopped. The step passes whatever the
+// verdict; its output is {passed, gates_passed, gates_total, failed,
+// session, report}, for an if step (equals, path "passed").
+func (e *Engine) stepJudge(ctx context.Context, rc *runCtx, s Step, rec *StepRecord) error {
+	if e.o.Judge == nil {
+		return errors.New("judging is not available here")
+	}
+	prev, _ := rc.outputs[s.On].(map[string]any)
+	sid, _ := prev["session"].(string)
+	if sid == "" {
+		return fmt.Errorf("step %s has no session to judge", s.On)
+	}
+	rec.Session = sid
+	rec.Input = fmt.Sprintf("judge %s (%s) on %d criteria", s.On, sid, len(s.Criteria))
+	var u usageSum
+	var umu sync.Mutex
+	defer func() {
+		umu.Lock()
+		u.fill(rec)
+		umu.Unlock()
+	}()
+	jctx, jcancel := context.WithCancelCause(ctx)
+	defer jcancel(nil)
+	charge := func(rep ModelReply, fallback string) error {
+		used := rep.Model
+		if used == "" {
+			used = fallback
+		}
+		umu.Lock()
+		u.add(rep, used)
+		umu.Unlock()
+		return e.charge(rc, rep, used)
+	}
+	if m, ok := e.o.Sessions.(SessionMeter); ok {
+		stop := m.Meter(sid, func(rep ModelReply) {
+			if err := charge(rep, ""); err != nil {
+				jcancel(err)
+			}
+		})
+		defer stop()
+	}
+	res, err := e.o.Judge.Judge(jctx, JudgeRequest{Session: sid, Criteria: s.Criteria, Gates: s.Gates, Persona: s.Persona,
+		Model: s.Model, Run: rc.id, Flow: rc.snap.ID, Step: s.ID, Owner: rc.snap.Owner,
+		Charge: func(rep ModelReply) error {
+			err := charge(rep, s.Model)
+			if err != nil {
+				jcancel(err)
+			}
+			return err
+		}})
+	if err != nil {
+		if jctx.Err() != nil && !errors.Is(context.Cause(jctx), errShutdown) && e.o.Sessions != nil {
+			_ = e.o.Sessions.Stop(sid) // a resumed attempt may be going
+		}
+		var le *limitError
+		if errors.As(context.Cause(jctx), &le) {
+			return le
+		}
+		return err
+	}
+	failed := res.Failed
+	if failed == nil {
+		failed = []string{}
+	}
+	rec.Output = map[string]any{"passed": res.Passed, "gates_passed": res.GatesPassed, "gates_total": res.GatesTotal,
+		"failed": failed, "session": sid, "report": res.Report}
+	return nil
+}
+
 func (e *Engine) stepIf(rc *runCtx, s Step, rec *StepRecord) (string, error) {
 	v := rc.outputs[s.On]
 	ok, err := evalTest(s, v)
@@ -879,7 +953,7 @@ func (e *Engine) stepIf(rc *runCtx, s Step, rec *StepRecord) (string, error) {
 		return "", err
 	}
 	rec.Input = fmt.Sprintf("%s %s %q", s.On, s.Test, s.Value)
-	if s.Test == TestJSON {
+	if s.Test == TestJSON || (s.Test == TestEquals && strings.TrimSpace(s.Path) != "") {
 		rec.Input = fmt.Sprintf("%s.%s == %q", s.On, s.Path, s.Value)
 	}
 	rec.Output = ok
@@ -902,6 +976,13 @@ func evalTest(s Step, v any) (bool, error) {
 	case TestContains:
 		return strings.Contains(strings.ToLower(text), strings.ToLower(s.Value)), nil
 	case TestEquals:
+		if strings.TrimSpace(s.Path) != "" { // a field of the output (a judge step's "passed")
+			got, ok := lookup(parsed(v), s.Path)
+			if !ok {
+				return false, nil
+			}
+			return strings.TrimSpace(outputText(got)) == strings.TrimSpace(s.Value), nil
+		}
 		return strings.TrimSpace(text) == strings.TrimSpace(s.Value), nil
 	case TestMatches:
 		re, err := regexp.Compile(s.Value)
@@ -910,14 +991,7 @@ func evalTest(s Step, v any) (bool, error) {
 		}
 		return re.MatchString(text), nil
 	case TestJSON:
-		if str, ok := v.(string); ok {
-			parsed, err := extractJSON(str, false)
-			if err != nil {
-				return false, nil
-			}
-			v = parsed
-		}
-		got, ok := lookup(v, s.Path)
+		got, ok := lookup(parsed(v), s.Path)
 		if !ok {
 			return false, nil
 		}
@@ -931,6 +1005,20 @@ func evalTest(s Step, v any) (bool, error) {
 		return st == strings.TrimSpace(s.Value), nil
 	}
 	return false, fmt.Errorf("unknown test %q", s.Test)
+}
+
+// parsed is v, or the JSON in it when v is a reply text (nil when it
+// holds none).
+func parsed(v any) any {
+	str, ok := v.(string)
+	if !ok {
+		return v
+	}
+	out, err := extractJSON(str, false)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // lookup follows a dotted path (numbers index arrays) into a JSON value.

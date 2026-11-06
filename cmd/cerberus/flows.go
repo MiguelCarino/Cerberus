@@ -31,7 +31,8 @@ type flowsSetup struct {
 	inbox    *inbox.Store     // nil when the inbox did not open
 	audit    *audit.Logger
 	feed     *api.FlowFeed
-	users    *users.Store // accounts (Phase 4a); nil: single owner
+	users    *users.Store  // accounts (Phase 4a); nil: single owner
+	judge    *api.EvalHost // judge steps (evals E2); nil: they fail
 }
 
 // openFlows opens the flow engine over the daemon's services (api.FlowHost).
@@ -57,6 +58,9 @@ func openFlows(s flowsSetup, log *slog.Logger) *flows.Engine {
 	}
 	if s.inbox != nil {
 		d.Inbox = s.inbox
+	}
+	if s.judge != nil {
+		d.Judge = s.judge // a nil *EvalHost must not become a non-nil interface
 	}
 	o := api.NewFlowHost(d).Options(filepath.Join(s.data, "flows"))
 	o.MaxRuns = s.cfg.Flows.MaxRuns

@@ -78,6 +78,8 @@ type FlowHostDeps struct {
 	// Users are the accounts (Phase 4a; nil: single owner). A flow acts for
 	// its owner: charged to them, confined and budgeted like them.
 	Users *users.Store
+	// Judge runs judge steps (evals E2: the eval host); nil fails them.
+	Judge flows.JudgeRunner
 }
 
 // FlowHost implements the flow engine's dependencies. Build it with
@@ -99,7 +101,7 @@ func NewFlowHost(d FlowHostDeps) *FlowHost {
 	if d.MemAvail == nil {
 		d.MemAvail = memAvailable
 	}
-	h := &FlowHost{d: d, claims: newUsageClaims(), meters: newSessionMeters(), catEvery: 15 * time.Second}
+	h := &FlowHost{d: d, claims: newUsageClaims(flows.ClientName), meters: newSessionMeters(), catEvery: 15 * time.Second}
 	if d.Usage != nil {
 		d.Usage.OnAdd(h.claims.add)
 		d.Usage.OnAdd(h.meters.add)
@@ -123,6 +125,9 @@ func (h *FlowHost) Options(dir string) flows.Options {
 	}
 	if h.d.Users != nil {
 		o.OwnerActive = h.ownerActive
+	}
+	if h.d.Judge != nil {
+		o.Judge = h.d.Judge
 	}
 	return o
 }
@@ -354,17 +359,18 @@ func parseCompletion(rec *httptest.ResponseRecorder) (text, model string, prompt
 // matched by token counts, so concurrent fan-out calls of one run each get
 // theirs.
 type usageClaims struct {
+	client string // the usage client whose records are claimed
 	mu     sync.Mutex
 	active map[string]int
 	recs   map[string][]usage.Record
 }
 
-func newUsageClaims() *usageClaims {
-	return &usageClaims{active: map[string]int{}, recs: map[string][]usage.Record{}}
+func newUsageClaims(client string) *usageClaims {
+	return &usageClaims{client: client, active: map[string]int{}, recs: map[string][]usage.Record{}}
 }
 
 func (u *usageClaims) add(r usage.Record) {
-	if r.Client != flows.ClientName || r.SessionID == "" {
+	if r.Client != u.client || r.SessionID == "" {
 		return
 	}
 	u.mu.Lock()
@@ -507,7 +513,10 @@ func (s flowSessionRunner) Start(ctx context.Context, req flows.SessionRequest) 
 
 // resolveRepo takes an absolute path as it is, else a configured repo's
 // name (or folder name), else a folder of that name under repo_roots.
-func (h *FlowHost) resolveRepo(name string) (string, error) {
+func (h *FlowHost) resolveRepo(name string) (string, error) { return resolveRepoName(h.conf(), name) }
+
+// resolveRepoName is resolveRepo against a config (flows and evals).
+func resolveRepoName(cfg *config.Config, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", errors.New("no repository named")
@@ -515,7 +524,6 @@ func (h *FlowHost) resolveRepo(name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return filepath.Clean(name), nil
 	}
-	cfg := h.conf()
 	for _, rc := range cfg.Repos {
 		if rc.Name == name || filepath.Base(filepath.Clean(rc.Path)) == name {
 			return filepath.Clean(rc.Path), nil
@@ -771,12 +779,17 @@ func (h *FlowHost) modelList() []engine.ModelInfo {
 // config (models[]) is known but not installed now; an id under an enabled
 // provider's prefix ("openrouter/…") is a cloud model, known and usable.
 func (c flowCatalog) Model(id string) (bool, bool) {
-	for _, m := range c.h.modelList() {
+	return catalogModel(c.h.modelList(), c.h.conf(), id)
+}
+
+// catalogModel is flowCatalog.Model over a model list and a config (flows
+// and evals).
+func catalogModel(list []engine.ModelInfo, cfg *config.Config, id string) (bool, bool) {
+	for _, m := range list {
 		if m.ID == id {
 			return true, true
 		}
 	}
-	cfg := c.h.conf()
 	for _, p := range cfg.Providers {
 		if p.Enabled && p.Name != "" && strings.HasPrefix(id, p.Name+"/") {
 			return true, true
@@ -793,5 +806,12 @@ func (c flowCatalog) Model(id string) (bool, bool) {
 // Agent reports whether an agent profile of that name exists.
 func (c flowCatalog) Agent(name string) bool {
 	_, ok := c.h.conf().AgentProfile(name)
+	return ok
+}
+
+// Persona reports whether evals.personas has name (flows.PersonaCatalog,
+// for judge steps).
+func (c flowCatalog) Persona(name string) bool {
+	_, ok := c.h.conf().Evals.Personas[name]
 	return ok
 }

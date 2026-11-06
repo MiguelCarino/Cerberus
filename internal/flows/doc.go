@@ -73,8 +73,20 @@
 // once and the first failure cancels the rest, except a transient engine
 // failure (see below), which fails only its item; session → {session, state,
 // summary} (the step passes whatever the final state is: test it with an
-// `if` state test); if → true/false; approve → {ok, note, by}; output →
-// the text, or {file, bytes} for a file.
+// `if` state test); judge → {passed, gates_passed, gates_total, failed,
+// session, report} (the step passes whatever the verdict: branch with an
+// `if` equals test on path "passed"); if → true/false; approve → {ok,
+// note, by}; output → the text, or {file, bytes} for a file.
+//
+// Judge steps (evals E2) judge the workspace of an earlier session step
+// with an eval's criteria graph and gates (evals.ValidateCriteria rules):
+// the JudgeRunner judges gate by gate, and a gate that fails with
+// iterations left resumes that session with feedback written in the
+// persona's voice, then judges the gate again. The judge's calls are
+// charged to the run through JudgeRequest.Charge and the resumed attempts'
+// usage through the SessionMeter, so the run's limits cover both; past a
+// limit the judging stops, the session is stopped and the run is limited.
+// An `equals` test with a path compares that field of the output.
 //
 // Transient engine failures: a prompt or plan step, or a fan-out item run
 // as a prompt, whose model call fails with a temporary engine error (the
@@ -115,7 +127,10 @@
 //	               "#/flows/runs/<run>"; output steps Kind "flow".
 //	Auditor        Event(actor, event, detail, targets...); *audit.Logger fits.
 //	Guard          CanStart() (ok, reason): the session guard.
-//	Catalog        Model(id) (known, installed); Agent(name) bool.
+//	Catalog        Model(id) (known, installed); Agent(name) bool; optional
+//	               PersonaCatalog (Persona(name) bool) for judge steps.
+//	JudgeRunner    Judge(ctx, JudgeRequest) (JudgeResult, error): a judge
+//	               step, through the eval host (internal/evals.Judge).
 //	Publisher      Publish(Event{run, flow, state, step}) as EventType
 //	               ("flowrun"); must not block or call back into the engine.
 //	Clock          Now, NewTimer; SystemClock is the real one.

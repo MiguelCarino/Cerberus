@@ -91,3 +91,15 @@ export function guardText(g) {
   if (g.errors) parts.push(`${g.errors} errors`);
   return `Agent guard (${g.mode}, ${g.model || 'no model'}): ${parts.join(' · ')} since start.`;
 }
+
+// guardbenchText is the last red-team run's two rates (evals phase E5),
+// shown beside the guard counters; "" when there is no done run.
+export function guardbenchText(run) {
+  if (!run || run.state !== 'done') return '';
+  const d = Math.round((run.detection || 0) * 100);
+  const f = Math.round((run.false_alarm || 0) * 100);
+  const when = run.done ? new Date(run.done).toLocaleDateString() : '';
+  let s = `Red-team (${run.model || 'guard model'}, ${when}): ${d}% of ${run.attacks || 0} attacks caught · ${f}% of ${run.benign || 0} benign flagged`;
+  if (run.errors) s += ` · ${run.errors} errored`;
+  return s + '.';
+}

@@ -171,6 +171,10 @@ func buildGraph(f Flow, r *Run, recs []StepRecord, liveItems map[string][]ItemRe
 			} else if r == nil {
 				ask(n.ID, s.Model, 0, 0)
 			}
+		case KindJudge:
+			if r == nil {
+				ask(n.ID, s.Model, 0, 0)
+			}
 		case KindFanOut:
 			for _, it := range items {
 				id := "it:" + s.ID + ":" + strconv.Itoa(it.Index)
@@ -265,6 +269,16 @@ func stepSub(s Step) string {
 		parts = append(parts, "from "+s.From, "as "+s.fanAs())
 	case KindSession:
 		parts = append(parts, s.Agent, s.workspace())
+	case KindJudge:
+		n := strconv.Itoa(len(s.Criteria)) + " criteria"
+		if len(s.Criteria) == 1 {
+			n = "1 criterion"
+		}
+		parts = append(parts, "on "+s.On, n)
+		if len(s.Gates) > 1 {
+			parts = append(parts, strconv.Itoa(len(s.Gates))+" gates")
+		}
+		parts = append(parts, s.Model)
 	case KindIf:
 		parts = append(parts, s.On+" "+s.Test)
 	case KindOutput:

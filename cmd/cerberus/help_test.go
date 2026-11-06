@@ -26,7 +26,7 @@ func TestHelpEveryCommand(t *testing.T) {
 		t.Fatalf("help: exit %d", code)
 	}
 	cmds := []string{"serve", "status", "task", "url", "secret", "search", "resume", "fleet",
-		"pull", "prune", "top", "energy", "bench", "rapl-setup", "pair", "devices", "token", "audit", "finetune",
+		"pull", "prune", "sessions", "eval", "top", "energy", "bench", "guard", "rapl-setup", "pair", "devices", "token", "audit", "finetune",
 		"doctor", "init", "config", "export", "import", "install-service", "mcp", "user"}
 	for _, c := range cmds {
 		if !strings.Contains(overview.String(), "\n  "+c) {

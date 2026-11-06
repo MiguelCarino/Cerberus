@@ -48,6 +48,21 @@ asked for with echo off.`},
 	"resume": {`resume [-config PATH] ID ["what to do next"]`, `Start a new attempt of a finished session (passed, failed, stopped or
 error) in its workspace. With no text the agent is told to continue where it
 left off.`},
+	"sessions": {"sessions setup ID [OTHER_ID]\n       cerberus sessions trajectory ID [--format atif|jsonl]", `Per-session reads. "sessions setup" prints the setup a session's latest run
+started with (setup.json: the agent profile, its --version, the model, the
+MCP servers, the workspace and base commit, the Cerberus version) and its
+hash. With a second id it prints only the fields that differ.
+"sessions trajectory" writes the session's model calls from the request
+records (gateway.records) as an ATIF trajectory, or as the raw record lines.`},
+	"sessions setup": {"sessions setup [--json] ID [OTHER_ID]", `Print the setup snapshot of a session, or with two ids the fields that
+differ. A file changed after the run started is flagged.`},
+	"sessions trajectory": {"sessions trajectory ID [--format atif|jsonl] [-config PATH] > FILE", `Write a session's trajectory to stdout. atif (the default) is an ATIF v1.8
+trajectory (Agent Trajectory Interchange Format, Harbor's RFC 0001): one
+agent step per model call with its text at the records' text level, tool
+calls and results, tokens, guard verdicts, and the setup snapshot as
+metadata. jsonl is the session's request record lines as stored. It needs
+request records on (gateway.records.enabled); a session whose records were
+swept, or that has none, is an error.`},
 	"fleet": {`fleet --has FILE | --name GLOB [flags] "task"`, `Start one session per matching repo under repo_roots. {name} and {repo} in
 the task expand per repo. Lists the repos and asks before starting unless
 --yes.`},
@@ -71,6 +86,18 @@ two up, kind by kind. The model is loaded on the GPU like any request.`},
 	"bench list": {"bench list", `List saved bench runs, newest first.`},
 	"bench compare": {"bench compare A B", `Line two bench runs up kind by kind (run ids or .json files): decode, time
 to first token and tokens per joule, B against A, with a plain summary.`},
+	"guard": {"guard bench [--model ID] [--threshold N] | guard bench compare A B | guard bench list", `The agent-guard red-team suite (evals phase E5). "guard bench" drives a
+fixed, append-only set of cases (injection attempts and benign look-alikes)
+through the agent guard's classifier (gateway phase G2: the same prompt and
+window rules) and reports detection rate on attacks and false-alarm rate on
+benign cases, per category, sweeping the threshold when the classifier gives
+scores and listing the misses. The guard model must be loaded (the owner's
+step); it uses gateway.guard.model and gateway.guard.threshold unless --model
+or --threshold override them. Runs are saved in the data folder's guardbench/;
+"guard bench list" lists them and "guard bench compare A B" diffs two.`},
+	"guard bench":         {"guard bench [--model ID] [--threshold N]", `Run the guard red-team suite once (see "guard").`},
+	"guard bench list":    {"guard bench list", `List saved guard red-team runs, newest first.`},
+	"guard bench compare": {"guard bench compare A B", `Diff two guard red-team runs (run ids or .json files) category by category.`},
 	"energy": {"energy [-config PATH]", `Energy totals (today, yesterday, 7 days, month, 30 days) and the
 electricity bill estimate at the household's marginal tariff tier.`},
 	"rapl-setup": {"rapl-setup", `Print (never run) the one-time root steps that let Cerberus read the CPU
@@ -157,6 +184,40 @@ start time, flow, and the reason or note when there is one.`},
 its step notices (agent sessions it started are stopped).`},
 	"flow approve": {`flow approve RUN [--reject] [--note "text"] [-config PATH]`, `Decide a run waiting at an approve step: approve lets it continue, --reject
 ends it as rejected. The decision and the note are in the audit log.`},
+	"eval": {"eval list | show ID | validate FILE | import FILE | export ID | run ID [--wait] [--setup LABEL] | runs [ID] | report RUN | compare RUN_A RUN_B", `An eval is a task, criteria in ordered gates (a criterion may depend on
+others) and the agent setups to try. A run starts one session per setup (and
+repeat); when a session ends, a judge model reads evidence from its workspace
+(files, checks, transcript, diff) and decides each criterion pass or fail.
+The judge never runs anything. Everything goes through the running daemon.
+
+Commands:
+  list               every eval and its last run
+  show ID            gates, criteria, setups and validation problems
+  validate FILE      check a JSON definition (structure only without the daemon)
+  import FILE        save a definition (--replace an eval with the same id)
+  export ID          print a definition as JSON
+  run ID             start a run; --setup runs one setup, --wait prints the report
+  runs [ID]          recent runs, newest first
+  report RUN         the ranking and each session's criteria (--json)
+  compare RUN_A RUN_B per setup: gates passed, criteria that flipped, setup fields
+  cancel RUN         stop a run and its sessions
+  rejudge RUN        judge a finished run again with the judge model of now
+
+Run "cerberus eval <command> -h" for its flags.`},
+	"eval list":     {"eval list [-config PATH]", `List evals: id, number of criteria and setups, the last run, name.`},
+	"eval show":     {"eval show ID [-config PATH]", `Show one eval: workspace, judge, each gate's criteria with dependencies, the setups and validation problems.`},
+	"eval validate": {"eval validate FILE [-config PATH]", `Check an eval definition (JSON; - reads stdin). With the daemon running, agents and models are checked too. Exits 1 on an error.`},
+	"eval import":   {"eval import [--replace] FILE [-config PATH]", `Save an eval definition (JSON; - reads stdin). An id that exists is refused unless --replace.`},
+	"eval export":   {"eval export ID [-config PATH]", `Print an eval definition as JSON, without its version and owner, ready for eval import.`},
+	"eval run": {"eval run ID [--setup LABEL] [--wait] [-config PATH]", `Start a run: one session per setup and repeat, at most evals.max_parallel at
+once, each judged when it ends. --wait follows it on the event stream and
+prints the report; the exit code is 0 when the run is done. Ctrl-C stops
+following, not the run.`},
+	"eval runs":    {"eval runs [ID] [--limit N] [-config PATH]", `Recent runs, newest first: id, state, start, sessions judged, judge model, eval.`},
+	"eval report":  {"eval report [--json] RUN [-config PATH]", `Print a run: setups ranked by gates passed, criteria passed and time, then each session's criteria (✓ pass, ✗ fail, – skipped, ! error) with the judge's reasons for what did not pass.`},
+	"eval compare": {"eval compare RUN_A RUN_B [-config PATH]", `Compare two runs setup by setup: gates passed, the criteria whose verdict flipped, and the setup fields that differ between their sessions.`},
+	"eval cancel":  {"eval cancel RUN [-config PATH]", `Stop a run: sessions not started are not started, running ones are stopped.`},
+	"eval rejudge": {"eval rejudge RUN [-config PATH]", `Judge a finished run's sessions again with the judge model of now, without running them again.`},
 	"doctor": {"doctor [-config PATH] [--json]", `The safety and health checklist: each check is ok, warn or fail, with a fix.
 Exits 1 when a check fails. It never creates a config.`},
 	"init": {"init [--yes] [--json] [-config PATH]", `First-run setup. Detects engines and models, the GPU, agents, Tailscale,
@@ -215,7 +276,7 @@ machine, and the agent sees only the sessions it started.`},
 // helpAliases maps alternative flag set names to their help entry.
 var helpAliases = map[string]string{
 	"secret ls": "secret list", "secret delete": "secret rm", "secret del": "secret rm",
-	"flows": "flow", "flow ls": "flow list",
+	"flows": "flow", "flow ls": "flow list", "evals": "eval", "eval ls": "eval list", "session": "sessions", "session setup": "sessions setup", "session trajectory": "sessions trajectory",
 }
 
 // setUsage gives fs the -h text from helps, when there is one.

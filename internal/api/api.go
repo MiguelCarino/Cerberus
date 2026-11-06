@@ -76,6 +76,7 @@ import (
 	"carino.systems/cerberus/internal/downloads"
 	"carino.systems/cerberus/internal/energy"
 	"carino.systems/cerberus/internal/engine"
+	"carino.systems/cerberus/internal/evals"
 	"carino.systems/cerberus/internal/files"
 	"carino.systems/cerberus/internal/finetune"
 	"carino.systems/cerberus/internal/flows"
@@ -167,6 +168,12 @@ type Deps struct {
 	// /api/events and must be the engine's Publisher (FlowHost does that).
 	Flows    *flows.Engine
 	FlowFeed *FlowFeed
+
+	// Evals (evals.go, E1). Evals is the engine (nil: the routes answer
+	// 503); EvalFeed carries its run events to /api/events and must be the
+	// engine's Publisher (EvalHost does that).
+	Evals    *evals.Engine
+	EvalFeed *EvalFeed
 
 	// Users and roles (Phase 4a). Nil or empty: single-owner mode, as
 	// before users existed.
@@ -336,18 +343,24 @@ type server struct {
 	diskSum   [32]byte     // sha256 of config.json as the daemon last loaded or wrote it; guarded by cfgMu
 
 	// Delegation (delegate.go).
-	delegate   delegateState
-	delegation delegationSource
-	finetune   *finetune.Store
-	records    *records.Store
-	busy       func() map[string]gateway.Busy // G5: in-flight age and stalls per model
-	guardStats func() gateway.GuardStats      // G2: the agent guard's counters
-	bench      benchJobs                      // G6: the bench run going now
-	usageFeed  *usageFeed                     // "usage" hints on /api/events (usagefeed.go)
+	delegate    delegateState
+	delegation  delegationSource
+	finetune    *finetune.Store
+	records     *records.Store
+	busy        func() map[string]gateway.Busy // G5: in-flight age and stalls per model
+	guardStats  func() gateway.GuardStats      // G2: the agent guard's counters
+	guardScreen guardScreener                  // E5: the guard classifier path, for the red-team suite
+	bench       benchJobs                      // G6: the bench run going now
+	guardbench  guardbenchJobs                 // E5: the guard red-team run going now
+	usageFeed   *usageFeed                     // "usage" hints on /api/events (usagefeed.go)
 
 	// Flows (flows.go).
 	flows    *flows.Engine
 	flowFeed *FlowFeed
+
+	// Evals (evals.go).
+	evals    *evals.Engine
+	evalFeed *EvalFeed
 
 	// Users and roles (Phase 4a; login.go, me.go, users.go, owner.go).
 	users     *users.Store
@@ -385,6 +398,7 @@ func New(d Deps) http.Handler {
 		s.gateway, s.budgets = d.Gateway.Handler(), d.Gateway
 		s.busy = d.Gateway.Busy
 		s.guardStats = d.Gateway.GuardStats
+		s.guardScreen = d.Gateway
 	}
 	if d.Vault != nil {
 		s.secrets = d.Vault
@@ -411,6 +425,7 @@ func New(d Deps) http.Handler {
 	}
 	s.dlFeed = d.DownloadFeed
 	s.flows, s.flowFeed = d.Flows, d.FlowFeed
+	s.evals, s.evalFeed = d.Evals, d.EvalFeed
 	if d.Sessions != nil {
 		s.runs = d.Sessions
 	}
@@ -505,6 +520,8 @@ func (s *server) apiRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/bench", s.handleBenchList)
 	mux.HandleFunc("POST /api/bench", s.handleBenchStart)
 	mux.HandleFunc("GET /api/bench/{id}", s.handleBenchGet)
+	mux.HandleFunc("GET /api/guardbench", s.handleGuardbenchList)
+	mux.HandleFunc("POST /api/guardbench", s.handleGuardbenchStart)
 	mux.HandleFunc("GET /api/records", s.handleRecords)
 	mux.HandleFunc("GET /api/records/{day}/{file}/{offset}", s.handleRecord)
 	mux.HandleFunc("DELETE /api/records", s.handleRecordsDelete)
@@ -539,8 +556,11 @@ func (s *server) apiRoutes(mux *routeMux) {
 	s.configRoutes(mux)
 	s.chatRoutes(mux)
 	s.extrasRoutes(mux)
+	s.setupRoutes(mux)
+	s.trajectoryRoutes(mux)
 	s.flowRoutes(mux)
 	s.flowsRoutes(mux)
+	s.evalsRoutes(mux)
 	s.bundleRoutes(mux)
 	mux.HandleFunc("GET /api/monitor", s.handleMonitor)
 	mux.HandleFunc("GET /api/monitor/processes", s.handleProcesses)
@@ -636,6 +656,11 @@ func (s *server) objectOwner(id string) (string, bool) {
 	if s.flows != nil {
 		if d, err := s.flows.GetRun(id); err == nil {
 			return d.Run.Owner, true
+		}
+	}
+	if s.evals != nil && evals.ValidRunID(id) {
+		if o, ok := s.evals.RunOwner(id); ok {
+			return o, true
 		}
 	}
 	return "", false

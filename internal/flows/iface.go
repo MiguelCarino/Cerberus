@@ -3,6 +3,8 @@ package flows
 import (
 	"context"
 	"time"
+
+	"carino.systems/cerberus/internal/evals"
 )
 
 // ClientName is the usage client a ModelCaller should record flow
@@ -103,6 +105,48 @@ type SessionResumer interface {
 // calls back into the runner.
 type SessionMeter interface {
 	Meter(id string, fn func(ModelReply)) (stop func())
+}
+
+// JudgeRequest is one judge step (E2): judge the workspace of Session
+// against Criteria, gate by gate, with the rules of an eval run (feedback
+// in Persona's voice resumes the session while a gate has iterations
+// left). Charge is called with the usage of every judge and feedback call
+// and answers the run's limit error; the runner then stops judging and
+// answers that error. Usage of a resumed attempt reaches the run through
+// the SessionMeter like a session step's.
+type JudgeRequest struct {
+	Session  string
+	Criteria []evals.Criterion
+	Gates    []evals.Gate
+	Persona  string
+	Model    string // "" = evals.judge_model, then engines.default_model
+	Run      string
+	Flow     string
+	Step     string
+	Owner    string
+	Charge   func(ModelReply) error
+}
+
+// JudgeResult is the outcome of a judge step: Passed when every gate
+// passed; Failed the criteria that failed or could not be judged (not the
+// skipped ones); Report the full eval report of the session.
+type JudgeResult struct {
+	Passed      bool
+	GatesPassed int
+	GatesTotal  int
+	Failed      []string
+	Report      evals.Report
+}
+
+// JudgeRunner runs judge steps (the daemon's eval host). It honours ctx.
+type JudgeRunner interface {
+	Judge(ctx context.Context, req JudgeRequest) (JudgeResult, error)
+}
+
+// PersonaCatalog is optional on a Catalog: Persona reports whether
+// evals.personas has a name (judge steps warn on one it does not).
+type PersonaCatalog interface {
+	Persona(name string) bool
 }
 
 // Notice is a notification or an inbox entry. Kind is "flow" (output

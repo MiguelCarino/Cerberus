@@ -15,6 +15,9 @@
 //	cerberus fleet --has F "…"  one session per matching repo
 //	cerberus prune              delete old finished sessions now
 //	cerberus flow …             flows: list, show, run (--wait), runs, cancel, approve
+//	cerberus eval …             evals: list, show, validate, import, export, run, runs, report, compare, cancel, rejudge
+//	cerberus sessions …         per-session reads: setup, trajectory (ATIF or JSONL)
+//	cerberus guard bench        red-team the agent guard's classifier; list, compare
 //	cerberus pull REF           download a model (never loads it)
 //	cerberus top                live system view
 //	cerberus energy             energy totals and the bill estimate
@@ -111,6 +114,8 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (code in
 		return searchCmd(rest, stdout, stderr), true
 	case "resume":
 		return resumeCmd(rest, stdout, stderr), true
+	case "sessions", "session":
+		return sessionsCmd(rest, stdout, stderr), true
 	case "fleet":
 		return fleetCmd(rest, stdin, stdout, stderr), true
 	case "prune":
@@ -121,6 +126,8 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (code in
 		return energyCmd(rest, stdout, stderr), true
 	case "bench":
 		return benchCmd(rest, stdout, stderr), true
+	case "guard":
+		return guardCmd(rest, stdout, stderr), true
 	case "rapl-setup":
 		return raplSetupCmd(rest, stdout, stderr), true
 	case "audit":
@@ -131,6 +138,8 @@ func dispatch(args []string, stdin io.Reader, stdout, stderr io.Writer) (code in
 		return finetuneCmd(rest, stdout, stderr), true
 	case "flow", "flows":
 		return flowCmd(rest, stdout, stderr), true
+	case "eval", "evals":
+		return evalCmd(rest, stdout, stderr), true
 	case "pair":
 		return pairCmd(rest, stdout, stderr), true
 	case "devices", "device":
@@ -199,6 +208,10 @@ Agent sessions:
   fleet "…"          one session per repo under repo_roots (--has FILE, --name GLOB,
                        --yes); {repo} and {name} in the task expand per repo
   prune              delete finished sessions past sessions.retention_days now
+  sessions setup ID  the setup a session ran with: agent, version, model, MCP servers;
+                       with a second ID, the fields that differ (--json)
+  sessions trajectory ID
+                     the session's model calls as an ATIF trajectory (--format atif|jsonl)
 
 Flows (saved recipes of model calls and agent sessions):
   flow list          flows with their trigger, next run and last run
@@ -208,6 +221,15 @@ Flows (saved recipes of model calls and agent sessions):
   flow cancel RUN    stop a run
   flow approve RUN   approve a run waiting at an approve step (--reject, --note)
 
+Evals (agent work judged against criteria by a judge model):
+  eval list          evals with their last run
+  eval show ID       one eval: gates, criteria, setups, problems
+  eval validate FILE check a definition; eval import FILE, eval export ID
+  eval run ID        one session per setup, judged when it ends (--setup, --wait)
+  eval runs [ID]     recent runs; eval report RUN prints one
+  eval compare A B   gates and criteria that flipped, and the setup fields that differ
+  eval cancel RUN    stop a run; eval rejudge RUN judges its sessions again (a new judge)
+
 Models and the machine:
   pull REF           download a model, never load it: an Ollama name, lms:NAME or a
                        Hugging Face .gguf URL (--engine --sha256 --detach, --cancel ID)
@@ -216,6 +238,9 @@ Models and the machine:
   bench              time a model through the gateway on a fixed prompt set
                        (--model --repeat --kinds --prefill --label); bench list,
                        bench compare A B
+  guard bench        red-team the agent guard's classifier over a fixed case set:
+                       detection and false-alarm rates per category (--model
+                       --threshold); guard bench list, guard bench compare A B
   rapl-setup         print the one-time root steps that let Cerberus read CPU watts
 
 Secrets and access:

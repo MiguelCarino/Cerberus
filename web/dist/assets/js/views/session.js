@@ -26,6 +26,7 @@ import { insertedPaths } from '../files.js';
 import { replayPanel } from './replay.js';
 import { delegationText } from '../delegation.js';
 import { flowPanel } from './flow.js';
+import { setupPanel } from './setuppanel.js';
 import { previewPanel } from './preview.js';
 import { previewChip } from '../preview.js';
 import { copyLater } from './chatdom.js';
@@ -239,6 +240,9 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
   // when the view opens and when the session's state changes, never polled.
   let delegated = '';
   let delegatedState = '';
+  // The setup snapshot (E3): one element kept across notice re-renders so
+  // its open state and comparison survive updates.
+  const setup = setupPanel(id);
   async function loadDelegated() {
     try {
       const d = await api(`${sid(id)}/delegation?period=30d`);
@@ -319,6 +323,8 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
     if (delegated) notice.append(h('p', { class: 'ws-path' }, h('span', { class: 'ws-tag', text: 'delegated' }), ' ', delegated));
     const lim = limitsText(info.Limits, guard());
     if (lim) notice.append(h('p', { class: 'ws-path' }, h('span', { class: 'ws-tag', text: 'limits' }), ' ', lim));
+    setup.sync(info);
+    if (setup.hasSetup()) notice.append(setup.el);
     if (info.State === 'waiting' && info.WaitingReason) notice.append(h('div', { class: 'alert warn', text: `Waiting: ${info.WaitingReason}` }));
     if (info.State === 'queued' && info.WaitingReason) notice.append(h('div', { class: 'alert info', text: `Queued: ${info.WaitingReason}` }));
     if (info.Error) notice.append(h('div', { class: 'alert err', text: info.Error }));

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"carino.systems/cerberus/internal/downloads"
+	"carino.systems/cerberus/internal/evals"
 	"carino.systems/cerberus/internal/flows"
 	"carino.systems/cerberus/internal/inbox"
 	"carino.systems/cerberus/internal/session"
@@ -560,6 +561,12 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		flowCh, flowCancel = s.flowFeed.Subscribe()
 	}
 	defer func() { flowCancel() }()
+	var evalCh <-chan evals.Event
+	evalCancel := func() {}
+	if s.evalFeed != nil {
+		evalCh, evalCancel = s.evalFeed.Subscribe()
+	}
+	defer func() { evalCancel() }()
 	// Open chat permission requests (owners with the chat on): "asks"
 	// {keys} goes out when the set changes, so the bell can show them.
 	var askCh <-chan struct{}
@@ -707,6 +714,23 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if !send(flows.EventType, ev) {
+				return
+			}
+		case ev, ok := <-evalCh:
+			if !ok {
+				// Dropped for falling behind: resubscribe and tell the page
+				// to refetch.
+				evalCancel()
+				evalCh, evalCancel = s.evalFeed.Subscribe()
+				if !resync("evals") {
+					return
+				}
+				continue
+			}
+			if !s.canOwn(pr, ev.Owner) {
+				continue
+			}
+			if !send(evals.EventType, ev) {
 				return
 			}
 		}

@@ -309,6 +309,8 @@ export function parseRoute(hash) {
       if (parts[1] === 'runs') return parts[2] ? { view: 'flowrun', run: parts[2] } : { view: 'flows' };
       if (parts[1] === 'new') return parts[2] ? { view: 'flowedit', id: 'new', template: parts[2] } : { view: 'flowedit', id: 'new' };
       return parts[1] ? { view: 'flowedit', id: parts[1] } : { view: 'flows' };
+    // Evals (E1): #/evals/runs/<run> is a run's page; the list lives in Usage.
+    case 'evals': return parts[1] === 'runs' && parts[2] ? { view: 'evalrun', run: parts[2] } : { view: 'usage' };
     // Files handed over by another Carino page land on Sessions (choose a session or a new task).
     case 'carino-bridge': return { view: 'sessions' };
     case 'login': return { view: 'login' };

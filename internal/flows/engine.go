@@ -25,6 +25,7 @@ type Options struct {
 	Auditor  Auditor
 	Guard    Guard
 	Catalog  Catalog
+	Judge    JudgeRunner // judge steps (nil: they fail with a clear error)
 	Events   Publisher
 	Clock    Clock          // SystemClock when nil
 	Location *time.Location // schedules and {date}/{time}; time.Local when nil

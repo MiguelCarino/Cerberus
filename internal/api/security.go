@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -287,6 +288,15 @@ func (s *server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	env := doctor.Env{Cfg: s.view(), DataDir: s.dataDir,
 		TokenRotated: func() time.Time { return doctor.LastRotation(s.audit) }}
 	env.Users = s.users
+	if s.models != nil {
+		env.Models = func(ctx context.Context) []string {
+			var ids []string
+			for _, m := range s.models.Models(ctx) {
+				ids = append(ids, m.ID)
+			}
+			return ids
+		}
+	}
 	if s.doctorEnv != nil {
 		env = s.doctorEnv(env)
 	}

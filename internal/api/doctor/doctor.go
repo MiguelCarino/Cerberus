@@ -103,6 +103,9 @@ type Env struct {
 	// Bindable reports whether a host:port can be bound now (preview
 	// ports; default: listen and close at once).
 	Bindable func(addr string) bool
+	// Models lists the model ids the engines know now (the evals check;
+	// nil: no listing, so a model only the engines know is not flagged).
+	Models func(ctx context.Context) []string
 }
 
 // Defaults fills every nil field of e with the real implementation.
@@ -218,7 +221,7 @@ func Run(ctx context.Context, e Env) Report {
 			localNoAuthCheck(e), sandboxCheck(ctx, e), raplCheck(e), enginesCheck(ctx, e),
 			agentsCheck(e), systemdCheck(e), diskCheck(e), retentionCheck(e), gitCheck(ctx, e),
 			voiceCheck(e), serviceCheck(e), usersCheck(e), usersTLSCheck(e), lingerCheck(e), usersSandboxCheck(ctx, e),
-			recordsCheck(e), agentGuardCheck(e))
+			recordsCheck(e), agentGuardCheck(e), evalsCheck(ctx, e))
 	}
 	r := Report{Time: e.Now().UTC(), Checks: checks, Counts: map[Status]int{OK: 0, Warn: 0, Fail: 0}}
 	for _, c := range checks {

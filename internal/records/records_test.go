@@ -171,3 +171,50 @@ func TestClientFamily(t *testing.T) {
 		t.Error("X-Cerberus-Client should win")
 	}
 }
+
+func TestSessionLines(t *testing.T) {
+	s := open(t, TextUser)
+	base := time.Date(2026, 11, 3, 23, 59, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	// Out of order within a day, across two days, mixed with another session.
+	s.Add(Line{Time: base.Add(30 * time.Second), Session: "s-1", Model: "b", Text: &Text{Reply: "second"}})
+	s.Add(Line{Time: base.Add(10 * time.Second), Session: "s-1", Model: "a", Text: &Text{Reply: "first"}})
+	s.Add(Line{Time: base.Add(20 * time.Second), Session: "s-10", Model: "x"})
+	s.now = func() time.Time { return base.Add(2 * time.Minute) }
+	s.Add(Line{Time: base.Add(2 * time.Minute), Session: "s-1", Model: "c"})
+
+	got, more, err := s.SessionLines("s-1", "", 0)
+	if err != nil || more || len(got) != 3 {
+		t.Fatalf("%d lines, more %v, %v", len(got), more, err)
+	}
+	for i, want := range []string{"a", "b", "c"} {
+		if got[i].Line.Model != want || got[i].Line.Session != "s-1" {
+			t.Fatalf("line %d: %+v", i, got[i].Line)
+		}
+		if b := got[i].Bytes; len(b) == 0 || b[len(b)-1] != '\n' || !strings.Contains(string(b), `"model":"`+want+`"`) {
+			t.Fatalf("raw %d: %q", i, b)
+		}
+	}
+	if got[0].Line.Text == nil || got[0].Line.Text.Reply != "first" {
+		t.Fatalf("text not kept: %+v", got[0].Line.Text)
+	}
+	if got, _, _ := s.SessionLines("s-1", "2026-11-04", 0); len(got) != 1 || got[0].Line.Model != "c" {
+		t.Fatalf("from a day: %+v", got)
+	}
+	if got, more, _ := s.SessionLines("s-1", "", 2); len(got) != 2 || !more || got[1].Line.Model != "b" {
+		t.Fatalf("limit: %d %v", len(got), more)
+	}
+	if _, _, err := s.SessionLines("s-1", "nope", 0); err == nil {
+		t.Fatal("bad day accepted")
+	}
+	if d := s.OldestDay(); d != "2026-11-03" {
+		t.Fatalf("oldest %q", d)
+	}
+	if s.RetainDays() != 14 {
+		t.Fatalf("retain %d", s.RetainDays())
+	}
+	var nilStore *Store
+	if l, _, _ := nilStore.SessionLines("s-1", "", 0); l != nil || nilStore.OldestDay() != "" {
+		t.Fatal("nil store")
+	}
+}

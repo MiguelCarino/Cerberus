@@ -164,7 +164,7 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		defer func() { _ = saved.Flush() }()
 	}
 	var engOpts []engine.Option
-	sessOpts := []session.Option{session.WithAudit(auditLog), session.WithPermits(saved), session.WithConfine(func(owner string) bool {
+	sessOpts := []session.Option{session.WithAudit(auditLog), session.WithPermits(saved), session.WithVersion(version + " (" + build + ")"), session.WithConfine(func(owner string) bool {
 		// Recomputed at every run from the owner's current role (never only
 		// from the session's own, agent-writable folder).
 		if !accounts.HasUsers() {
@@ -256,8 +256,13 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 	pulls := newDownloads(chatCfg, notifier, dlFeed, log.With("part", "downloads"))
 	flowFeed := api.NewFlowFeed()
 	flowPush := notify.New(cfg.Notify, log.With("part", "notify")) // desktop/push only: approvals already have their inbox item
+	evalFeed := api.NewEvalFeed()
+	evalHost := newEvalHost(flowsSetup{data: data, live: chatCfg, gw: gw, usage: store, sess: sess, eng: eng, audit: auditLog,
+		users: accounts}, evalFeed)
 	flowEng := openFlows(flowsSetup{data: data, cfg: cfg, live: chatCfg, gw: gw, usage: store, sess: sess, eng: eng,
-		notifier: notifier, push: flowPush, inbox: notes, audit: auditLog, feed: flowFeed, users: accounts}, log.With("part", "flows"))
+		notifier: notifier, push: flowPush, inbox: notes, audit: auditLog, feed: flowFeed, users: accounts, judge: evalHost},
+		log.With("part", "flows"))
+	evalEng := openEvals(evalHost, data, log.With("part", "evals"))
 
 	var bg sync.WaitGroup
 	for _, fn := range []func(context.Context){mon.Run, eng.Run, sess.Run, tracker.Run, acct.Run, sysmonitor.Run, dropped.Run} {
@@ -276,6 +281,7 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		Users:    accounts,
 		Permits:  saved,
 		FlowFeed: flowFeed,
+		EvalFeed: evalFeed,
 		Restart: func() {
 			restarting.Store(true)
 			requestRestart()
@@ -288,6 +294,7 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		deps.Inbox = notes
 	}
 	deps.Flows = flowEng // nil when the engine did not open: the routes answer 503
+	deps.Evals = evalEng
 	// Work previews: the listeners' TLS config is known once listenAll ran,
 	// and no preview port is bound before a request asks for one.
 	var listeners *listenSet
@@ -301,6 +308,7 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 	handler := api.New(deps)
 	listeners, addrs, err := listenAll(cfg.Server, handler, log)
 	if err != nil {
+		closeEvals(evalEng)
 		closeFlows(flowEng)
 		pulls.Close()
 		chats.Close()
@@ -333,8 +341,9 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 	// failed ("daemon restarted"); runs waiting for an approval keep
 	// waiting; the sessions they started stop with the others below.
 	closeFlows(flowEng)
-	chats.Close() // waits for the runs (their commands' process groups end too)
-	pulls.Close() // cancels downloads; partial GGUF files stay to resume
+	closeEvals(evalEng) // runs going are recorded as failed; their sessions stop below
+	chats.Close()       // waits for the runs (their commands' process groups end too)
+	pulls.Close()       // cancels downloads; partial GGUF files stay to resume
 	sess.Shutdown(sctx)
 	eng.Shutdown(sctx)
 	cancelRun()

@@ -254,3 +254,11 @@ body[data-view="session"] #app { display: flex; flex-direction: column; overflow
 dialog.modal.modal-wide { width: min(1100px, calc(100% - 32px)); max-width: min(1100px, calc(100% - 32px)); }
 .mon-tasks-pop .mon-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .mon-tasks-pop .mon-search { flex: 1 1 200px; }
+/* Session setup snapshot (E3): a small disclosure under the notices. */
+.setup-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 4px 0 8px; }
+.setup-list dt { color: var(--text-sec); }
+.setup-list dd { margin: 0; color: var(--text); overflow-wrap: anywhere; min-width: 0; }
+.setup-diff .setup-arrow { color: var(--text-sec); }
+.setup-compare { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+.setup-compare .input { flex: 1 1 160px; min-width: 0; }
+@media (max-width: 420px) { .setup-list { grid-template-columns: minmax(0, 1fr); } .setup-list dd { margin-bottom: 4px; } }

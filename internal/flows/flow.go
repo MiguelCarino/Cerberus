@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"carino.systems/cerberus/internal/evals"
 )
 
 // Trigger kinds.
@@ -21,10 +23,11 @@ const (
 	KindIf      = "if"
 	KindApprove = "approve"
 	KindOutput  = "output"
+	KindJudge   = "judge"
 )
 
 // Kinds lists every step kind in the order the designer offers them.
-var Kinds = []string{KindPrompt, KindPlan, KindFanOut, KindSession, KindIf, KindApprove, KindOutput}
+var Kinds = []string{KindPrompt, KindPlan, KindFanOut, KindSession, KindJudge, KindIf, KindApprove, KindOutput}
 
 // Test operators of an `if` step.
 const (
@@ -136,6 +139,8 @@ func (l Limits) Effective() Limits {
 //	fan_out  from, routes[], default_model, as ("prompt"|"session"), template,
 //	         agent?, workspace?, repo?, folder?, max_parallel
 //	session  agent, workspace (scratch|repo|folder), repo?, folder?, task
+//	judge    on (an earlier session step id), criteria[], gates[]?, persona?,
+//	         model? ("" = evals.judge_model, then engines.default_model)
 //	if       test (contains|matches|equals|json|state), on (an earlier step id),
 //	         value, path (json only), then, else (a later step id, "end" or "")
 //	approve  message
@@ -174,6 +179,12 @@ type Step struct {
 
 	To   string `json:"to,omitempty"`
 	File string `json:"file,omitempty"`
+
+	// judge (E2): the criteria graph and gates of an eval, judged against
+	// the workspace of the session step On, with feedback in Persona's voice.
+	Criteria []evals.Criterion `json:"criteria,omitempty"`
+	Gates    []evals.Gate      `json:"gates,omitempty"`
+	Persona  string            `json:"persona,omitempty"`
 }
 
 // Route sends fan-out items of one kind to one model.
@@ -221,7 +232,20 @@ func (s Step) maxItems() int {
 func (f Flow) clone() Flow {
 	f.Steps = append([]Step(nil), f.Steps...)
 	for i := range f.Steps {
-		f.Steps[i].Routes = append([]Route(nil), f.Steps[i].Routes...)
+		st := &f.Steps[i]
+		st.Routes = append([]Route(nil), st.Routes...)
+		if st.Criteria != nil {
+			cs := make([]evals.Criterion, len(st.Criteria))
+			for j, c := range st.Criteria {
+				c.DependsOn = append([]string(nil), c.DependsOn...)
+				c.Evidence = append([]string(nil), c.Evidence...)
+				cs[j] = c
+			}
+			st.Criteria = cs
+		}
+		if st.Gates != nil {
+			st.Gates = append([]evals.Gate(nil), st.Gates...)
+		}
 	}
 	return f
 }

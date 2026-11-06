@@ -22,7 +22,7 @@ import {
   stepFields, newStep, duplicateStep, moveStep, removeStep, renameStepRefs, placeholdersFor, cleanFlow,
   blankFlow, fromTemplate, LIMIT_FIELDS, indexProblems, problemsAt, problemSummary, problemText, draftGraph,
   previewChip, cronFor, limitsText, stepSummary, clip, runTone, stateText, usageText, stepUsage, outputText, stepRows, isFinalRun, canCancelRun, runEventFor, selectDefault, setStepField,
-  runLog, runLogName,
+  runLog, runLogName, parseListField, listFieldText,
 } from '../flows.js';
 import { layoutGraph, fitText, FONT, isCircle, circleOf } from '../flowgraph.js';
 
@@ -454,6 +454,20 @@ export function mount(root, r = {}) {
       case 'agent': control = agentSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
       case 'repo': control = repoSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
       case 'routes': return fieldBlock(f, routesEditor(s, i), s.id);
+      case 'json': {
+        // A judge step's criteria or gates: a JSON list, kept as typed
+        // until it parses (the step holds the last list that did).
+        const ta = h('textarea', { class: 'textarea fe-json', rows: Math.min(14, Math.max(f.rows || 3, listFieldText(s[f.key]).split('\n').length + 1)),
+          value: listFieldText(s[f.key]), placeholder: f.placeholder || '', 'aria-label': f.label, 'data-focus': focusKey, spellcheck: 'false' });
+        const bad = h('span', { class: 'fe-hint fe-json-err', role: 'status' });
+        ta.addEventListener('input', () => {
+          const r = parseListField(ta.value);
+          bad.textContent = r.ok ? '' : r.error;
+          ta.classList.toggle('is-invalid', !r.ok);
+          if (r.ok) set(r.value);
+        });
+        return fieldBlock(f, h('div', { class: 'fe-json-box' }, ta, bad), s.id);
+      }
       default: control = h('span', {});
     }
     return fieldBlock(f, control, s.id);
@@ -462,7 +476,7 @@ export function mount(root, r = {}) {
   function fieldBlock(f, control, step) {
     const prob = h('div', { class: 'fe-prob' });
     addSlot({ step, field: f.key, el: prob });
-    const isGroup = f.type === 'routes' || f.type === 'template';
+    const isGroup = f.type === 'routes' || f.type === 'template' || f.type === 'json';
     return h(isGroup ? 'div' : 'label', { class: `field fe-field fe-f-${f.type}` },
       h('span', { class: 'field-label', text: f.label }), control,
       f.hint ? h('span', { class: 'fe-hint', text: f.hint }) : null, prob);

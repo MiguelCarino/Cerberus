@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"carino.systems/cerberus/internal/evals"
 )
 
 // Problem is one validation finding. Step is the step id ("" for the
@@ -252,6 +254,8 @@ func (v *validator) step(f Flow, i int, s Step, earlier func(string) bool) {
 		v.agent(s.ID, "agent", s.Agent)
 		v.workspace(s)
 		v.template(s.ID, "task", s.Task, true, earlier, false)
+	case KindJudge:
+		v.judgeStep(f, s, earlier)
 	case KindIf:
 		v.ifStep(f, i, s, earlier)
 	case KindApprove:
@@ -274,6 +278,42 @@ func (v *validator) step(f Flow, i int, s Step, earlier func(string) bool) {
 		v.add(s.ID, "kind", SevError, "unknown step kind %q", s.Kind)
 	}
 }
+
+// judgeStep checks a judge step: an earlier session step to judge, the
+// criteria and gates by the eval rules (evals.ValidateCriteria), the
+// persona and the model when one is named.
+func (v *validator) judgeStep(f Flow, s Step, earlier func(string) bool) {
+	switch {
+	case s.On == "":
+		v.add(s.ID, "on", SevError, "pick the session step to judge")
+	case !earlier(s.On):
+		v.add(s.ID, "on", SevError, "%q is not an earlier step", s.On)
+	case f.Steps[f.stepIndex(s.On)].Kind != KindSession:
+		v.add(s.ID, "on", SevError, "a judge step judges a session step")
+	}
+	var pc evals.Catalog
+	if c, ok := v.cat.(PersonaCatalog); ok {
+		pc = personaOnly{c}
+	}
+	for _, p := range evals.ValidateCriteria(s.Gates, s.Criteria, s.Persona, pc) {
+		sev := SevError
+		if p.Severity == evals.SeverityWarning {
+			sev = SevWarning
+		}
+		v.add(s.ID, p.Field, sev, "%s", p.Message)
+	}
+	if strings.TrimSpace(s.Model) != "" {
+		v.model(s.ID, "model", s.Model)
+	}
+}
+
+// personaOnly answers the persona question of an evals.Catalog (the only
+// one ValidateCriteria asks).
+type personaOnly struct{ c PersonaCatalog }
+
+func (p personaOnly) Model(string) (bool, bool) { return true, true }
+func (p personaOnly) Agent(string) (bool, bool) { return true, true }
+func (p personaOnly) Persona(name string) bool  { return p.c.Persona(name) }
 
 // SessionStates are the final session states a state test can compare
 // with (what a SessionRunner's Wait answers).

@@ -81,6 +81,8 @@ var routeTable = map[string]routeSpec{
 	"GET /api/bench":                             {class: clsWork},
 	"POST /api/bench":                            {class: clsAdmin},
 	"GET /api/bench/{id}":                        {class: clsWork, target: "/api/bench/20261105-100000-qwen"},
+	"GET /api/guardbench":                        {class: clsAdmin},
+	"POST /api/guardbench":                       {class: clsAdmin},
 	"GET /api/records":                           {class: clsAdmin},
 	"GET /api/records/{day}/{file}/{offset}":     {class: clsAdmin, target: "/api/records/2026-11-05/1-2/0"},
 	"DELETE /api/records":                        {class: clsAdmin, target: "/api/records?before=2026-01-01"},
@@ -191,6 +193,8 @@ var routeTable = map[string]routeSpec{
 	"POST /api/inbox/read":               {class: clsAny},
 	"DELETE /api/inbox/{id}":             {class: clsAny},
 	"GET /api/sessions/{id}/runs":        {class: clsWatch},
+	"GET /api/sessions/{id}/setup":       {class: clsWatch},
+	"GET /api/sessions/{id}/trajectory":  {class: clsWork},
 	"GET /api/sessions/{id}/runs/{name}": {class: clsWatch, target: "/api/sessions/s1/runs/x.cast"},
 	"GET /api/downloads":                 {class: clsAdmin},
 	"POST /api/downloads":                {class: clsAdmin},
@@ -230,6 +234,19 @@ var routeTable = map[string]routeSpec{
 	"PUT /api/flows/{id}":                 {class: clsWork, target: "/api/flows/fl-sample"},
 	"DELETE /api/flows/{id}":              {class: clsWork, target: "/api/flows/fl-sample"},
 	"POST /api/flows/{id}/run":            {class: clsWork, target: "/api/flows/fl-sample/run"},
+
+	// Evals (evals.go, E1): people only.
+	"GET /api/evals":                     {class: clsWork},
+	"POST /api/evals":                    {class: clsWork},
+	"POST /api/evals/validate":           {class: clsWork},
+	"GET /api/evals/runs":                {class: clsWork},
+	"GET /api/evals/runs/{run}":          {class: clsWork, target: "/api/evals/runs/er-20261105-100000-abcdef"},
+	"POST /api/evals/runs/{run}/cancel":  {class: clsWork, target: "/api/evals/runs/er-20261105-100000-abcdef/cancel"},
+	"POST /api/evals/runs/{run}/rejudge": {class: clsWork, target: "/api/evals/runs/er-20261105-100000-abcdef/rejudge"},
+	"GET /api/evals/{id}":                {class: clsWork, target: "/api/evals/ev-sample"},
+	"PUT /api/evals/{id}":                {class: clsWork, target: "/api/evals/ev-sample"},
+	"DELETE /api/evals/{id}":             {class: clsWork, target: "/api/evals/ev-sample"},
+	"POST /api/evals/{id}/run":           {class: clsWork, target: "/api/evals/ev-sample/run"},
 
 	// Settings export and import.
 	"GET /api/config/export":         {class: clsAdmin},

@@ -138,6 +138,11 @@ func flowStepLine(s flows.Step) string {
 		parts = append(parts, "from "+s.From, "as "+flowOrDash(s.As), "default "+s.DefaultModel)
 	case flows.KindSession:
 		parts = append(parts, s.Agent, flowOrDash(s.Workspace))
+	case flows.KindJudge:
+		parts = append(parts, "on "+flowOrDash(s.On), fmt.Sprintf("%d criteria", len(s.Criteria)))
+		if s.Persona != "" {
+			parts = append(parts, "persona "+s.Persona)
+		}
 	case flows.KindIf:
 		parts = append(parts, s.Test+" "+s.On, "then "+flowOrDash(s.Then), "else "+flowOrDash(s.Else))
 	case flows.KindOutput:

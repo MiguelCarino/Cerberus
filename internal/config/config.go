@@ -69,6 +69,9 @@ type Config struct {
 	// Flows phase (see flows.go).
 	Flows FlowsConfig `json:"flows"`
 
+	// Evals phase (see evals.go).
+	Evals EvalsConfig `json:"evals"`
+
 	// Users and roles, Phase 4a (see users.go).
 	Users UsersConfig `json:"users"`
 
@@ -310,6 +313,7 @@ func Defaults() *Config {
 	chatDefaults(c)
 	delegateDefaults(c)
 	flowsDefaults(c)
+	evalsDefaults(c)
 	usersDefaults(c)
 	return c
 }

@@ -173,6 +173,7 @@ export const STEP_KINDS = [
   { kind: 'plan', label: 'Plan', blurb: 'Ask a model for a list of parts to hand out.' },
   { kind: 'fan_out', label: 'Fan out', blurb: "Run each part of a plan on a model or an agent." },
   { kind: 'session', label: 'Agent session', blurb: 'Start an agent session and wait until it ends.' },
+  { kind: 'judge', label: 'Judge', blurb: "Judge a session's work against criteria; failed gates send it feedback to try again." },
   { kind: 'if', label: 'If', blurb: 'Jump ahead depending on an earlier output.' },
   { kind: 'approve', label: 'Approve', blurb: 'Wait until you approve or reject.' },
   { kind: 'output', label: 'Output', blurb: 'Send a notification, an inbox entry or a file.' },
@@ -186,6 +187,7 @@ export const KIND_FIELDS = {
   plan: ['model', 'template', 'max_items'],
   fan_out: ['from', 'routes', 'default_model', 'as', 'template', 'agent', 'workspace', 'repo', 'folder', 'max_parallel'],
   session: ['agent', 'workspace', 'repo', 'folder', 'task'],
+  judge: ['on', 'criteria', 'gates', 'persona', 'model'],
   if: ['test', 'on', 'value', 'path', 'then', 'else'],
   approve: ['message'],
   output: ['to', 'template', 'file'],
@@ -250,12 +252,24 @@ export function stepFields(step, steps = []) {
       return [
         { key: 'on', label: 'Test the output of', type: 'step', options: earlier },
         { key: 'test', label: 'Test', type: 'select', options: IF_TESTS },
-        { key: 'path', label: 'JSON path', type: 'text', placeholder: 'result.ok', show: t === 'json' },
+        { key: 'path', label: t === 'equals' ? 'Field of the output (optional)' : 'JSON path', type: 'text', placeholder: t === 'equals' ? 'passed' : 'result.ok', show: t === 'json' || t === 'equals' },
         t === 'state'
           ? { key: 'value', label: 'State', type: 'select', options: SESSION_STATES.map((x) => [x, x]) }
           : { key: 'value', label: t === 'matches' ? 'Regular expression' : 'Value', type: 'text', placeholder: t === 'matches' ? '^yes\\b' : 'yes' },
         { key: 'then', label: 'When true, go to', type: 'select', options: jumps },
         { key: 'else', label: 'Otherwise, go to', type: 'select', options: jumps },
+      ];
+    }
+    case 'judge': {
+      const sessions = before.filter((s) => s.kind === 'session').map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
+      return [
+        { key: 'on', label: 'Judge the work of', type: 'step', options: sessions, hint: sessions.length ? '' : 'Add an Agent session step before this one.' },
+        { key: 'criteria', label: 'Criteria (JSON)', type: 'json', rows: 6, placeholder: JUDGE_CRITERIA_EXAMPLE,
+          hint: 'A list of {id, prompt, gate?, depends_on?, evidence?}. Ids are lower case: a-z, 0-9 and _.' },
+        { key: 'gates', label: 'Gates (JSON, optional)', type: 'json', rows: 3, placeholder: JUDGE_GATES_EXAMPLE,
+          hint: 'In order, each {id, name?, max_iterations}. With more than 1 iteration, a failed gate sends feedback and the session tries again.' },
+        { key: 'persona', label: 'Feedback persona (optional)', type: 'text', placeholder: 'reviewer', hint: 'A name from evals.personas; empty is the built-in reviewer.' },
+        { key: 'model', label: 'Judge model (optional)', type: 'model', hint: 'Empty uses evals.judge_model, then the default model.' },
       ];
     }
     case 'approve': return [
@@ -270,7 +284,25 @@ export function stepFields(step, steps = []) {
   }
 }
 
-const BASE_ID = { prompt: 'prompt', plan: 'plan', fan_out: 'fan', session: 'session', if: 'check', approve: 'approve', output: 'output' };
+const BASE_ID = { prompt: 'prompt', plan: 'plan', fan_out: 'fan', session: 'session', judge: 'judge', if: 'check', approve: 'approve', output: 'output' };
+
+export const JUDGE_CRITERIA_EXAMPLE = '[{"id": "done", "prompt": "The task is done as asked"}]';
+export const JUDGE_GATES_EXAMPLE = '[{"id": "main", "max_iterations": 2}]';
+
+// parseListField reads a judge step's criteria or gates text: a JSON list
+// of objects ("" is an empty list). {ok, value} or {ok: false, error}.
+export function parseListField(text) {
+  const t = String(text ?? '').trim();
+  if (!t) return { ok: true, value: [] };
+  let v;
+  try { v = JSON.parse(t); } catch (e) { return { ok: false, error: `Not JSON: ${e.message}` }; }
+  if (!Array.isArray(v)) return { ok: false, error: 'Write a JSON list: [ {...}, ... ]' };
+  if (v.some((x) => !x || typeof x !== 'object' || Array.isArray(x))) return { ok: false, error: 'Each entry is an object: {"id": ..., ...}' };
+  return { ok: true, value: v };
+}
+
+// listFieldText is the text a criteria or gates box shows for a value.
+export const listFieldText = (v) => (Array.isArray(v) && v.length ? JSON.stringify(v, null, 2) : '');
 
 // uniqueId is base, else base-2, base-3, ... (never "end"), as a valid
 // step id (a-z, 0-9, - and _, starting with a letter, at most 32).
@@ -298,7 +330,16 @@ export function newStep(kind, steps = [], opts = {}) {
     case 'plan': return { ...s, model, template: `Split this job into parts: ${prev ? out(prev) : '{input}'}`, max_items: 5 };
     case 'fan_out': return { ...s, from: from ? from.id : '', as: 'prompt', routes: [], default_model: model, template: '{item.task}' };
     case 'session': return { ...s, agent: opts.agent || '', workspace: 'scratch', task: prev ? out(prev) : '{input}' };
-    case 'if': return { ...s, on: prev, test: 'contains', value: '', then: '', else: 'end' };
+    case 'judge': {
+      const sess = [...steps].reverse().find((x) => x.kind === 'session');
+      return { ...s, on: sess ? sess.id : '', criteria: JSON.parse(JUDGE_CRITERIA_EXAMPLE), gates: [] };
+    }
+    case 'if': {
+      const last = steps.length ? steps[steps.length - 1] : null;
+      // After a judge step, branch on its verdict.
+      if (last && last.kind === 'judge') return { ...s, on: prev, test: 'equals', path: 'passed', value: 'true', then: '', else: 'end' };
+      return { ...s, on: prev, test: 'contains', value: '', then: '', else: 'end' };
+    }
     case 'approve': return { ...s, message: 'Approve to continue?' };
     case 'output': return { ...s, to: 'inbox', template: prev ? out(prev) : '{input}' };
     default: return s;
@@ -391,6 +432,8 @@ export function cleanStep(step) {
     let v = step[k];
     if (k === 'max_items' || k === 'max_parallel') v = Math.max(0, Math.floor(Number(v) || 0)) || undefined;
     if (k === 'routes') v = (v || []).filter((r) => r && (String(r.kind || '').trim() || r.model)).map((r) => ({ kind: String(r.kind || '').trim(), model: r.model || '' }));
+    if ((k === 'criteria' || k === 'gates') && !Array.isArray(v)) v = undefined;
+    if (k === 'path' && step.kind === 'if' && !['json', 'equals'].includes(step.test)) v = undefined;
     if (keep(v)) o[k] = v;
   }
   return o;
@@ -415,7 +458,8 @@ export const clip = (s, n) => { const t = String(s ?? ''); return t.length > n ?
 
 // stepSummary is a collapsed card's line: "plan · default · Split this…".
 export function stepSummary(s) {
-  const t = s.template || s.task || s.message || '';
+  const crit = s.kind === 'judge' && Array.isArray(s.criteria) ? s.criteria.map((c) => c && c.prompt).filter(Boolean).join('; ') : '';
+  const t = s.template || s.task || s.message || crit || '';
   const parts = [s.id];
   if (s.model) parts.push(s.model);
   if (s.agent) parts.push(s.agent);
@@ -767,7 +811,7 @@ export function draftGraph(flow) {
       return;
     }
     edges.push({ from, to: target(i, ''), kind: 'next', label: '', count: 1 });
-    if (s.kind === 'prompt' || s.kind === 'plan') ask(from, s.model);
+    if (s.kind === 'prompt' || s.kind === 'plan' || s.kind === 'judge') ask(from, s.model);
     if (s.kind === 'fan_out' && (s.as || 'prompt') === 'prompt') {
       for (const r of s.routes || []) ask(from, r.model);
       ask(from, s.default_model);
@@ -783,6 +827,13 @@ function stepSub(s) {
     case 'prompt': case 'plan': parts.push(s.model); break;
     case 'fan_out': parts.push(s.from ? `from ${s.from}` : '', `as ${s.as || 'prompt'}`); break;
     case 'session': parts.push(s.agent, s.workspace || 'scratch'); break;
+    case 'judge': {
+      const n = Array.isArray(s.criteria) ? s.criteria.length : 0;
+      parts.push(s.on ? `on ${s.on}` : '', n === 1 ? '1 criterion' : `${n} criteria`);
+      if (Array.isArray(s.gates) && s.gates.length > 1) parts.push(`${s.gates.length} gates`);
+      parts.push(s.model);
+      break;
+    }
     case 'if': parts.push(`${s.on || ''} ${s.test || ''}`.trim()); break;
     case 'output': parts.push(s.to); break;
     default: break;

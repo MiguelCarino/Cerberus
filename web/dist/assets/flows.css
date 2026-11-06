@@ -183,6 +183,11 @@ a.flw-last:hover .t-sm, a.flw-last:focus-visible .t-sm { color: var(--accent); }
 .fe-step-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 .fe-tpl-box { display: flex; flex-direction: column; gap: 6px; }
 .fe-tpl-text { min-height: 72px; }
+.fe-json-box { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fe-json { min-height: 64px; font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.45; white-space: pre; overflow-x: auto; }
+.fe-json.is-invalid { border-color: var(--err); }
+.fe-json-err { color: var(--err); }
+.fe-json-err:empty { display: none; }
 .fe-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .fe-chip {
   padding: 2px 7px; border: 1px solid var(--border); border-radius: 4px; background: transparent;

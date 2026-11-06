@@ -7,7 +7,7 @@
 import { api } from '../api.js';
 import { h, clear, openDialog, toast, errText } from '../dom.js';
 import { fmtInt, fmtMs, relTime } from '../util.js';
-import { recordsQuery, recordURL, summarize, toolCounts, switches, cacheShare, guardText, FINISH_LABEL, OFF_TEXT } from '../records.js';
+import { recordsQuery, recordURL, summarize, toolCounts, switches, cacheShare, guardText, guardbenchText, FINISH_LABEL, OFF_TEXT } from '../records.js';
 import { store } from '../store.js';
 
 // recordsSection returns {el, load(), destroy()}.
@@ -19,6 +19,8 @@ export function recordsSection() {
   const body = h('div', { class: 'rec-body' }, h('p', { class: 't-sec', text: 'Loading…' }));
   const el = h('div', { class: 'rec' }, h('h2', { class: 'group-title', text: 'Request records' }), head, body);
 
+  let guardRun = null;
+
   async function load() {
     const mine = ++seq;
     let r;
@@ -28,7 +30,10 @@ export function recordsSection() {
       if (!gone && mine === seq) clear(body).append(h('p', { class: 't-sec', text: errText(e) }));
       return;
     }
+    // The guard red-team suite's last run (E5), beside the guard counters.
+    const gb = await api('/api/guardbench').catch(() => null);
     if (gone || mine !== seq) return;
+    guardRun = (gb && gb.last) || null;
     render(r || {});
   }
 
@@ -39,6 +44,8 @@ export function recordsSection() {
     const st = store.status();
     const guard = guardText(st && st.agent_guard);
     if (guard) head.append(h('p', { class: 't-sec rec-note', text: guard }));
+    const redteam = guardbenchText(guardRun);
+    if (redteam) head.append(h('p', { class: 't-sec rec-note', text: redteam }));
     if (!stats.on) { body.append(h('p', { class: 't-sec', text: OFF_TEXT })); return; }
     const days = r.days || [];
     const lines = r.lines || [];

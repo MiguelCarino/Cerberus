@@ -318,7 +318,7 @@ func TestFlowHostGuardAndCatalog(t *testing.T) {
 }
 
 func TestUsageClaimsMatchByTokens(t *testing.T) {
-	u := newUsageClaims()
+	u := newUsageClaims(flows.ClientName)
 	u.add(usage.Record{Client: flows.ClientName, SessionID: "r1", CostUSD: 9}) // nobody waiting: dropped
 	u.begin("r1")
 	u.begin("r1")

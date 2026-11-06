@@ -43,6 +43,7 @@ cgo, and platform-specific code goes behind build tags, with stubs where a platf
 | 2 (done) | Secrets vault; spend tracking (prices, budgets) and subscription gauges; session history (search, resume, retention); fleet tasks; voice tasks (local Whisper); HTTPS for phones; listen retry |
 | Day plan (done) | Monitor; control center; file drop; safety; startup and configuration; LLM chat with mascots; extras; hardening and documentation (day phases 1 to 7, specified below) |
 | Gateway phase (built, browser check pending) | Messages and Responses APIs, agent guard, request records, token-budget hygiene, stall watchdog, a stable bench (G1 to G6, specified and as built at the end) |
+| Evals phase (built 2026-11-05, as-built notes under each item) | Setup snapshots, evals with a criteria graph and an LLM judge, gates with judge feedback, ATIF trajectory export, a guard red-team suite (E1 to E5, specified at the end) |
 | 3 | GPU power-cap auto-tuner (tokens per joule), speculative-decoding and quantisation presets per GPU, vLLM backend, more than one GPU per box, several hosts (agent mode plus gateway mode) |
 | 4 (client edition) | Plain chat for non-developers (Spanish first), RAG over documents, several users with roles, budgets and audit log (LFPDPPP), fully offline, Carino remote support (health alerts, updates, opt-in support tunnel) |
 | 5 (desktop) | Cerberus desktop client grown from Atrium LLM chat, dynamic-island agent status, launcher "new task", bar readout of GPU power and tok/s; macOS and Windows builds |
@@ -70,6 +71,9 @@ internal/gateway/    OpenAI-compatible /v1 proxy with streaming + metrics
 internal/session/    agent sessions: PTY, scrollback, worktrees, checks, preview, queue/guard, escalation, accept
 internal/agent/      built-in headless coding agent (tool loop) run as `cerberus agent`
 internal/notify/     notifications (command hook, ntfy, notify-send)
+internal/evals/      evals (E1): definitions, runs, judge, evidence, reports
+internal/trajectory/ ATIF trajectory export (E4) from request records + the setup snapshot
+internal/guardbench/ agent-guard red-team suite (E5): embedded cases.json, runs, saved reports
 internal/api/        /api/* JSON + SSE, auth, preview mount, embeds web/
 web/                 the web UI (embedded with go:embed via web/embed.go)
 packaging/           cerberus.service (systemd user unit)
@@ -3363,6 +3367,8 @@ at startup for a pattern without a class (fail closed).
 | `DELETE /api/inbox/{id}` | ANY | own |
 | `GET /api/sessions/{id}/runs` | WATCH | |
 | `GET /api/sessions/{id}/runs/{name}` | WATCH | |
+| `GET /api/sessions/{id}/setup` | WATCH | owner (E3 setup snapshot) |
+| `GET /api/sessions/{id}/trajectory` | WORK | owner (E4 trajectory, ATIF or the record lines; a read with text is audited) |
 | `GET /api/downloads` | ADM | |
 | `POST /api/downloads` | ADM | |
 | `DELETE /api/downloads/{id}` | ADM | |
@@ -3393,6 +3399,17 @@ at startup for a pattern without a class (fail closed).
 | `PUT /api/flows/{id}` | WORK | |
 | `DELETE /api/flows/{id}` | WORK | |
 | `POST /api/flows/{id}/run` | WORK | budget |
+| `GET /api/evals` | WORK | own (all=1 for admins) |
+| `POST /api/evals` | WORK | |
+| `POST /api/evals/validate` | WORK | |
+| `GET /api/evals/runs` | WORK | own |
+| `GET /api/evals/runs/{run}` | WORK | owner |
+| `POST /api/evals/runs/{run}/cancel` | WORK | owner |
+| `POST /api/evals/runs/{run}/rejudge` | WORK | owner; budget |
+| `GET /api/evals/{id}` | WORK | owner |
+| `PUT /api/evals/{id}` | WORK | owner |
+| `DELETE /api/evals/{id}` | WORK | owner |
+| `POST /api/evals/{id}/run` | WORK | owner; budget |
 | `GET /api/config/export` | ADM | |
 | `POST /api/config/import` | ADM | |
 | `POST /api/config/models/forget` | ADM | |
@@ -4445,3 +4462,481 @@ servers and the demo harness folder was gone. The new web pieces are:
 - the Models load line.
 
 Their helpers have node tests.
+
+---
+
+# Evals phase specification (E1 to E5)
+
+Ideas taken from microsoft/scope (MIT, research preview): judge an agent's work against criteria,
+not only its speed. Bench (G6) measures how fast a model is; evals measure whether an agent setup
+gets a task right. Nothing here copies Scope's code, and none of its cloud stack (Kubernetes, KEDA,
+MongoDB, the TLS-intercepting proxy, the VS Code worker) is taken. Build order: E3, E1, E2, E4, E5.
+
+Shared rules for the phase:
+- The judge is a model called through the in-process gateway, like a flow's prompt step, with usage
+  recorded under client `cerberus-eval`. Tests use a fake caller and never load a model.
+- Config is add-only, with schema metadata for every key: `evals.enabled` (default true),
+  `evals.judge_model` ("" = `engines.default_model`), `evals.max_parallel` (default 1: sessions of
+  one eval run at once), `evals.evidence_kb` (default 64: evidence text per criterion call) and
+  `evals.personas` (a map of name → feedback instructions; see E2).
+- Every new route goes in the route table and the route matrix. Every state change is audited.
+- Data lives under `DATA/evals/` (0700 folders, 0600 files, atomic writes).
+
+## E3 Setup snapshot (reproducible runs)
+
+A session records the setup it actually ran with, so two runs can be compared like for like.
+
+- At each run start the session manager writes `setup.json` in the session folder and keeps it on
+  the Info as `SetupHash` (SHA-256 of the canonical JSON, first 12 hex characters). `setup.json`
+  holds:
+  - the agent profile as resolved (name, command and args with secrets masked, env keys only, never
+    values);
+  - the agent binary's `--version` output (first line, at most 200 characters). It is run once per
+    binary path and modification time and cached, with a 3 s timeout. A failure is recorded as "".
+  - the model: id, engine, and when the engine knows them, the file path, quantization and context
+    size. Nothing is loaded to find out.
+  - the MCP servers the session was given (names and commands, masked);
+  - the workspace mode, the base commit (repo sessions) and the Cerberus version.
+- `GET /api/sessions/{id}/setup` returns it (owners and admins, as for the session). A missing file
+  (old sessions) is 404.
+- `cerberus sessions setup ID` prints it. `cerberus sessions setup A B` prints the fields that
+  differ.
+- The session page shows a small "Setup" disclosure with the hash and the differing fields when it
+  was compared.
+
+As built (E3):
+- `setup.json` is written at every launch (first run, retry, escalation, resume), from
+  `internal/session/setup.go`. A write failure is logged and the run starts anyway; Info keeps the
+  previous `SetupHash`.
+- The agent command is the profile's command as configured, placeholders (`{task}`, `{model}`,
+  `{session}`...) left unexpanded, so runs of different tasks compare equal. A resumed run records
+  `resume_command` and `"resume": true`. The `--mcp-config` flags Cerberus adds are not in the
+  command; they show as the `cerberus` MCP server. Masking: vault values and the run's injected
+  secrets anywhere, plus the value of a `--flag=V`/`NAME=V` or the argument after a flag whose name
+  says key, token, secret, password, auth, credential or bearer (placeholders are left alone). Also
+  masked in any argument, vault or not: API key and token shapes (`records.MaskTokens`), URL query
+  or fragment parameters whose name says key, token, secret, password, auth, credential, bearer,
+  sig or session (`?api_key=...`), a URL's userinfo password, and a header argument whose name says
+  one of those or cookie (`Authorization: Bearer ...`, `X-Api-Key: ...`).
+- Extra fields beyond the spec: `agent.binary` (as found on PATH), `agent.sandbox` (`bwrap` or
+  `none`, as actually run), `agent.interactive`, and `model.requested` (the alias asked for, next to
+  the resolved `model.id`). `agent.env_keys` holds the profile's `env` and `secret_env` names.
+- The model is resolved through the engine's cached listing (`engine.Resolve`, never a load). The
+  quantization is parsed from the file or model name (Q4_K_M, IQ3_XXS, Q8_0, F16, BF16...): the
+  engine has no quantization field.
+- MCP servers: the session's own `cerberus mcp` when Cerberus added it, else the servers of a
+  config file the profile names with `--mcp-config` (names and command lines, masked; best effort).
+- `--version`: the built-in agent (the running cerberus binary) is never run, its version is
+  known. The cache key is the path, modification time and size. Inside a test binary the default
+  probe returns "" (`testing.Testing()`): fake agents are scripts that must not run an extra time.
+- `GET /api/sessions/{id}/setup` returns `{hash, recorded_hash, verified, setup}`: the hash is
+  recomputed from the file and `verified` says whether it still matches the one recorded at run
+  start (the session folder is writable by a sandboxed agent). The file is opened with O_NOFOLLOW.
+  It is WATCH like the session itself (viewers see it too), not owners and admins only.
+- The CLI is `cerberus sessions setup [--json] ID [OTHER_ID]` (alias `session`). Diffs come from
+  `session.DiffSetups`, which E1's `eval compare` reuses. The web helpers are in `js/setup.js` (same
+  18 fields, same order); the disclosure (`views/setuppanel.js`) loads when opened and has a
+  "Compare" box that takes another session id or `#/s/<id>` link.
+
+## E1 Evals: a task, a criteria graph and a judge
+
+An **eval** is a saved definition: `DATA/evals/<id>.json`, id `ev-<slug>`.
+
+```json
+{
+  "id": "ev-health-endpoint", "name": "Health endpoint", "version": 3,
+  "task": "Add a GET /health endpoint that returns {\"ok\": true} ...",
+  "workspace": "scratch | repo", "repo": "name or path", "base": "commit (repo only)",
+  "gates": [{"id": "build", "name": "Build", "max_iterations": 2}, {"id": "test", "name": "Test", "max_iterations": 1}],
+  "criteria": [
+    {"id": "has_server", "prompt": "There is an HTTP server entry point", "gate": "build"},
+    {"id": "health_route", "prompt": "GET /health returns 200 with JSON {\"ok\": true}", "gate": "build", "depends_on": ["has_server"]},
+    {"id": "tests_pass", "prompt": "The project's tests run and none fail", "gate": "test", "evidence": ["checks", "files"]}
+  ],
+  "setups": [{"label": "qwen 27b", "agent": "cerberus", "model": "qwen/qwen3.8-27b"}, {"label": "claude", "agent": "claude"}],
+  "repeat": 1, "judge_model": "", "persona": ""
+}
+```
+
+- **Validation** (errors block save and run):
+  - criterion ids match `^[a-z][a-z0-9_]{0,47}$` and are unique;
+  - every `depends_on` names a criterion of the same eval, and the graph is acyclic;
+  - a criterion's gate exists, and a dependency's gate is the same gate or an earlier one;
+  - at least one criterion and one setup; `repeat` is 1 to 10; `max_iterations` is 1 to 5;
+  - agents and models must be known (warnings when not installed);
+  - `evidence` values come from `files`, `checks`, `transcript` and `diff` (default: all four).
+
+  With no `gates`, there is one implicit gate `main` with `max_iterations` 1.
+- **A run** (`DATA/evals/runs/<run>/run.json`, id `er-<local yyyymmdd-hhmmss>-<6 base36>`) snapshots
+  the eval. It starts one session per setup × repeat, tagged `eval` and the eval id, owned by the
+  person who started it, never auto-accepted, at most `evals.max_parallel` at a time. A repo eval
+  pins the base commit, so every setup starts from the same tree.
+- **Judging** starts when a session reaches a final state. For each gate in order, the criteria of
+  that gate are judged in topological order, independent ones in parallel (at most 2 calls at
+  once):
+  - a criterion whose parents all passed is judged;
+  - one with a failed, skipped or errored parent is `skipped`, with "needs <parent>" as its
+    rationale.
+- **Evidence** for one judge call is built from the session's workspace, capped at
+  `evals.evidence_kb`. The judge never runs anything.
+  - `files`: the file tree (paths and sizes; `.git`, `node_modules` and the like left out), then the
+    text files whose paths or names the criterion mentions, then the newest-changed files, until the
+    cap.
+  - `checks`: the session's check output.
+  - `transcript`: the tail of the masked transcript.
+  - `diff`: `git diff` against the base, for repo sessions.
+
+  Secrets are masked with the session's masker.
+- **The judge call:** a fixed, trusted system prompt (in Go, pinned by a test hash) plus a user
+  message holding the criterion and its evidence. Temperature 0, thinking off, max 600 tokens.
+  - The reply must be JSON: `{"verdict": "pass" | "fail", "rationale": "...", "evidence": ["path:line or quote", ...]}`.
+  - One retry on a parse error, then the criterion is `error`.
+  - The evidence text is data. The system prompt says so, and text inside it that asks for a verdict
+    is ignored.
+- **Report** per session (`report-<session>.json`):
+  - setup label and SetupHash, and per criterion: state (pass, fail, skipped, error), rationale,
+    evidence, gate, iteration;
+  - gates passed out of total, and the first failing gate;
+  - tokens, cost and energy of the session, and of the judge separately;
+  - wall time.
+
+  The run summary ranks setups by gates passed, then criteria passed, then wall time.
+- **API:**
+  - `GET|POST /api/evals`, `GET|PUT|DELETE /api/evals/{id}` (optimistic version, as for flows);
+  - `POST /api/evals/validate`;
+  - `POST /api/evals/{id}/run`, which answers 202 with the run;
+  - `GET /api/evals/runs?eval=&limit=`, `GET /api/evals/runs/{run}` (run, reports, live states);
+  - `POST /api/evals/runs/{run}/cancel`, which stops its sessions;
+  - `POST /api/evals/runs/{run}/rejudge` (judge again with the current judge model, without
+    re-running sessions, for a judge change).
+
+  Live changes go out on `/api/events` as `evalrun` events. A run that is still going is not pruned.
+  The newest 50 runs per eval are kept.
+- **CLI:**
+  - `cerberus eval list`, `eval show ID`, `eval validate FILE`, `eval import FILE`, `eval export ID`;
+  - `eval run ID [--wait] [--setup LABEL]`, `eval runs [ID]`, `eval report RUN`;
+  - `eval compare RUN_A RUN_B`: per setup, gates passed and per-criterion flips, plus the setup
+    fields that differ (E3).
+- **Web:** an "Evals" section in Usage, below Bench.
+  - It lists the evals and their last run.
+  - A run page (`#/evals/runs/<run>`) shows a matrix: setups as rows, criteria grouped by gate as
+    columns, with ✓ ✗ – (skipped) ! (error). A cell opens the rationale and evidence. The page also
+    shows gates passed, tokens, time and energy, and links to the sessions.
+  - Admins (`models.manage`) and owners can start a run and edit the JSON definition in a dialog.
+  - It must fit 360 px: the matrix scrolls inside its own box, not the page.
+- **Doctor:** `evals` checks that the judge model is known, and warns when it is also a setup's model
+  (a model judging itself).
+
+As built (E1):
+- Package `internal/evals`: `eval.go` (types, ids, `EffectiveGates`, `GateOf`, `EvidenceOf`),
+  `validate.go` (`Validate`, `Order`), `store.go` (definitions, optimistic versions: an update
+  names the version it read, else `ErrStale`; no previous versions are kept, unlike flows),
+  `run.go` (run and report files, pruning), `engine.go` (start, cancel, rejudge, close),
+  `judging.go` (gates, waves, criteria), `judge.go` (prompt, messages, parsing), `evidence.go`,
+  `report.go` (`Summarize`, `Compare`). The daemon side is `internal/api/evalhost.go`
+  (`EvalHost`, `EvalFeed`), the routes `internal/api/evals.go`, the CLI `cmd/cerberus/eval_cmd.go`.
+- Gates as data: every result carries `gate` and `iteration` (1-based; 0 for a criterion skipped
+  because an earlier gate failed), every report `gates: [{gate, name, state, iterations}]` and a
+  `history`/`feedback` slot for E2. `judgeSession` judges each gate at iteration 1 and stops at the
+  first gate that fails; E2 adds the loop at that point. A criterion with no `gate` belongs to the
+  first gate. Within a gate, criteria are judged in waves (ready = every dependency has a result),
+  at most 2 calls at once; a wave waits for its slowest call.
+- Run ids are `er-<local yyyymmdd-hhmmss>-<6 base36>`. Runs live in memory and in
+  `runs/<run>/run.json` (rewritten on every change); reports in `runs/<run>/report-<session>.json`.
+  A run the daemon stopped in the middle of (closing the engine never stops sessions) is loaded as
+  `failed` ("rejudge judges the sessions that ended"). Pruning keeps the newest 50 runs per eval at
+  each start and never removes a run still going.
+- Run states: `running`, `judging` (a rejudge), `done`, `canceled`, `failed`. Session slots:
+  `pending`, `running`, `judging`, `judged`, `error`, `canceled`; `GET` adds each session's live
+  state (`removed` when it is gone).
+- Repo evals: the base is resolved once per run (`git rev-parse --verify`, the eval's `base` or the
+  repo's main head) and pinned with a new `session.TaskSpec.Base` (hex only, checked against the
+  repo at Create; the worktree is added on it instead of main's head). `TaskSpec.Base` is also
+  accepted by `POST /api/sessions`.
+- The judge call goes through the in-process gateway like a flow's prompt step (client
+  `cerberus-eval`, the run id as session, the run's owner charged), `temperature: 0`,
+  `max_tokens: 600`. Thinking off is sent (`reasoning_effort: none`,
+  `chat_template_kwargs.enable_thinking: false`) only for a model the engine lists as local: cloud
+  APIs refuse those fields. The retry after a parse error repeats the call with the bad answer and
+  "Reply with only the JSON object". The judge system prompt is pinned by its SHA-256 in
+  `internal/evals/evals_test.go`; its first 12 hex characters are recorded on runs and reports
+  (`judge_prompt`).
+- Judge model: the eval's `judge_model`, else `evals.judge_model`, else `engines.default_model`; a
+  run with none is refused (400). Rejudge uses the snapshot's `judge_model` first, then the config
+  of now.
+- Evidence: the `files` share is the tree (at most a third of it, paths and sizes; `.git`,
+  `node_modules`, `vendor`, `.venv`, caches and the like left out; symlinks are never followed or
+  listed), then the mentioned text files, then the newest; each kind gets an equal share of the cap
+  and passes what it leaves unused to the next. Secrets are masked with the session manager's
+  `MaskSecrets`, then every API key and token shape (`session.MaskTokens`: the session's own agent
+  token is no longer pinned once its run ended, and a workspace `.env` may hold keys the vault never
+  had), before anything is cut: a file is read whole (up to 256 KiB; a file longer than that loses
+  its partial last line), masked, then cut to its share. The judge's rationale and quoted evidence
+  are masked again before the report keeps them. Closing tags of the `<task>`, `<criterion>` and
+  `<evidence>` fences (and `<failed>` in the feedback call) inside the data are broken in any letter
+  case and spacing (`</Evidence>`, `< / evidence`).
+- A repo eval's base commit is resolved only after the repo is checked against a confined
+  (non-admin) owner's shares (`BaseResolver.ResolveBase` takes the owner): a run of an unshared repo
+  is refused 403 before git looks at it, so it cannot tell whether a path is a repo or read its head.
+- Session usage in reports: tokens and cost of the gateway records under the session id (counted
+  while this daemon runs; after a restart, tokens from the usage totals), energy from the session's
+  wall-side `EnergyJ`. Wall time is the attempt's own `RunEnded - AttemptStarted`
+  (`session.Info.AttemptStarted`, added: the latest run's start, set at every launch, where
+  `RunStarted` stays the first run's).
+- Ranking: gates passed, then criteria passed, then fewer gate iterations (E2), then shorter mean
+  wall time; setups without a report last. With repeats, counts are summed over the repeats.
+- API extras: `POST /api/evals/validate` answers `{problems, eval (normalized), gates, order}`;
+  `GET /api/evals/{id}` answers `{eval, problems, judge_model, gates}`; lists take `all=1` for
+  admins. Ownership: WORK routes with the owner check of flows (`canOwn`): a user sees and runs
+  their own evals, admins everything; a run belongs to whoever started it and its sessions are
+  theirs (confined like their own sessions).
+- Validation beyond the spec: setups need unique labels (≤ 60 characters), names ≤ 120, prompts
+  ≤ 2000 characters, at most 64 criteria, 10 gates and 16 setups, a task ≤ 32 KiB; agents and
+  models may not start with "-"; an unknown persona is a warning; `evals.personas` names must be
+  `[a-z0-9][a-z0-9_-]{0,63}` with at most 2000 characters (config validation).
+- CLI extras: `eval cancel RUN`, `eval rejudge RUN`, `eval import --replace`, `eval report --json`;
+  `eval validate` falls back to the structure checks when the daemon is not running.
+  `eval compare` diffs the setups (`session.DiffSetups`) of the first repeat of each setup.
+- Doctor `evals`: warns when a judge model (config or an eval's own) is not known (configured,
+  provider, or listed by the engines), when there is no judge for an eval that needs the default, and when an
+  eval's setup model is its judge. The CLI doctor has no engine listing: a model the config does
+  not place (not in `models[]`, not under an enabled provider) may still be one an engine serves,
+  so it is never flagged there; the check stays OK and names it as "not checked without an engine
+  listing". Only the daemon's doctor (with the engines' listing) warns about it.
+- Web: `js/evals.js` (pure helpers, `web/test/evals.test.mjs`), `views/evals.js` (the Usage
+  section, JSON editor dialog with Check and Save), `views/evalrun.js` (the run page),
+  `assets/evals.css`. The run page is reachable by whoever may open Usage (tab Usage). The matrix
+  has a sticky header row and a sticky setup column inside its own scroll box.
+
+## E2 Gates, iteration budgets and judge feedback
+
+- Gates run in order. After a session ends, the first gate is judged. When it fails and the gate has
+  iterations left, the failed criteria (roots of the failure only, not their skipped descendants)
+  become **feedback**: one message, written by the judge model in the voice of the eval's
+  **persona**.
+  - `""` is the built-in "reviewer": plain, specific, no praise.
+  - `evals.personas` adds named ones, with instructions of at most 2000 characters.
+  - The feedback goes to the same session with `Manager.Resume(id, text)`: a new attempt in the same
+    workspace and conversation. The gate is judged again when it ends.
+- A gate that fails with no iterations left stops the run for that setup. Later gates are `skipped`
+  ("gate <id> did not pass"). A gate that passes moves on to the next one, in the same session state,
+  with no new attempt.
+- Each criterion result records its iteration (1-based). The report shows how many iterations each
+  gate took. A setup that passes on iteration 2 ranks below one that passes on iteration 1.
+- The feedback text is recorded in the report and in the session feed (`FeedFollowUp`, prefixed
+  "Eval feedback:").
+- Flows gain a `judge` step kind: `{on: <session step id>, criteria: [...], gates: [...], persona,
+  model}`.
+  - It judges the workspace of that step's session, with the same rules (feedback resumes the
+    session, inside the run's limits).
+  - Its output is `{passed: bool, gates_passed, gates_total, failed: [criterion ids], report: {...}}`,
+    so an `if` step can branch on `passed` (test `equals`, path `passed`).
+
+As built (E2):
+- The loop lives in `internal/evals/judging.go` (`judging.run`), shared by eval runs and flows:
+  `evals.Judge(ctx, JudgeDeps, Settings, Job)` judges one session outside a run (a flow's judge
+  step); the engine builds the same `Job` from a run's snapshot. Feedback text and prompts are in
+  `internal/evals/feedback.go`.
+- Feedback roots are the gate's criteria in state `fail` only. Skipped criteria follow from a root,
+  and `error` is the judge failing, so neither is fed back; a gate whose only non-passes are errors
+  gets no feedback and fails at once.
+- The feedback call: the fixed `FeedbackSystemPrompt` (pinned by a test hash like the judge prompt)
+  plus "Voice:" and the persona's instructions (`evals.personas[name]`, else the built-in reviewer:
+  "plain, specific and short. No praise..."; an unknown name falls back to the reviewer), then the
+  task and the failed criteria with the judge's rationale and evidence fenced in `<failed>`. Same
+  client, run and owner as the judge calls, at most 800 tokens; its usage counts as judge usage. When
+  the call fails or answers nothing, a plain fallback text (the criteria and rationales) is sent and
+  marked `fallback`. The text is masked and clipped to 4000 characters.
+- Reports carry `feedback: [{gate, iteration, criteria, persona, text, model, fallback, sent, error,
+  time}]` (E1's `[]string` slot, never written by E1, became this list) and `history` (the earlier
+  iterations' results, oldest first). `gates[].iterations` counts the attempts a gate took. Wall time
+  is summed over the attempts, each `RunEnded - AttemptStarted` (never `RunStarted`, the first
+  attempt's start, which would count the earlier attempts and the judging between them again); a
+  host that gives no `AttemptStarted` has the resumed attempt measured from Resume returning to its
+  end.
+- Resume goes through `api.evalSessions.Resume` (`evals.Resumer`, optional on `Sessions`): it checks
+  the owner's budget, calls `Manager.Resume(id, text)` and records the feed line
+  (`FeedFollowUp`, "Eval feedback: " + text). A refused resume (workspace gone, budget, accepted
+  session) is recorded on the feedback (`sent: false`, `error`) and the gate fails with the results
+  it has.
+- A resumed attempt waits for a free `evals.max_parallel` place like a new session (the slot shows
+  `judging` while it waits, `running` while the attempt runs). Canceling the run during an attempt
+  stops the session (not when the daemon is closing).
+- Rejudge never resumes: each gate is judged once against the workspace as it is. What it cannot
+  know is carried over from the report it replaces: `feedback`, `history`, `wall_ms` and each judged
+  gate's `iterations` (its results take that iteration number), so a rejudge changes the verdicts,
+  not the feedback loop's record or the ranking's tie-breakers. `judge_usage` is the rejudge's own.
+- Ranking (unchanged from E1, now fed): with equal gates and criteria, fewer iterations of the passed
+  gates rank higher. The run page shows an "Iterations" column, the gates that took more than one in
+  the Gates column, a "Feedback" button per session (the texts and whether they were sent) and the
+  earlier iterations in a cell's detail.
+- Flow judge step: fields `on`, `criteria`, `gates`, `persona`, `model` (the eval types, validated by
+  `evals.ValidateCriteria`, the eval rules for gates and criteria). `on` must be an earlier
+  `session` step (a fan-out run as sessions is not accepted). `model` "" or "default" means
+  `evals.judge_model`, then `engines.default_model`. An unknown persona is a warning when the catalog
+  knows personas. The step's session is linked from its graph node. `evals.enabled` off makes judge
+  steps fail.
+- The judge step's calls are charged to the flow run as they happen (`JudgeRequest.Charge`, with the
+  prompt and completion tokens split as the gateway answered them: `evals.Usage` gained `Prompt` and
+  `Completion`, not stored in reports); the
+  resumed attempts' usage reaches the run through the session meter. Past a limit the judging stops,
+  the session is stopped and the run ends `limited`. The judge step passes whatever the verdict; its
+  output also carries `session`.
+- `if` steps: an `equals` test with a `path` compares that field of the output (a judge step's
+  `passed` is compared as `true`/`false`); without a path it compares the whole output as before. The
+  editor shows the optional path for `equals`, and a new `if` after a judge step defaults to `equals`
+  `passed` `true`.
+- One `api.EvalHost` is made before the flow engine opens (`cmd/cerberus/evals.go` newEvalHost) and
+  serves both the eval engine and flows' judge steps (`FlowHostDeps.Judge`).
+- Web: the flow editor offers Judge after Agent session; criteria and gates are JSON boxes
+  (`parseListField`), the rest are the usual fields. Helpers are tested in `web/test/judge.test.mjs`.
+
+## E4 Trajectory export (ATIF)
+
+- `GET /api/sessions/{id}/trajectory?format=atif` builds an ATIF trajectory from the session's
+  request records (G3).
+  - It contains the model calls in order: messages at the configured text level, tool calls and tool
+    results with their error flags, usage, the model id, timestamps, and the guard verdicts as
+    annotations.
+  - It also carries the E3 setup as metadata.
+  - Follow the published ATIF specification (github.com/AISafety-ATIF/specification). Read the
+    schema, record the version implemented, and validate against it in a test (a copy of the JSON
+    schema in testdata).
+  - With records off, or the session's days already swept, the answer is 409, saying so.
+- `format=jsonl` returns the raw record lines for the session (the existing records format).
+- `cerberus sessions trajectory ID [--format atif|jsonl] > file`.
+- Eval reports link each session's trajectory.
+
+As built (E4):
+- **Spec version: ATIF-v1.8.** `github.com/AISafety-ATIF/specification` does not exist (404 on GitHub,
+  2026-11-05). ATIF is maintained in Harbor: `harbor-framework/harbor`, `rfcs/0001-trajectory-format.md`
+  (Changelog v1.8) and its reference Pydantic models (`src/harbor/models/trajectories/`), commit
+  `74cc631` (2026-08-26). That is what is implemented (`trajectory.SchemaVersion`, `SpecSource`).
+- Harbor publishes no JSON Schema file (the models are the schema). The copy in
+  `internal/trajectory/testdata/atif-v1.8.schema.json` was transcribed by hand from the RFC and the
+  models (every model is `extra=forbid`, so `additionalProperties: false`; nullable optionals), not
+  generated: running the downloaded Python was not allowed here. The test validator
+  (`schema_test.go`, no new dependency) supports exactly the keywords the schema uses and panics on
+  any other. It also checks the rules the models enforce in code (sequential `step_id`, a
+  `source_call_id` names a call of the same step, agent-only fields, `llm_call_count` 0, timestamps,
+  unique embedded `trajectory_id`). It accepts the RFC's own example (`testdata/rfc-example.json`) and
+  rejects 13 broken copies of it; every export in the tests is validated.
+- Package `internal/trajectory` (`Build(Input)`), fed by a new `records.Store.SessionLines(id, from,
+  limit)` (every line of the session from its creation day on, text included, oldest first; at most
+  20000, `more` past that), `OldestDay` and `RetainDays`.
+- Mapping: one `agent` step per request record (`llm_call_count` 1), with `model_name`, ISO
+  timestamp (ms, UTC), `reasoning_effort`, the reply as `message`, reasoning as `reasoning_content`
+  (text level all), `tool_calls` from the record's calls, and `metrics` (prompt, completion, cached
+  tokens; `extra` reasoning tokens, TTFT and duration). The record's shape (api, client, finish,
+  status, counts, thinking...) is in `extra.cerberus`, and the guard verdict is
+  `extra.annotations: [{kind: "agent_guard", mode, flagged, scores, held, timed_out}]`.
+- System and user steps and tool results are derived from each record's conversation text: records
+  keep the whole conversation per request (`role: text` lines), so a record continues the
+  "thread" whose last conversation is a prefix of its own (same system prompt), and only the new
+  part becomes steps. A conversation that continues no thread (side calls such as title generation,
+  subagents, compaction) starts a new thread, marked `extra.cerberus.conversation: "new"`. With no
+  text (level none) threads follow the message counts and the session's task stands in as the first
+  user step (`extra.cerberus.from: "session task"`). Clipped conversations (256 KiB) give no user
+  step and are flagged `input_clipped`.
+- Tool results: the tool entries that open a record's new part (text level all), or the growth of the
+  record's `results` counter, answer the thread's last calls. One-to-one with the calls they become
+  that step's `observation` (with `source_call_id`); otherwise a `system` step "Tool results sent
+  back" holds them without call ids. Error flags (`extra.is_error`) only for the Messages API, the only
+  one whose records count errors, and only when all or none of the new results are errors; a mixed
+  batch is a count (`result_errors_new`).
+- Not in the records, so not in the trajectory: tool call **arguments** (`arguments` is `{}`), tool
+  definitions, per-call cost (`cost_usd` left out; the eval report has the session's cost). `notes`
+  says so, and says the text level used.
+- Metadata: `agent.name`/`version` from the setup snapshot (`unknown` without one), `agent.model_name`
+  the resolved model, `agent.extra` = `{setup, setup_hash, setup_recorded_hash, setup_verified}`; root
+  `extra.cerberus` = version, spec, export time, the session (id, title, task, agent, model,
+  workspace, repo, base commit, state, times, setup hash) and the records used (text level, lines,
+  threads, `more`, `partial`). `final_metrics` totals tokens and steps, `extra` the calls, duration,
+  finishes and guard counts.
+- Route: `GET /api/sessions/{id}/trajectory?format=atif|jsonl` is **WORK** (owners and admins), not
+  WATCH like setup: request records are admin-only data and these hold the conversation. An export
+  that contains text is audited like `GET /api/records/{...}` ("exported the trajectory ..."). jsonl
+  writes the stored lines as they are (`application/x-ndjson`); both formats are attachments
+  (`cerberus-<id>.atif.json`, `.records.jsonl`). Bad format 400, unknown session 404.
+- 409 `{error, reason}` for both formats: `records_off` (no store), `swept` (no lines and the
+  session's creation day is before the oldest kept day, or before the retention cutoff when no day is
+  left), `none` (no lines although its days are kept: an agent that never called the gateway, or
+  records were off then; deviation: the spec named only the first two). A session partly swept is
+  exported with what is left, and `notes`/`extra.cerberus.records.partial` say so.
+- CLI `cerberus sessions trajectory ID [--format atif|jsonl] > FILE` streams the answer (no 8 MiB
+  cap, no client timeout); a 409 prints its message and exits 1. Help entry and alias
+  (`session trajectory`) added.
+- Eval reports: `Report.trajectory` is the API path (filled when reports are read, so old reports
+  have it too; `evals.TrajectoryPath`). `eval report` prints a `trajectory: cerberus sessions
+  trajectory ID` line per session. The run page has a "Trajectory ↓" button under each session link
+  and in the cell and feedback dialogs; it fetches the file and saves it, and a refusal (409, 404) is a
+  toast. Helpers `trajectoryPath`/`trajectoryFile` in `js/evals.js`.
+
+## E5 Guard red-team suite
+
+- `internal/gateway/guardbench` (or `internal/guardbench`): a pinned, append-only set of cases
+  (`cases.json`, each pinned by hash in a test, like the bench prompts):
+  - injection attempts placed where an agent reads untrusted text: tool results (file contents, web
+    pages, command output), `AGENTS.md` and README text, issue bodies;
+  - benign controls that look similar (security docs that talk about injection, code that contains
+    the word "ignore", system-prompt examples in a tutorial).
+
+  At least 60 cases, at least a third of them benign. Each case has a category (direct override,
+  role play, encoded or obfuscated, tool-call bait, exfiltration request, benign-security-doc,
+  benign-code, benign-chat).
+- `cerberus guard bench [--model ID] [--threshold N]` runs the configured agent guard classifier
+  (G2: `gateway.guard.model`, the same prompt and window rules) over every case through the
+  gateway.
+  - It reports detection rate on attacks and false-alarm rate on benign cases, per category.
+  - It sweeps the threshold where the classifier gives a score, and lists the misses.
+  - Runs are saved in `DATA/guardbench/`, and `guard bench compare A B` diffs them.
+- `GET /api/guardbench` and `POST /api/guardbench` (admins) list and start runs. The Usage → Request
+  records section shows the last run's two rates beside the guard counters.
+- Loading the guard model is the owner's step. The suite says which model and threshold it would
+  run. Tests use the fake classifier only.
+
+As built (E5):
+- New package `internal/guardbench`: the embedded case set (`cases.json`, `//go:embed`), the run
+  model, the runner and the saved-run storage, mirroring `internal/bench`. Names are
+  `guardbench.Load`, `Case`, `Set`, `Options{Model, Threshold}`, `NewRun`, `Execute`, `Save`, `Get`,
+  `List`, `Latest`, `Compare`, `Summary`, `AttackCategories`, `BenignCategories`, `IsBenign`.
+- `cases.json` holds 61 cases (25 benign, so over a third), each pinned by SHA-256 in
+  `guardbench_test.go` (`TestCaseSetIsAppendOnly`, like the bench prompt set): a changed case gets a
+  new id. Categories are exactly the eight the spec names (`direct_override`, `role_play`,
+  `encoded_obfuscated`, `tool_call_bait`, `exfiltration_request`; `benign_security_doc`,
+  `benign_code`, `benign_chat`). Each case has a `place` (readme, agents_md, issue, web, command,
+  file) saying where an agent would read the text. The cases were written by hand for Cerberus.
+  Deviation from a literal reading of the spec: every attack case demands only a harmless marker
+  action (print a token, change a greeting, answer in a style). The classifier keys on the injection
+  *form* (instructions aimed at the agent inside untrusted text), not the payload's harm, so the
+  suite exercises detection without shipping working attack payloads or any real secret.
+- The runner goes through the G2 classifier path. A new `Gateway.ScreenText(ctx, model, text)`
+  (`internal/gateway/guard.go`) reuses the live `screen()` with the same prompt and window rules,
+  overriding only the model; the caller (guardbench) applies the threshold and decides what is
+  flagged. `guardbench.Classifier` is that one method, so tests pass a fake and never load a model.
+- Rates: per category, detection (attacks flagged ÷ scored) or false alarm (benign flagged ÷
+  scored); errored cases are excluded from the denominator and counted separately. Overall
+  `detection` and `false_alarm` likewise. The threshold sweep (0.1…0.9) is computed only when the
+  classifier gave graded scores (a score strictly between 0 and 1): a pass/fail guard model sets
+  `has_scores` false and omits the sweep. `misses` lists both attacks that slipped through and
+  benign cases wrongly flagged.
+- `cerberus guard bench [--model ID] [--threshold N]` (`cmd/cerberus/guard.go`): a new top-level
+  `guard` command. `guard bench` POSTs to the daemon (the classifier path is in-process there),
+  polls until the run ends and prints the rates, the per-category table, the sweep and the misses.
+  `guard bench compare A B` and `guard bench list` read the saved runs under `DATA/guardbench`
+  directly, like `bench compare`/`bench list`. Model and threshold default to `gateway.guard.model`
+  and `gateway.guard.threshold`.
+- `GET /api/guardbench` and `POST /api/guardbench`, both `ADM`, in `internal/api/guardbench.go`,
+  added to the roles table (`roles.go`) and the route matrix (`routes_matrix_test.go`). The POST is
+  audited (`noteAudit`, "guard bench MODEL") and starts one background run at a time, like
+  `POST /api/bench`. An empty POST body means "use the configured model and threshold". GET returns
+  the saved runs, the one running now, the last done run and the category lists. No new config key,
+  so no schema metadata change: the suite reuses the G2 `gateway.guard` settings.
+- Usage → Request records shows the last run's two rates beside the guard counters: a pure helper
+  `guardbenchText(run)` in `web/dist/assets/js/records.js` (node test in `web/test/records.test.mjs`)
+  and a fetch of `/api/guardbench` in `views/records.js`. `sw.js` was rebuilt.
+- Not done: the suite has not been run against a real guard model (loading it is the owner's step);
+  every test uses a fake classifier. I did not run the full `CGO_ENABLED=1 -race` suite of every
+  package or `make cross`; the gate stage runs those. `go vet` for windows and darwin passed on the
+  packages I touched. There is no web button to start a run (the spec only asks for the rates in
+  Usage); runs are started from the CLI or a POST.

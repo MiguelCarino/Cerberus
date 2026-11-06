@@ -243,6 +243,16 @@ var tokenShapes = regexp.MustCompile(`\b(sk-[A-Za-z0-9_\-]{16,}|sk-ant-[A-Za-z0-
 
 const mask = "[redacted]"
 
+// MaskTokens replaces every API key or token shape in s (OpenAI and
+// Anthropic keys, GitHub and Slack tokens, AWS key ids, Cerberus session
+// agent tokens and keys) with repl, whether or not the vault holds it.
+func MaskTokens(s, repl string) string {
+	if s == "" {
+		return s
+	}
+	return tokenShapes.ReplaceAllString(s, repl)
+}
+
 func redact(s string, secrets []string) string {
 	if s == "" {
 		return s
@@ -440,6 +450,98 @@ func (s *Store) List(f Filter) ([]Line, error) {
 
 func match(l Line, f Filter) bool {
 	return (f.Session == "" || l.Session == f.Session) && (f.Client == "" || l.Client == f.Client)
+}
+
+// Raw is a stored line, parsed and as its bytes (newline included).
+type Raw struct {
+	Line  Line
+	Bytes []byte
+}
+
+// MaxSessionLines bounds SessionLines when the caller gives no limit.
+const MaxSessionLines = 20000
+
+// SessionLines returns every line of session id on the days from from
+// (YYYY-MM-DD, "" = the oldest kept) on, text included, oldest first by
+// request time (E4 trajectories). At most limit lines (0 = MaxSessionLines)
+// are kept, the oldest; more reports that some were left out.
+func (s *Store) SessionLines(id, from string, limit int) (lines []Raw, more bool, err error) {
+	if s == nil || id == "" {
+		return nil, false, nil
+	}
+	if from != "" && !reDay.MatchString(from) {
+		return nil, false, errors.New("from must be YYYY-MM-DD")
+	}
+	if limit <= 0 {
+		limit = MaxSessionLines
+	}
+	// Session ids never need escaping in JSON, so the bytes test is exact
+	// enough to skip parsing other sessions' lines.
+	key, _ := json.Marshal(id)
+	needle := append([]byte(`"session":`), key...)
+	for _, day := range listDays(s.cfg.Dir) {
+		if day < from {
+			continue
+		}
+		dir := filepath.Join(s.cfg.Dir, "turns", day)
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		var dayLines []Raw
+		for _, e := range ents {
+			if !reFile.MatchString(e.Name()) {
+				continue
+			}
+			fh, err := os.Open(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			br := bufio.NewReaderSize(fh, 64<<10)
+			for {
+				b, rerr := br.ReadBytes('\n')
+				if len(bytes.TrimSpace(b)) > 0 && bytes.Contains(b, needle) {
+					var l Line
+					if json.Unmarshal(b, &l) == nil && l.Session == id {
+						l.Ref = ""
+						if b[len(b)-1] != '\n' {
+							b = append(b, '\n')
+						}
+						dayLines = append(dayLines, Raw{Line: l, Bytes: b})
+					}
+				}
+				if rerr != nil {
+					break
+				}
+			}
+			fh.Close()
+		}
+		sort.SliceStable(dayLines, func(i, j int) bool { return dayLines[i].Line.Time.Before(dayLines[j].Line.Time) })
+		lines = append(lines, dayLines...)
+		if len(lines) > limit {
+			return lines[:limit], true, nil
+		}
+	}
+	return lines, false, nil
+}
+
+// OldestDay is the oldest day that still has records ("" = none).
+func (s *Store) OldestDay() string {
+	if s == nil {
+		return ""
+	}
+	if d := listDays(s.cfg.Dir); len(d) > 0 {
+		return d[0]
+	}
+	return ""
+}
+
+// RetainDays is the configured retention in days (0 for a nil store).
+func (s *Store) RetainDays() int {
+	if s == nil {
+		return 0
+	}
+	return s.cfg.RetainDays
 }
 
 // ErrNotFound is a ref that names no line.

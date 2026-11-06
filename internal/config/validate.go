@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Problem levels.
@@ -325,6 +326,16 @@ func (ck *checker) cross(c *Config) {
 					ck.add(LevelError, "server.preview_ports", "the range %d-%d holds the listen port %d", lo, hi, p)
 				}
 			}
+		}
+	}
+
+	// Eval personas (E2): a name the evals accept and short instructions.
+	for name, text := range c.Evals.Personas {
+		if !evalPersonaRe.MatchString(name) {
+			ck.add(LevelError, keyPath("evals.personas", name), "a persona name is lowercase letters, digits, - and _ (at most 64)")
+		}
+		if utf8.RuneCountInString(text) > MaxEvalPersonaRunes {
+			ck.add(LevelError, keyPath("evals.personas", name), "at most %d characters of instructions", MaxEvalPersonaRunes)
 		}
 	}
 

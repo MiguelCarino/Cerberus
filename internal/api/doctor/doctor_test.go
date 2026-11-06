@@ -143,7 +143,7 @@ func (f *fixture) run() map[string]Check {
 func TestHealthyFixtureAllOK(t *testing.T) {
 	f := newFixture(t)
 	rep := Run(context.Background(), f.envFor())
-	if len(rep.Checks) != 23 {
+	if len(rep.Checks) != 24 {
 		t.Fatalf("%d checks", len(rep.Checks))
 	}
 	for _, c := range rep.Checks {
@@ -154,7 +154,7 @@ func TestHealthyFixtureAllOK(t *testing.T) {
 			t.Errorf("%s: empty name or detail", c.ID)
 		}
 	}
-	if rep.Worst() != OK || rep.Counts[OK] != 23 {
+	if rep.Worst() != OK || rep.Counts[OK] != 24 {
 		t.Fatalf("counts %v", rep.Counts)
 	}
 }

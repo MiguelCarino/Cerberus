@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/harbor-framework/harbor/blob/74cc6312018c349c6bd2400c89a0ac4983ac1085/rfcs/0001-trajectory-format.md",
+  "title": "Trajectory",
+  "description": "Agent Trajectory Interchange Format (ATIF) v1.8. Transcribed by hand from the ATIF RFC (rfcs/0001-trajectory-format.md, Changelog v1.8) and the reference Pydantic models (src/harbor/models/trajectories/*.py), harbor-framework/harbor at commit 74cc6312018c349c6bd2400c89a0ac4983ac1085 (2026-08-26). Every model sets extra=forbid, so every object here has additionalProperties false; the 'extra' fields are free objects. Optional fields accept null, as the models do. Cross-field rules that JSON Schema cannot say (sequential step ids, source_call_id naming a tool call of the same step, agent-only fields, the llm_call_count 0 rule, unique embedded trajectory ids) are checked by the Go test beside this file.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "enum": ["ATIF-v1.0", "ATIF-v1.1", "ATIF-v1.2", "ATIF-v1.3", "ATIF-v1.4", "ATIF-v1.5", "ATIF-v1.6", "ATIF-v1.7", "ATIF-v1.8"],
+      "description": "String defining ATIF compatibility"
+    },
+    "session_id": {"type": ["string", "null"], "description": "Run-scoped identifier of the agent run"},
+    "trajectory_id": {"type": ["string", "null"], "description": "Per-trajectory-document identifier (v1.7)"},
+    "agent": {"$ref": "#/$defs/Agent"},
+    "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/Step"}},
+    "notes": {"type": ["string", "null"]},
+    "final_metrics": {"anyOf": [{"$ref": "#/$defs/FinalMetrics"}, {"type": "null"}]},
+    "continued_trajectory_ref": {"type": ["string", "null"]},
+    "extra": {"type": ["object", "null"]},
+    "subagent_trajectories": {"anyOf": [{"type": "array", "items": {"$ref": "#"}}, {"type": "null"}]}
+  },
+  "required": ["agent", "steps"],
+  "additionalProperties": false,
+  "$defs": {
+    "Agent": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "version": {"type": "string"},
+        "model_name": {"type": ["string", "null"]},
+        "tool_definitions": {"anyOf": [{"type": "array", "items": {"type": "object"}}, {"type": "null"}]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
+    },
+    "FinalMetrics": {
+      "type": "object",
+      "properties": {
+        "total_prompt_tokens": {"type": ["integer", "null"]},
+        "total_completion_tokens": {"type": ["integer", "null"]},
+        "total_cached_tokens": {"type": ["integer", "null"]},
+        "total_cost_usd": {"type": ["number", "null"]},
+        "total_steps": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "Step": {
+      "type": "object",
+      "properties": {
+        "step_id": {"type": "integer", "minimum": 1},
+        "timestamp": {"type": ["string", "null"], "format": "date-time"},
+        "source": {"enum": ["system", "user", "agent"]},
+        "model_name": {"type": ["string", "null"]},
+        "reasoning_effort": {"type": ["string", "number", "null"]},
+        "message": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#/$defs/ContentPart"}}]},
+        "reasoning_content": {"type": ["string", "null"]},
+        "tool_calls": {"anyOf": [{"type": "array", "items": {"$ref": "#/$defs/ToolCall"}}, {"type": "null"}]},
+        "observation": {"anyOf": [{"$ref": "#/$defs/Observation"}, {"type": "null"}]},
+        "metrics": {"anyOf": [{"$ref": "#/$defs/Metrics"}, {"type": "null"}]},
+        "is_copied_context": {"type": ["boolean", "null"]},
+        "llm_call_count": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "required": ["step_id", "source", "message"],
+      "additionalProperties": false
+    },
+    "ToolCall": {
+      "type": "object",
+      "properties": {
+        "tool_call_id": {"type": "string"},
+        "function_name": {"type": "string"},
+        "arguments": {"type": "object"},
+        "extra": {"type": ["object", "null"]}
+      },
+      "required": ["tool_call_id", "function_name", "arguments"],
+      "additionalProperties": false
+    },
+    "Metrics": {
+      "type": "object",
+      "properties": {
+        "prompt_tokens": {"type": ["integer", "null"]},
+        "completion_tokens": {"type": ["integer", "null"]},
+        "cached_tokens": {"type": ["integer", "null"]},
+        "cost_usd": {"type": ["number", "null"]},
+        "prompt_token_ids": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
+        "completion_token_ids": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
+        "logprobs": {"anyOf": [{"type": "array", "items": {"type": "number"}}, {"type": "null"}]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "Observation": {
+      "type": "object",
+      "properties": {
+        "results": {"type": "array", "items": {"$ref": "#/$defs/ObservationResult"}}
+      },
+      "required": ["results"],
+      "additionalProperties": false
+    },
+    "ObservationResult": {
+      "type": "object",
+      "properties": {
+        "source_call_id": {"type": ["string", "null"]},
+        "content": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "#/$defs/ContentPart"}}, {"type": "null"}]},
+        "subagent_trajectory_ref": {"anyOf": [{"type": "array", "items": {"$ref": "#/$defs/SubagentTrajectoryRef"}}, {"type": "null"}]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "SubagentTrajectoryRef": {
+      "type": "object",
+      "properties": {
+        "trajectory_id": {"type": ["string", "null"]},
+        "session_id": {"type": ["string", "null"]},
+        "trajectory_path": {"type": ["string", "null"]},
+        "extra": {"type": ["object", "null"]}
+      },
+      "anyOf": [
+        {"properties": {"trajectory_id": {"type": "string"}}, "required": ["trajectory_id"]},
+        {"properties": {"trajectory_path": {"type": "string"}}, "required": ["trajectory_path"]}
+      ],
+      "additionalProperties": false
+    },
+    "ContentPart": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {"type": {"const": "text"}, "text": {"type": "string"}},
+          "required": ["type", "text"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {"type": {"const": "image"}, "source": {"$ref": "#/$defs/ImageSource"}},
+          "required": ["type", "source"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {"type": {"const": "audio"}, "source": {"$ref": "#/$defs/AudioSource"}},
+          "required": ["type", "source"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ImageSource": {
+      "type": "object",
+      "properties": {
+        "media_type": {"enum": ["image/jpeg", "image/png", "image/gif", "image/webp"]},
+        "path": {"type": "string"}
+      },
+      "required": ["media_type", "path"],
+      "additionalProperties": false
+    },
+    "AudioSource": {
+      "type": "object",
+      "properties": {
+        "media_type": {"enum": ["audio/wav", "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/flac", "audio/webm", "audio/aiff"]},
+        "path": {"type": "string"},
+        "duration_sec": {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}]}
+      },
+      "required": ["media_type", "path"],
+      "additionalProperties": false
+    }
+  }
+}

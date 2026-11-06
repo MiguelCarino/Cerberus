@@ -11,6 +11,7 @@ import { fmtUSD, fmtUSDExact, fmtTokens, spendRows, budgetBar, planGauge, resetT
 import { leaderboardSection } from './leaderboard.js';
 import { recordsSection } from './records.js';
 import { benchSection } from './bench.js';
+import { evalsSection } from './evals.js';
 import { delegationText, finetuneText, fmtTokens as fmtTok, fmtWh, fmtSaved } from '../delegation.js';
 import { store } from '../store.js';
 
@@ -39,6 +40,7 @@ export function mount(root) {
   const board = leaderboardSection();
   const recs = store.can('audit') ? recordsSection() : null; // admins: what each client sends (G3)
   const benches = benchSection(); // G6
+  const evalList = evalsSection(); // E1
   const delegEl = h('div', { class: 'deleg' });
   root.append(h('section', { class: 'view view-pad' },
     h('div', { class: 'view-head' },
@@ -49,6 +51,7 @@ export function mount(root) {
     plansEl,
     board.el,
     benches.el,
+    evalList.el,
     h('h2', { class: 'group-title', text: 'Delegated to local models' }), delegEl,
     h('h2', { class: 'group-title', text: 'Recent requests' }), wrap,
     recs ? recs.el : null));
@@ -68,6 +71,7 @@ export function mount(root) {
       board.load();
       if (recs) recs.load();
       benches.load();
+      evalList.load();
       loadDelegation();
     } catch (e) {
       if (!gone) toast(errText(e), 'err');
@@ -110,6 +114,7 @@ export function mount(root) {
     board.destroy();
     if (recs) recs.destroy();
     benches.destroy();
+    evalList.destroy();
     clearTimeout(timer);
     window.removeEventListener('cerberus:visible', onVisible);
     document.removeEventListener('visibilitychange', onHidden);

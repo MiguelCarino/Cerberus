@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -166,7 +167,15 @@ type Manager struct {
 	pvKeyOnce sync.Once
 	pvScanMu  sync.Mutex
 	pvScan    map[string]liveCache
+
+	// Setup snapshots (setup.go).
+	version      string                                       // the Cerberus version recorded in setup.json
+	versions     versionCache                                 // agent --version lines per binary and mtime
+	probeVersion func(ctx context.Context, bin string) string // nil: execVersion (never inside a test binary)
 }
+
+// WithVersion is the Cerberus version recorded in each run's setup.json.
+func WithVersion(v string) Option { return func(m *Manager) { m.version = v } }
 
 // WithConfine makes every run, checks pass and resume recompute
 // confinement from the owner's current role, on top of Info.Confined.
@@ -628,7 +637,7 @@ func (m *Manager) enqueue(ctx context.Context, t TaskSpec, title, group, staging
 	now := time.Now()
 	s := &session{dir: dir, out: m.newOutput(dir), task: t.Task, next: t.Task, maxAttempts: t.MaxAttempts,
 		info: Info{ID: id, Title: title, Repo: t.Repo, Task: t.Task, Agent: t.Agent, Model: t.Model,
-			Workspace: t.Workspace, Dir: t.Dir, Worktree: wt,
+			Workspace: t.Workspace, Dir: t.Dir, Worktree: wt, BaseCommit: t.Base,
 			EscalateTo: t.EscalateTo, State: StateQueued, Created: now, Updated: now, Group: group,
 			Cols: m.conf().Sessions.DefaultCols, Rows: m.conf().Sessions.DefaultRows,
 			Name: t.Name, Tags: slices.Clone(t.Tags), Priority: t.Priority, Limits: t.Limits, Parent: t.Parent,
@@ -778,7 +787,34 @@ func (m *Manager) normalize(ctx context.Context, t TaskSpec) (TaskSpec, error) {
 	if err := m.resolveWorkspace(ctx, &t); err != nil {
 		return t, err
 	}
+	if t.Base != "" {
+		if err := m.resolveBase(ctx, &t); err != nil {
+			return t, err
+		}
+	}
 	return t, nil
+}
+
+// baseRe is the form of TaskSpec.Base: a hex commit id (never an option
+// or a ref name, which git would read differently).
+var baseRe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// resolveBase checks TaskSpec.Base names a commit of the session's repo
+// and replaces it with the full id.
+func (m *Manager) resolveBase(ctx context.Context, t *TaskSpec) error {
+	base := strings.ToLower(strings.TrimSpace(t.Base))
+	if t.Workspace != WorkspaceRepo {
+		return errors.New("a base commit is for repo sessions only")
+	}
+	if !baseRe.MatchString(base) {
+		return fmt.Errorf("base %q is not a commit id", t.Base)
+	}
+	sha, err := gitLine(ctx, t.Repo, "rev-parse", "--verify", "-q", base+"^{commit}")
+	if err != nil || sha == "" {
+		return fmt.Errorf("base %s is not a commit of %s", base, t.Repo)
+	}
+	t.Base = sha
+	return nil
 }
 
 // titleFrom is the task's first line, clipped to 72 characters.

@@ -195,6 +195,36 @@ func (s *server) objectCheck(pattern string) func(http.ResponseWriter, *http.Req
 			}
 			return true
 		}
+	case strings.HasPrefix(p, "/api/evals/runs/{run}"):
+		return func(w http.ResponseWriter, r *http.Request, pr principal) bool {
+			if s.evals == nil {
+				return true
+			}
+			owner, ok := s.evals.RunOwner(r.PathValue("run"))
+			if !ok {
+				return true
+			}
+			if !s.canOwn(pr, owner) {
+				notFound(w)
+				return false
+			}
+			return true
+		}
+	case strings.HasPrefix(p, "/api/evals/{id}"):
+		return func(w http.ResponseWriter, r *http.Request, pr principal) bool {
+			if s.evals == nil {
+				return true
+			}
+			e, err := s.evals.Get(r.PathValue("id"))
+			if err != nil {
+				return true
+			}
+			if !s.canOwn(pr, e.Owner) {
+				notFound(w)
+				return false
+			}
+			return true
+		}
 	case strings.HasPrefix(p, "/api/uploads/{staging}"):
 		return func(w http.ResponseWriter, r *http.Request, pr principal) bool {
 			if s.files == nil {

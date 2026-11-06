@@ -85,6 +85,10 @@ type TaskSpec struct {
 	MaxAttempts int    // attempts with Agent before escalating (default cfg.Sessions.MaxAttempts)
 	Count       int    // fan-out: N independent sessions with the same task (default 1)
 	Title       string
+	// Base is the commit a repo session's worktree starts from ("" = the
+	// repo's main head). Evals pin it so every setup starts from the same
+	// tree; it must name a commit of the repo (hex, resolved at Create).
+	Base string
 
 	Name     string   // user label ("" = Title)
 	Tags     []string // lowercased [a-z0-9-]{1,24}, at most 8
@@ -162,6 +166,10 @@ type Info struct {
 	// bound the time the session actually ran, unlike Created/Updated.
 	RunStarted time.Time
 	RunEnded   time.Time
+	// AttemptStarted is when the latest run's process started (every
+	// attempt, unlike RunStarted): RunEnded - AttemptStarted is how long
+	// the latest attempt ran.
+	AttemptStarted time.Time `json:",omitempty"`
 
 	Worktree     string // where the agent works: the repo's worktree, the folder itself, or the scratch folder
 	BaseCommit   string // repo sessions only
@@ -208,6 +216,11 @@ type Info struct {
 	Owner     string
 	OwnerName string
 	Confined  bool `json:",omitempty"`
+
+	// SetupHash is the hash of the latest run's setup.json (setup.go: the
+	// first 12 hex characters of its SHA-256; "" before a run, or for a
+	// session from before setup snapshots).
+	SetupHash string `json:",omitempty"`
 }
 
 // Event is a change to a session, for live UIs.

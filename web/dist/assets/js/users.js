@@ -132,7 +132,7 @@ export function viewAllowed(r, me) {
   if (r.view === 'settings' && (r.group === 'permissions' || !r.group) && !can(me, 'settings')) return canSavePermits(me);
   // Chat only has its own spend in Account; the Usage page (requests,
   // plans, the leaderboard) is for roles that run sessions.
-  if (r.view === 'usage') return can(me, 'usage') && (can(me, 'sessions') || can(me, 'usage.all'));
+  if (r.view === 'usage' || r.view === 'evalrun') return can(me, 'usage') && (can(me, 'sessions') || can(me, 'usage.all'));
   const caps = VIEW_CAPS[r.view];
   if (!caps) return false;
   return caps.some((c) => can(me, c));
@@ -164,7 +164,7 @@ export function guardRoute(r, me, hash = '') {
 export const TAB_OF = {
   sessions: 'sessions', session: 'sessions', diff: 'sessions', batch: 'sessions', wall: 'sessions', chat: 'chat',
   models: 'models', monitor: 'monitor', usage: 'usage', secrets: 'settings', settings: 'settings',
-  flows: 'flows', flowedit: 'flows', flowrun: 'flows', account: 'account',
+  flows: 'flows', flowedit: 'flows', flowrun: 'flows', account: 'account', evalrun: 'usage',
 };
 
 // tabVisible: the navbar and bottom tabs a role sees ("more" always: it

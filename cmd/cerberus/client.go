@@ -87,6 +87,30 @@ func (c *client) do(ctx context.Context, method, path string, in, out any) error
 	return json.Unmarshal(raw, out)
 }
 
+// download copies a GET reply's body to w as it comes (no size cap, no
+// overall timeout: a long export may take a while), after a 2xx status.
+func (c *client) download(ctx context.Context, path string, w io.Writer) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("X-Cerberus-Actor", audit.ActorCLI)
+	hc := *c.http
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
+	if err != nil {
+		return &unreachableError{base: c.base, err: err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		return fmt.Errorf("GET %s: %s", path, errorText(resp.Status, raw))
+	}
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
 // unreachableError means the daemon did not answer at all (as opposed to
 // answering with an error), so a command may fall back to working locally.
 type unreachableError struct {

@@ -46,3 +46,15 @@ test('guardText', async () => {
     'Agent guard (hold, qg): 9 tool results read · 2 flagged · 1 calls held · 1 not in time since start.');
   assert.equal(guardText({ mode: 'watch', model: 'qg', screened: 1 }), 'Agent guard (watch, qg): 1 tool results read · 0 flagged since start.');
 });
+
+test('guardbenchText (E5 red-team last run)', async () => {
+  const { guardbenchText } = await import('../dist/assets/js/records.js');
+  assert.equal(guardbenchText(null), '');
+  assert.equal(guardbenchText({ state: 'running' }), '');
+  const s = guardbenchText({ state: 'done', model: 'qg', detection: 0.92, false_alarm: 0.08, attacks: 36, benign: 25, done: '2026-11-05T10:00:00Z' });
+  assert.match(s, /Red-team \(qg,/);
+  assert.match(s, /92% of 36 attacks caught/);
+  assert.match(s, /8% of 25 benign flagged/);
+  const e = guardbenchText({ state: 'done', model: 'qg', detection: 1, false_alarm: 0, attacks: 36, benign: 25, errors: 3 });
+  assert.match(e, /3 errored/);
+});
