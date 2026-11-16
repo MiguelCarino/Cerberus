@@ -10,7 +10,7 @@ import {
   limitsHelp, rowKey, feedTone, FEED_KINDS,
   SEQ_TIMEOUT,
 } from '../dist/assets/js/control.js';
-import { parseRoute } from '../dist/assets/js/util.js';
+import { parseRoute, streamPos, parsePosEvent } from '../dist/assets/js/util.js';
 
 test('gridFit picks 1/2/4/6/9 slots', () => {
   const shape = (n, o) => { const g = gridFit(n, o); return `${g.cols}x${g.rows}/${g.slots}`; };
@@ -180,6 +180,29 @@ test('wallIds: route set, then kept plus active, capped', () => {
   assert.deepEqual(wallIds(list, { routeIds: ['d1', 'r1', 'd1', 'nope'] }), ['d1', 'r1']);
   assert.deepEqual(wallIds(list, { max: 2 }), ['w1', 'r2']);
   assert.deepEqual(wallIds([]), []);
+});
+
+test('streamPos resumes a terminal stream from where it is (web-api-ops-7)', () => {
+  const p = streamPos();
+  assert.equal(p.get(), '');
+  p.add(10); // no position yet: nothing to move
+  assert.equal(p.get(), '');
+  p.set('lz1abc-1.120');
+  assert.equal(p.get(), 'lz1abc-1.120');
+  p.add(5);
+  assert.equal(p.get(), 'lz1abc-1.125');
+  for (const bad of ['', 'nope', '.5', 'e.-1', 'e.x', null, 7]) {
+    p.set(bad);
+    assert.equal(p.get(), '', String(bad));
+  }
+  p.set('e.3');
+  p.clear();
+  assert.equal(p.get(), '');
+  assert.deepEqual(parsePosEvent('{"pos":"e.1"}'), { pos: 'e.1' });
+  assert.equal(parsePosEvent('[1]'), null);
+  assert.equal(parsePosEvent('nope'), null);
+  assert.equal(wallStreamURL(['a', 'b'], { a: 'e.5' }), '/api/wall/stream?ids=a,b&from=a%3Ae.5');
+  assert.equal(wallStreamURL(['a'], {}), '/api/wall/stream?ids=a');
 });
 
 test('wall stream URL, events and terminal sizing', () => {

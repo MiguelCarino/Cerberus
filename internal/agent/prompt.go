@@ -66,13 +66,17 @@ func readClipped(p string, maxBytes int) (string, bool) {
 	return strings.TrimSpace(text), true
 }
 
-// systemPrompt is rebuilt per request: tools come and go (fallback, last step).
-func systemPrompt(cwd, approve string, tools bool, docs []contextDoc) string {
+// systemPrompt is rebuilt per request: tools come and go (fallback, last
+// step). It names the day, never the time: the prompt must stay the same
+// byte for byte all day, or engines lose their prompt cache of the whole
+// conversation and the records cannot stitch its turns (SCOPE "As built:
+// a stable system prompt"). The time goes in SentNote instead.
+func systemPrompt(cwd, approve string, tools bool, docs []contextDoc, now time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are Cerberus' built-in coding agent, running headless in a terminal. Today is %s. "+
 		"The working directory is %s: a disposable git worktree of the project. The user reviews your changes "+
 		"there and accepts or discards them, so do not commit, create branches or push.",
-		time.Now().Format("Monday 2006-01-02 15:04"), cwd)
+		now.Format(DayLayout), cwd)
 	if tools {
 		b.WriteString(" You have tools to read files, list folders, search, run bash commands (non-interactive) " +
 			"and write or edit files; paths are relative to the working directory. You may read anywhere except " +
@@ -92,4 +96,24 @@ func systemPrompt(cwd, approve string, tools bool, docs []contextDoc) string {
 		fmt.Fprintf(&b, "\n\n# %s\n\n%s", d.title, d.text)
 	}
 	return b.String()
+}
+
+// DayLayout is how a system prompt names the day ("Today is Sunday
+// 2026-11-15."): the date only, so the prompt holds all day.
+const DayLayout = "Monday 2006-01-02"
+
+// SentNote is the line a run adds to the user turn it answers, in the
+// requests only (RunOptions.Notes): when that turn was sent, to the
+// minute, which the system prompt no longer says.
+func SentNote(t time.Time) string {
+	return "[sent " + t.Format("Monday 2006-01-02 15:04") + " local time]"
+}
+
+// NewestUserNote is Notes for a run that answers messages' last message,
+// when that is a user turn: SentNote(now) on it. Nil otherwise.
+func NewestUserNote(messages []Message, now time.Time) map[int]string {
+	if n := len(messages); n > 0 && messages[n-1].Role == "user" {
+		return map[int]string{n - 1: SentNote(now)}
+	}
+	return nil
 }

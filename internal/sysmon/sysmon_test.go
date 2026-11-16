@@ -201,12 +201,17 @@ func TestGroupName(t *testing.T) {
 		{"/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.mozilla.firefox-4321.scope", "firefox", "org.mozilla.firefox"},
 		{"/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service", "pipewire", "pipewire"},
 		{"/user.slice/user-1000.slice/user@1000.service/agents.slice/run-u12.scope", "bash", "agents"},
+		// Cerberus sessions: the scope names the session; the configured slice groups the rest.
+		{"/user.slice/user-1000.slice/user@1000.service/cerberus.slice/cerberus-sessions.slice/cerberus-20261115-101010-abc123-2-0f3e.scope", "opencode", "session 20261115-101010-abc123"},
+		{"/user.slice/user-1000.slice/user@1000.service/agents.slice/cerberus-20261115-101010-abc123-1-beef.scope", "claude", "session 20261115-101010-abc123"},
+		{"/user.slice/user-1000.slice/user@1000.service/cerberus.slice/cerberus-sessions.slice/cerberus-probe-01234567.scope", "true", "cerberus-sessions"},
+		{"/user.slice/user-1000.slice/user@1000.service/app.slice/cerberus.service", "cerberus", "cerberus"},
 		{"/init.scope", "systemd", "systemd"},
 		{"/user.slice/user-1000.slice/session-2.scope", "sshd", "sshd"},
 		{"/system.slice/systemd-journald.service", "systemd-journal", "systemd-journald"},
 		{"", "kworker", "kworker"},
 	} {
-		if got := groupName(c.cg, c.comm); got != c.want {
+		if got := groupName(c.cg, c.comm, "cerberus-sessions.slice"); got != c.want {
 			t.Errorf("groupName(%q) = %q, want %q", c.cg, got, c.want)
 		}
 	}

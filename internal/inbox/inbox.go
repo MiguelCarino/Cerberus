@@ -55,6 +55,13 @@ type Item struct {
 	// Owner is the user the item is for (Phase 4a). "" is a system item
 	// (downloads, alerts, serve), shown to admins.
 	Owner string `json:",omitempty"`
+	// Held names the tool calls an agent guard held (Kind "guard", step
+	// web-api); the bell's "Approve once" names them back to the agent.
+	Held []string `json:",omitempty"`
+	// Answered is set once a guard hold was approved (MarkAnswered). It is
+	// apart from Read: opening the item to look at the session first, or
+	// "Mark all read", must not take the button away.
+	Answered bool `json:",omitempty"`
 }
 
 // Event is one change, for live UIs: Type is "added" (Item set), "read"
@@ -358,6 +365,31 @@ func (s *Store) MarkReadWhere(ids []string, all bool, keep func(Item) bool) (int
 		s.emitLocked(ev)
 	}
 	return len(changed), err
+}
+
+// MarkAnswered marks item id answered (and read) when keep accepts it (nil:
+// any). It reports whether it changed: false when it is unknown or was
+// already answered. A "read" event goes out when it was unread.
+func (s *Store) MarkAnswered(id string, keep func(Item) bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items {
+		it := &s.items[i]
+		if it.ID != id || (keep != nil && !keep(*it)) {
+			continue
+		}
+		if it.Answered {
+			return false, nil
+		}
+		wasRead := it.Read
+		it.Answered, it.Read = true, true
+		err := s.rewriteLocked()
+		if !wasRead {
+			s.emitLocked(Event{Type: "read", IDs: []string{id}, Unread: s.unreadLocked(), Owner: it.Owner})
+		}
+		return true, err
+	}
+	return false, nil
 }
 
 // Delete removes one item; false when it does not exist.

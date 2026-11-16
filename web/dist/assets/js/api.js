@@ -176,6 +176,8 @@ export class LiveSource {
   // opts.keepHidden() may return true to keep the stream open while the
   // tab is hidden (only the event stream, for opted-in desktop
   // notifications; an open SSE connection is idle, not polling).
+  // url may be a function, read on every connect (a terminal stream asks
+  // to resume from where it is).
   constructor(url, handlers, opts = {}) {
     this.url = url;
     this.handlers = handlers; // { open(), <event>(data) ... }
@@ -204,7 +206,7 @@ export class LiveSource {
 
   connect() {
     if (this.es || !this.active) return;
-    const es = new EventSource(this.url);
+    const es = new EventSource(typeof this.url === 'function' ? this.url() : this.url);
     this.es = es;
     es.onopen = () => { this.backoff = 2000; this.handlers.open?.(); };
     // Take over reconnecting from the browser so a down server is retried
@@ -228,7 +230,9 @@ export class LiveSource {
     this.disconnect();
     if (!this.active) return;
     try {
-      await api('/api/status');
+      // The cheapest signed-in route: it only says whether we are still
+      // signed in (a 401 shows Login).
+      await api('/api/me');
     } catch (e) {
       if (e instanceof AuthError) return; // Login view takes over
     }

@@ -90,6 +90,35 @@ export function b64ToBytes(b64) {
   return out;
 }
 
+// streamPos tracks a terminal stream's position ("<epoch>.<offset>", from
+// the server's "pos" event), moved on by each "out" chunk's byte length, so
+// a reconnect asks only for what it missed (?from=). Unknown or malformed
+// positions give "" (the server then sends the backlog and the terminal
+// resets).
+export function streamPos() {
+  let epoch = '';
+  let off = 0;
+  return {
+    get() { return epoch ? `${epoch}.${off}` : ''; },
+    set(tok) {
+      const i = typeof tok === 'string' ? tok.lastIndexOf('.') : -1;
+      const n = i > 0 ? Number(tok.slice(i + 1)) : NaN;
+      if (Number.isSafeInteger(n) && n >= 0) { epoch = tok.slice(0, i); off = n; } else { epoch = ''; off = 0; }
+    },
+    add(n) { if (epoch) off += n; },
+    clear() { epoch = ''; off = 0; },
+  };
+}
+
+// parsePosEvent reads a "pos" event's data: {pos} for a session stream,
+// {id: pos} for the wall. null when broken.
+export function parsePosEvent(data) {
+  try {
+    const v = JSON.parse(data);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch { return null; }
+}
+
 // Quick-key bar: label → bytes sent to the PTY.
 export const QUICK_KEYS = [
   ['Enter', '\r'], ['y', 'y'], ['n', 'n'], ['a', 'a'], ['Esc', '\x1b'],

@@ -223,7 +223,8 @@ A session is one agent run in one workspace:
   branch.
 - **Guard and queue:** a session starts only while running sessions, free RAM and (for a local model)
   free VRAM allow it. Otherwise it waits in the queue with the reason shown. With systemd each session
-  runs in its own scope under `agents.slice`; without a user bus it runs without one.
+  runs in its own scope under `guard.systemd_slice` (`cerberus-sessions.slice` for a new config, which
+  `cerberus install-service` writes; older configs keep `agents.slice`); without a user bus it runs without one.
 - **History:** every session keeps a plain-text transcript. Search titles, tasks and transcripts from
   **Sessions** or with `cerberus search`. **Resume** starts a new attempt in the same workspace.
   Finished sessions older than `sessions.retention_days` (30) are pruned daily, except worktrees with

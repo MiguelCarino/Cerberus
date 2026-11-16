@@ -246,7 +246,7 @@ func (s *server) handleChatModels(w http.ResponseWriter, r *http.Request) {
 		out.Default = "default"
 	}
 	if s.models != nil {
-		out.Models = nonNil(s.withModelCost(s.models.Models(r.Context())))
+		out.Models = nonNil(s.modelsFor(principalOf(r), s.models.Models(r.Context())))
 	}
 	if s.chats.ClaudeAvailable() {
 		out.Claude = ChatClaude{Available: true, Models: claudeModels}

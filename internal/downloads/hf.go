@@ -139,6 +139,9 @@ func (m *Manager) runHF(ctx context.Context, j *job) error {
 		return fmt.Errorf("%w: no llama.cpp models folder is configured", ErrUnavailable)
 	}
 	dir := filepath.Join(dirs[0], src.owner, src.repo)
+	if set := hfShards(src); len(set) > 1 {
+		return m.runHFSplit(ctx, j, src, set, dir)
+	}
 	dest := filepath.Join(dir, src.file)
 	part := dest + ".part"
 	m.update(j, true, func(it *Item) { it.Path = dest })
@@ -148,7 +151,7 @@ func (m *Manager) runHF(ctx context.Context, j *job) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	err = m.fetchHF(ctx, j, src.url, part, dir)
+	_, err = m.fetchHF(ctx, j, hfFetch{url: src.url, part: part, dir: dir, want: j.req.SHA256})
 	if err != nil {
 		if m.discarded(j) {
 			_ = os.Remove(part) // the user threw it away; a failure or shutdown keeps it to resume
@@ -177,12 +180,14 @@ func (m *Manager) runHF(ctx context.Context, j *job) error {
 const SourceSuffix = ".source"
 
 // HFDest returns where a Hugging Face .gguf link downloads to under the
-// llama.cpp models folder dir (<dir>/<owner>/<repo>/<file>).
+// llama.cpp models folder dir (<dir>/<owner>/<repo>/<file>). For a file of
+// a split set it is the set's first file, the one the engine lists.
 func HFDest(dir, ref string) (string, error) {
 	src, err := parseHFURL(ref)
 	if err != nil {
 		return "", err
 	}
+	src = firstShard(src)
 	if dir == "" {
 		return "", fmt.Errorf("%w: no llama.cpp models folder is configured", ErrUnavailable)
 	}
@@ -219,35 +224,40 @@ func HFSource(gguf string) string {
 	return src.url
 }
 
+// hfFetch is one file fetchHF brings down.
+type hfFetch struct {
+	url, part, dir string
+	want           string // the SHA-256 to check ("" = what Hugging Face says)
+	// A file of a split set: progress counts base bytes before it out of
+	// grand (0 = unknown), the item's total and checksum are the set's,
+	// and the disk check covered the whole set when grand is known.
+	split       bool
+	base, grand int64
+}
+
 // fetchHF brings part up to the whole file (resuming what is there) and
-// verifies it. A checksum mismatch removes part.
-func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string) error {
+// verifies it; verified says a checksum was checked. A checksum mismatch
+// removes part.
+func (m *Manager) fetchHF(ctx context.Context, j *job, fx hfFetch) (verified bool, err error) {
+	rawURL, part, dir := fx.url, fx.part, fx.dir
 	var off int64
 	if st, err := os.Lstat(part); err == nil {
 		if !st.Mode().IsRegular() {
-			return fmt.Errorf("%s is not a regular file", part)
+			return false, fmt.Errorf("%s is not a regular file", part)
 		}
 		off = st.Size()
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return false, err
 	}
 
 	info := &linkedInfo{}
-	client := &http.Client{Transport: m.hfTransport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= maxRedirects {
-			return errors.New("too many redirects")
-		}
-		if req.Response != nil {
-			info.observe(req.Response.Header)
-		}
-		return m.checkURL(req.URL.String(), true)
-	}}
+	client := m.hfClient(info)
 	if err := m.checkURL(rawURL, false); err != nil {
-		return err
+		return false, err
 	}
 	resp, err := hfGet(ctx, client, rawURL, off)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { resp.Body.Close() }()
 	info.observe(resp.Header)
@@ -257,7 +267,7 @@ func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string)
 	case http.StatusPartialContent:
 		start, end, size, ok := parseContentRange(resp.Header.Get("Content-Range"))
 		if !ok || start != off {
-			return fmt.Errorf("unexpected Content-Range %q", resp.Header.Get("Content-Range"))
+			return false, fmt.Errorf("unexpected Content-Range %q", resp.Header.Get("Content-Range"))
 		}
 		total = size
 		if total < 0 {
@@ -273,45 +283,51 @@ func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string)
 			// The part is not a prefix we can trust: start again from zero.
 			resp.Body.Close()
 			if err := os.Remove(part); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
+				return false, err
 			}
 			off = 0
 			if resp, err = hfGet(ctx, client, rawURL, 0); err != nil {
-				return err
+				return false, err
 			}
 			info.observe(resp.Header)
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("Hugging Face: HTTP %d", resp.StatusCode)
+				return false, fmt.Errorf("Hugging Face: HTTP %d", resp.StatusCode)
 			}
 			total = resp.ContentLength
 		} else {
 			total = off // already complete: only verify
 		}
 	default:
-		return fmt.Errorf("Hugging Face: HTTP %d", resp.StatusCode)
+		return false, fmt.Errorf("Hugging Face: HTTP %d", resp.StatusCode)
 	}
 	if total < 0 && info.size > 0 {
 		total = info.size
 	}
 
-	want := j.req.SHA256
+	want := fx.want
 	if want == "" {
 		want = info.sha
 	}
-	m.update(j, true, func(it *Item) {
-		it.SHA256 = want
-		if total > 0 {
-			it.Total = total
-		}
-	})
+	if !fx.split {
+		m.update(j, true, func(it *Item) {
+			it.SHA256 = want
+			if total > 0 {
+				it.Total = total
+			}
+		})
+	}
 
-	// Disk: what is still to come plus the headroom.
+	// Disk: what is still to come plus the headroom (a split set's whole
+	// size was checked before its first file).
 	need := int64(DiskHeadroom)
 	if total > 0 {
 		need += total - off
 	}
-	if free, err := m.opt.FreeSpace(dir); err == nil && free < uint64(need) {
-		return fmt.Errorf("%w: need %s (file) + 2 GiB, %s free in %s", ErrNoSpace, gib(need-DiskHeadroom), gib(int64(free)), dir)
+	if fx.split && fx.grand > 0 {
+		need = 0
+	}
+	if free, err := m.opt.FreeSpace(dir); err == nil && need > 0 && free < uint64(need) {
+		return false, fmt.Errorf("%w: need %s (file) + 2 GiB, %s free in %s", ErrNoSpace, gib(need-DiskHeadroom), gib(int64(free)), dir)
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -322,18 +338,18 @@ func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string)
 	}
 	f, err := os.OpenFile(part, flags|oNoFollow, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_ = f.Chmod(0o600) // a .part kept from an older version may have wider bits
 	h := sha256.New()
 	if want != "" && off > 0 {
 		if err := hashPrefix(part, off, h); err != nil {
 			f.Close()
-			return err
+			return false, err
 		}
 	}
 	done := off
-	m.progress(j, done, total)
+	m.progress(j, fx.base+done, fx.total(total))
 	if total < 0 || done < total || resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		var w io.Writer = f
 		if want != "" {
@@ -345,10 +361,10 @@ func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string)
 			if n > 0 {
 				if _, werr := w.Write(buf[:n]); werr != nil {
 					f.Close()
-					return werr
+					return false, werr
 				}
 				done += int64(n)
-				m.progress(j, done, total)
+				m.progress(j, fx.base+done, fx.total(total))
 			}
 			if rerr == io.EOF {
 				break
@@ -356,28 +372,52 @@ func (m *Manager) fetchHF(ctx context.Context, j *job, rawURL, part, dir string)
 			if rerr != nil {
 				f.Close()
 				if ctx.Err() != nil {
-					return ctx.Err()
+					return false, ctx.Err()
 				}
-				return rerr
+				return false, rerr
 			}
 		}
 	}
 	if err := errors.Join(f.Sync(), f.Close()); err != nil {
-		return err
+		return false, err
 	}
 	if total > 0 && done != total {
-		return fmt.Errorf("download ended early: %d of %d bytes", done, total)
+		return false, fmt.Errorf("download ended early: %d of %d bytes", done, total)
 	}
 	if want == "" {
-		return nil
+		return false, nil
 	}
 	m.update(j, true, func(it *Item) { it.State = StateVerifying })
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
 		_ = os.Remove(part)
-		return fmt.Errorf("%w: got %s, want %s", ErrChecksum, got, want)
+		return false, fmt.Errorf("%w: got %s, want %s", ErrChecksum, got, want)
 	}
-	m.update(j, true, func(it *Item) { it.Verified = true })
-	return nil
+	if !fx.split {
+		m.update(j, true, func(it *Item) { it.Verified = true })
+	}
+	return true, nil
+}
+
+// total is the item's total for a file of size n: the set's when split.
+func (fx hfFetch) total(n int64) int64 {
+	if fx.split {
+		return fx.grand
+	}
+	return n
+}
+
+// hfClient follows Hugging Face redirects (allowed hosts only), noting
+// what each hop says about the file in info.
+func (m *Manager) hfClient(info *linkedInfo) *http.Client {
+	return &http.Client{Transport: m.hfTransport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return errors.New("too many redirects")
+		}
+		if req.Response != nil {
+			info.observe(req.Response.Header)
+		}
+		return m.checkURL(req.URL.String(), true)
+	}}
 }
 
 func hfGet(ctx context.Context, client *http.Client, rawURL string, off int64) (*http.Response, error) {

@@ -154,6 +154,9 @@ type Manager struct {
 
 	noScope atomic.Bool // systemd-run could not reach the user bus: run without a scope from now on
 
+	oomPrefOnce sync.Once // oomPref is looked up once
+	oomPref     bool      // systemd takes ManagedOOMPreference= (248 or newer)
+
 	audit *audit.Logger // nil: nothing is audited (sandbox fallbacks still reach the feed)
 
 	// confineOwner reports whether a session owner (a stored user id) is
@@ -618,6 +621,12 @@ func (m *Manager) enqueue(ctx context.Context, t TaskSpec, title, group, staging
 			return Info{}, err
 		}
 	}
+	if len(t.Seeds) > 0 && t.Workspace == WorkspaceScratch {
+		if err := m.copySeeds(wt, t.Seeds, t.Owner); err != nil {
+			cleanup()
+			return Info{}, fmt.Errorf("workspace: %w", err)
+		}
+	}
 	if staging != "" {
 		err := takeAttachments(staging, dir, m.conf().Files.AllowExec, last)
 		if err == nil && wt != "" {
@@ -776,8 +785,17 @@ func (m *Manager) normalize(ctx context.Context, t TaskSpec) (TaskSpec, error) {
 				return t, err
 			}
 		}
+	} else if t.Workspace == WorkspaceSame && t.SameAs != "" {
+		if done, err := m.sameAsWorkspace(&t); err != nil || done {
+			return t, err
+		}
 	} else if t.Workspace == WorkspaceSame {
 		return t, errors.New(`workspace "same" is only for sessions spawned by another session`)
+	}
+	if len(t.Seeds) > 0 {
+		if err := m.checkSeeds(&t); err != nil {
+			return t, err
+		}
 	}
 	if t.Client != "" {
 		if err := m.CanClientSpawn(t.Client, t.Count); err != nil {

@@ -129,6 +129,9 @@ func fakeDaemon(t *testing.T, busy bool) (*httptest.Server, *[]map[string]any) {
 				n = 1
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": map[string]int{"running": n}})
+		case "/v1/models":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{
+				{"id": "qwen", "local": true}, {"id": "cloud/gpt", "local": false}}})
 		case "/api/usage":
 			mu.Lock()
 			var recent []map[string]any
@@ -151,7 +154,7 @@ func fakeDaemon(t *testing.T, busy bool) (*httptest.Server, *[]map[string]any) {
 				w.(http.Flusher).Flush()
 				time.Sleep(15 * time.Millisecond)
 			}
-			io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n")
+			io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":40}}}\n\ndata: [DONE]\n\n")
 		default:
 			http.NotFound(w, r)
 		}
@@ -185,6 +188,80 @@ func TestExecuteAgainstFakeDaemon(t *testing.T) {
 	}
 	if len(steps) == 0 || !strings.Contains(steps[0], "warming up") {
 		t.Errorf("progress %v", steps)
+	}
+}
+
+// Each measured sample starts with its own line, so no two share a prefix
+// an engine could reuse from its prompt cache; local models are asked not
+// to reuse it; cached tokens are left out of prefill speed. The prompt set
+// is unchanged (TestPromptSetIsAppendOnly).
+func TestSamplesDefeatThePromptCache(t *testing.T) {
+	srv, bodies := fakeDaemon(t, false)
+	c := Client{Base: srv.URL, Token: "tok"}
+	set, _ := Load()
+	o := Options{Model: "qwen", Repeat: 3, Kinds: []string{"chat"}, Prefill: true, Ctx: 20000}
+	r := &Run{ID: NewID(time.Now(), "qwen"), Options: o}
+	if err := Execute(context.Background(), c, set, o, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r.Measure != MeasureVersion {
+		t.Errorf("measure %d", r.Measure)
+	}
+	var contents []string
+	for i, b := range (*bodies)[1:] { // after the warm-up
+		if b["cache_prompt"] != false {
+			t.Errorf("request %d: cache_prompt %v, want false for a local model", i, b["cache_prompt"])
+		}
+		msgs, _ := b["messages"].([]any)
+		m, _ := msgs[0].(map[string]any)
+		content, _ := m["content"].(string)
+		contents = append(contents, content)
+	}
+	if len(contents) != 3*(2+2) { // chat_a, chat_b, prefill 8k and ctx/2, three times
+		t.Fatalf("%d samples", len(contents))
+	}
+	for i := range contents {
+		for j := i + 1; j < len(contents); j++ {
+			a, b := contents[i], contents[j]
+			if n := min(len(a), len(b), 64); a[:n] == b[:n] {
+				t.Fatalf("samples %d and %d share a 64-byte prefix: %q", i, j, a[:n])
+			}
+		}
+	}
+	for _, k := range r.Kinds {
+		for _, smp := range k.Samples {
+			if smp.CachedTokens != 40 {
+				t.Errorf("%s: cached tokens %d, want 40", k.Kind, smp.CachedTokens)
+			}
+			// 60 uncached tokens over the TTFT, not 100.
+			if want := 60 / (smp.TTFTMs / 1000); smp.PrefillTPS < want*0.99 || smp.PrefillTPS > want*1.01 {
+				t.Errorf("%s: prefill %.1f tok/s, want %.1f", k.Kind, smp.PrefillTPS, want)
+			}
+		}
+	}
+	// A model the gateway does not list as local is not sent the field.
+	*bodies = nil
+	o.Model, o.Prefill = "cloud/gpt", false
+	r = &Run{ID: NewID(time.Now(), "cloud"), Options: o}
+	if err := Execute(context.Background(), c, set, o, r, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range *bodies {
+		if _, ok := b["cache_prompt"]; ok {
+			t.Fatalf("cache_prompt sent to a cloud model: %v", b)
+		}
+	}
+}
+
+func TestSummaryFlagsOlderMeasure(t *testing.T) {
+	a := &Run{Options: Options{Model: "qwen"}, Kinds: []KindResult{{Kind: "prefill_8k", Median: Stats{PrefillTPS: 9000}}}}
+	b := &Run{Options: Options{Model: "qwen"}, Measure: MeasureVersion, Kinds: []KindResult{{Kind: "prefill_8k", Median: Stats{PrefillTPS: 2000}}}}
+	if s := Summary(a, b, Compare(a, b)); !strings.Contains(s, "measured differently") {
+		t.Errorf("summary %q does not flag the older measure", s)
+	}
+	a.Measure = MeasureVersion
+	if s := Summary(a, b, Compare(a, b)); strings.Contains(s, "measured differently") {
+		t.Errorf("summary %q flags runs measured alike", s)
 	}
 }
 

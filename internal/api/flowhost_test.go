@@ -159,8 +159,14 @@ func TestFlowHostSessions(t *testing.T) {
 		hs.created[2].Workspace != session.WorkspaceFolder || hs.created[2].Dir != "/tmp/x" {
 		t.Fatalf("folder: %v %+v", err, hs.created[2])
 	}
-	if _, err := sr.Start(ctx, flows.SessionRequest{}); err != nil || hs.created[3].Workspace != session.WorkspaceScratch {
+	if _, err := sr.Start(ctx, flows.SessionRequest{}); err != nil || hs.created[3].Workspace != session.WorkspaceScratch ||
+		hs.created[3].MaxAttempts != 0 || hs.created[3].EscalateTo != "" || hs.created[3].Limits.MaxMinutes != 0 {
 		t.Fatalf("scratch: %v %+v", err, hs.created[3])
+	}
+	// The step's session settings reach the task spec.
+	if _, err := sr.Start(ctx, flows.SessionRequest{Agent: "cerberus", MaxAttempts: 3, EscalateTo: "claude", MaxMinutes: 20}); err != nil ||
+		hs.created[4].MaxAttempts != 3 || hs.created[4].EscalateTo != "claude" || hs.created[4].Limits.MaxMinutes != 20 {
+		t.Fatalf("session settings: %v %+v", err, hs.created[4])
 	}
 	hs.err = errors.New("guard says no")
 	if _, err := sr.Start(ctx, flows.SessionRequest{}); err == nil {

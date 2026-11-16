@@ -71,7 +71,7 @@ func mcpClientCaller(name, cfgPath, url, key string) (*agent.SpawnClient, error)
 	if url == "" || url == os.Getenv("CERBERUS_URL") {
 		url = localURL(cfg.Server.Listen)
 	}
-	if key == "" || key == os.Getenv("OPENAI_API_KEY") {
+	if key == "" || key == agentTokenFromEnv() {
 		raw, err := os.ReadFile(mcpClientTokenPath(cfg, name))
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("no token for MCP client %q: run `cerberus pair --mcp --name %s` first", name, name)

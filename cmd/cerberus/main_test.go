@@ -235,19 +235,30 @@ func TestInstall(t *testing.T) {
 	if string(unit) != packaging.Unit {
 		t.Fatal("unit not written")
 	}
+	// The sessions slice beside it, at the defaults without a config.
+	slice, _ := os.ReadFile(filepath.Join(dir, "home", ".config", "systemd", "user", "cerberus-sessions.slice"))
+	if string(slice) != packaging.SessionSlice {
+		t.Fatalf("slice not written: %q", slice)
+	}
 	want := []string{"daemon-reload", "is-active --quiet cerberus.service", "enable --now cerberus.service", "restart cerberus.service"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("systemctl calls = %q", calls)
 	}
 
 	// Running the installed binary again copies nothing and does not restart.
+	// The slice follows the config's sessions and their cap.
 	calls = nil
 	in.exe = dst
+	in.guard = func() (int, string) { return 2, "4G" }
 	if err := in.install(); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(calls, "restart cerberus.service") {
 		t.Fatalf("restarted without a new binary: %q", calls)
+	}
+	slice, _ = os.ReadFile(filepath.Join(dir, "home", ".config", "systemd", "user", "cerberus-sessions.slice"))
+	if !strings.Contains(string(slice), "MemoryMax=8192M\n") {
+		t.Fatalf("slice for 2 x 4G: %s", slice)
 	}
 
 	in.goos = "darwin"

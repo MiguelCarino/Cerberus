@@ -127,6 +127,9 @@ func init() {
 	d(g, "engines.wait_for_room_sec", "Wait for room",
 		"When a model does not fit because another loaded model is answering, wait this long for it to finish, then swap. 0 loads at once and lets the engine spill to system memory.",
 		seconds)
+	d(g, "engines.vram_reserve_mib", "VRAM reserve",
+		"GPU memory kept free for the desktop and memory watchdogs when a model loads. 0 picks it for you: with railguard, the room below its VRAM line plus 768 MiB; else 1024 MiB or 4% of the card, whichever is more. -1 turns it off.",
+		unit("MiB"), atLeast(-1))
 	d(g, "engines.llamacpp.enabled", "llama.cpp on",
 		"Run local GGUF models with llama-server. Harmless when it is not installed.", basic, restart)
 	d(g, "engines.llamacpp.binary", "llama-server program", "The llama-server program to start.", restart, isPath)
@@ -147,6 +150,9 @@ func init() {
 		restart, unit("tokens"), atLeast(512))
 	d(g, "engines.lmstudio.gpu", "LM Studio GPU offload",
 		"How much of a model LM Studio puts on the GPU: empty lets Cerberus pick a split when the model does not fit (else LM Studio decides), \"max\", \"off\", or a fraction such as 0.75.")
+	d(g, "engines.lmstudio.unit", "LM Studio daemon unit",
+		"Where Cerberus starts LM Studio's daemon on Linux, so it never runs inside Cerberus' own service. auto (or empty) uses lmstudio.service, else a scope in app.slice; none starts it the old way; any other value names a user unit.",
+		restart)
 	d(g, "engines.ollama.enabled", "Ollama on",
 		"Use models from a running Ollama. Harmless when it is not running.", basic, restart)
 	d(g, "engines.ollama.url", "Ollama URL", "Where Ollama listens.", restart, urlFmt)
@@ -269,6 +275,10 @@ func init() {
 	d(g, "agents[].secret_env.*", "Secret", "A vault secret name.", secretRef)
 	d(g, "agents[].sandbox", "Sandbox", "Run its sessions in a sandbox; empty uses the safety default.", sandboxModes...)
 	d(g, "agents[].sandbox_rw", "Writable folders", "Extra folders it may write inside the sandbox (e.g. ~/.claude).")
+	d(g, "agents[].mcp_style", "Cerberus tools",
+		"How its sessions get the Cerberus tools (spawn, ask, wait) over MCP. "+
+			"Empty picks it from the program name (claude, codex or opencode), none turns it off.",
+		enum("", "claude", "codex", "opencode", "none"))
 	d(g, "default_agent", "Default agent", "The agent preselected for new sessions.", basic, required)
 
 	d(g, "agent.approve", "Approve mode",

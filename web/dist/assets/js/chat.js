@@ -5,6 +5,8 @@
 // tool summaries, the model picker's groups, input history, find, corner
 // cycling and a small SSE parser for the quick answer.
 
+import { prefillText } from './models.js';
+
 // ---------- stage: state machine and timing ----------
 
 export const DONE_TO_IDLE_S = 15; // "done" / "error" held this long, then "idle"
@@ -470,6 +472,8 @@ export function statusParts(st, { nextModel = '', nextMode = '', ctxOf = null } 
   let model = s.model || '';
   if (nextModel && nextModel !== model) model = model ? `${model} → ${nextModel}` : nextModel;
   if (model) parts.push(model);
+  const reading = prefillText(s.prefill);
+  if (reading) parts.push(reading);
   const total = s.context || (ctxOf ? ctxOf(nextModel || s.model) : 0) || 0;
   if (s.used || total) {
     const pct = total ? ` (${Math.min(999, Math.round((100 * (s.used || 0)) / total))}%)` : '';

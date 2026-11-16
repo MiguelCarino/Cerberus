@@ -48,6 +48,15 @@ type Message struct {
 	Kind  string
 	Level string
 	Link  string
+
+	// Held names the tool calls an agent guard held (Kind "guard");
+	// add-only, inbox only.
+	Held []string
+
+	// Owner is the user the inbox item is for ("" a system item, shown to
+	// admins). Send stores it under this owner: a guard hold belongs to
+	// the session's owner, who may answer it. Add-only, inbox only.
+	Owner string
 }
 
 // Inbox stores notifications in-app (*inbox.Store).
@@ -85,7 +94,7 @@ func (n *Notifier) SetInbox(ib Inbox) {
 	n.inboxMu.Unlock()
 }
 
-func (n *Notifier) store(msg Message) { n.storeFor(msg, "") }
+func (n *Notifier) store(msg Message) { n.storeFor(msg, msg.Owner) }
 
 func (n *Notifier) storeFor(msg Message, owner string) {
 	n.inboxMu.RLock()
@@ -95,7 +104,7 @@ func (n *Notifier) storeFor(msg Message, owner string) {
 		return
 	}
 	kind, level, link := Classify(msg)
-	ib.Add(inbox.Item{Kind: kind, Level: level, Title: msg.Title, Body: msg.Body, Link: link, Owner: owner})
+	ib.Add(inbox.Item{Kind: kind, Level: level, Title: msg.Title, Body: msg.Body, Link: link, Owner: owner, Held: msg.Held})
 }
 
 // Keep puts msg in the inbox for one user only (Phase 4a), with no desktop,

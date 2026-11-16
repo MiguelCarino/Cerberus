@@ -331,6 +331,14 @@ func (m *Manager) validate(req *Request) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// A split set is one job, named by its first file. A checksum is one
+		// file's: with a set it must come with the first file's link.
+		if first := firstShard(src); first.file != src.file {
+			if req.SHA256 != "" {
+				return "", fmt.Errorf("%w: a checksum is for one file of a split model; give the link to its first file (%s)", ErrBadRef, first.file)
+			}
+			src = first
+		}
 		if err := m.checkURL(src.url, false); err != nil {
 			return "", err
 		}

@@ -24,6 +24,7 @@ type fakeSource struct {
 	base     string
 	local    bool
 	headers  map[string]string
+	pid      int // Endpoint.PID of the local model (G5's CPU-time signal)
 	acquired atomic.Int32
 	released atomic.Int32
 }
@@ -49,7 +50,7 @@ func (f *fakeSource) Acquire(_ context.Context, id string) (engine.Endpoint, fun
 	}
 	f.acquired.Add(1)
 	return engine.Endpoint{BaseURL: f.base + "/v1/", Model: "backend-qwen", Headers: f.headers,
-		Local: f.local, Backend: engine.BackendLlamaCpp}, func() { f.released.Add(1) }, nil
+		Local: f.local, Backend: engine.BackendLlamaCpp, PID: f.pid}, func() { f.released.Add(1) }, nil
 }
 
 // memStore records usage in memory.

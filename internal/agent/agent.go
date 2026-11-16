@@ -59,7 +59,10 @@ type options struct {
 	CommandTimeout            time.Duration
 	ContextFiles              []string
 	ContextMax                int
-	Color                     bool
+	// ContextTokens is --context: the model's window in tokens (0 = ask
+	// the server's /models).
+	ContextTokens int
+	Color         bool
 	// Resumed is the prior conversation from --resume (system prompt
 	// dropped); nil for a fresh run. Task may then be empty.
 	Resumed []message
@@ -147,6 +150,7 @@ func parseFlags(args []string, cfg *config.Config, stdout io.Writer) (options, i
 	session := fs.String("session", os.Getenv("CERBERUS_SESSION"), "session id sent as X-Cerberus-Session")
 	maxSteps := fs.Int("max-steps", orInt(cfg.Agent.MaxSteps, 60), "tool rounds before the model must answer")
 	approve := fs.String("approve", orStr(cfg.Agent.Approve, "ask"), "ask | auto: ask before run_command, write_file and edit_file")
+	ctxTokens := fs.Int("context", 0, "the model's context window in tokens (0 = ask the server); old tool results are shortened above 70% of it")
 	resume := fs.String("resume", "", "conversation.json of an earlier run to continue (the task, if any, is the next user message)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -192,8 +196,9 @@ func parseFlags(args []string, cfg *config.Config, stdout io.Writer) (options, i
 		Private:        sessionData(os.Getenv("CERBERUS_SESSION"), dir),
 		CommandTimeout: time.Duration(orInt(cfg.Agent.CommandTimeoutS, timeoutS)) * time.Second,
 		ContextFiles:   cfg.Context.Files, ContextMax: orInt(cfg.Context.MaxBytesPerFile, 16384),
-		Color:   !noColor,
-		Resumed: resumed, SaveTo: conversationPath(),
+		ContextTokens: max(0, *ctxTokens),
+		Color:         !noColor,
+		Resumed:       resumed, SaveTo: conversationPath(),
 		Inbox: inboxDir(cfg), InboxSeen: inboxSeenPath(),
 		Spawn:   spawnClient(cfg, *key, *session),
 		Policy:  NewPolicy(cfg.Agent.Policy),

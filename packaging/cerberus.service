@@ -24,10 +24,21 @@ Restart=on-failure
 RestartForceExitStatus=75
 RestartSec=5
 Slice=app.slice
-# SIGTERM to the daemon only: it stops sessions and unloads the models it
-# spawned itself, then exits. Anything left after the timeout is killed.
+# SIGTERM to the daemon only: it stops sessions, stops the llama-server
+# processes it spawned and unloads what it loaded in LM Studio, then exits.
+# With KillMode=mixed, systemd SIGKILLs whatever is left in this unit's
+# cgroup as soon as the daemon exits (or at the timeout). That is why
+# Cerberus starts LM Studio's daemon in lmstudio.service or its own scope,
+# never in this unit (engines.lmstudio.unit).
 KillMode=mixed
 TimeoutStopSec=60
+# A model the kernel's OOM killer ends (llama-server children have
+# oom_score_adj 500, so they go first) is reported and reloaded; the
+# daemon, its sessions and chats keep running.
+OOMPolicy=continue
+# Ask systemd-oomd to pick another unit under memory pressure. Some systemd
+# versions ignore this for user units.
+ManagedOOMPreference=avoid
 
 [Install]
 WantedBy=default.target

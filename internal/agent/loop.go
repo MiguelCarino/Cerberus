@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"carino.systems/cerberus/internal/permits"
 )
@@ -63,12 +64,14 @@ func (r *runner) mode() Mode {
 
 // runOptions builds the engine's options for this task.
 func (r *runner) runOptions() RunOptions {
+	now := time.Now() // one day and one sent time for the whole run
 	return RunOptions{
 		Base: r.o.Base, Model: r.o.Model, Key: r.o.Key, Session: r.o.Session,
-		Cwd: r.o.Cwd, Origin: r.o.Origin, Messages: r.messages, Mode: r.mode(), MaxSteps: r.o.MaxSteps,
-		DenyPaths: r.o.DenyPaths, CommandTimeout: r.o.CommandTimeout,
+		Cwd: r.o.Cwd, Origin: r.o.Origin, Messages: r.messages, Notes: NewestUserNote(r.messages, now),
+		Mode: r.mode(), MaxSteps: r.o.MaxSteps,
+		DenyPaths: r.o.DenyPaths, CommandTimeout: r.o.CommandTimeout, ContextTokens: r.o.ContextTokens,
 		System: func(tools bool) string {
-			s := systemPrompt(r.o.Cwd, r.o.Approve, tools, r.docs)
+			s := systemPrompt(r.o.Cwd, r.o.Approve, tools, r.docs, now)
 			if tools && r.o.Spawn != nil {
 				s += spawnNote
 			}

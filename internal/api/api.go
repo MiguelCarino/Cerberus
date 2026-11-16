@@ -206,6 +206,7 @@ type sessionService interface {
 	AnswerSave(id string, seq, option int) (session.Info, permits.Saved, error)
 	Resize(id string, cols, rows int) error
 	Attach(id string) ([]byte, <-chan []byte, func(), error)
+	AttachFrom(id string, from session.StreamPos) (session.Attachment, error)
 	FollowUp(ctx context.Context, id, text string) error
 	RunChecks(ctx context.Context, id string) error
 	Stop(id string) error
@@ -347,12 +348,13 @@ type server struct {
 	delegation  delegationSource
 	finetune    *finetune.Store
 	records     *records.Store
-	busy        func() map[string]gateway.Busy // G5: in-flight age and stalls per model
-	guardStats  func() gateway.GuardStats      // G2: the agent guard's counters
-	guardScreen guardScreener                  // E5: the guard classifier path, for the red-team suite
-	bench       benchJobs                      // G6: the bench run going now
-	guardbench  guardbenchJobs                 // E5: the guard red-team run going now
-	usageFeed   *usageFeed                     // "usage" hints on /api/events (usagefeed.go)
+	busy        func() map[string]gateway.Busy         // G5: in-flight age and stalls per model
+	prefillSub  func() (<-chan engine.Prefill, func()) // G5: prompt reading hints (step web-api)
+	guardStats  func() gateway.GuardStats              // G2: the agent guard's counters
+	guardScreen guardScreener                          // E5: the guard classifier path, for the red-team suite
+	bench       benchJobs                              // G6: the bench run going now
+	guardbench  guardbenchJobs                         // E5: the guard red-team run going now
+	usageFeed   *usageFeed                             // "usage" hints on /api/events (usagefeed.go)
 
 	// Flows (flows.go).
 	flows    *flows.Engine
@@ -397,6 +399,7 @@ func New(d Deps) http.Handler {
 	if d.Gateway != nil {
 		s.gateway, s.budgets = d.Gateway.Handler(), d.Gateway
 		s.busy = d.Gateway.Busy
+		s.prefillSub = d.Gateway.SubscribePrefill
 		s.guardStats = d.Gateway.GuardStats
 		s.guardScreen = d.Gateway
 	}
@@ -511,6 +514,7 @@ func (m *routeMux) Handle(pattern string, h http.Handler) {
 
 func (s *server) apiRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/gpu", s.handleGPU)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/models/{rest...}", s.handleModelAction)
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
@@ -546,6 +550,7 @@ func (s *server) apiRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/sessions/{id}/preview", s.handlePreviewGet)
 	mux.HandleFunc("POST /api/sessions/{id}/preview/start", s.handlePreviewStart)
 	mux.HandleFunc("POST /api/sessions/{id}/preview/stop", s.handlePreviewStop)
+	mux.HandleFunc("POST /api/sessions/{id}/guard/approve", s.handleGuardApprove)
 	mux.HandleFunc("GET /api/fs", s.handleFS)
 	mux.HandleFunc("POST /api/sessions/{id}/{action}", s.handleSessionAction)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleSessionDelete)

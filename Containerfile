@@ -52,6 +52,10 @@ WORKDIR /home/cerberus
 VOLUME ["/var/lib/cerberus"]
 EXPOSE 7340
 
+# The daemon shuts down cleanly on SIGTERM (it needs up to 45 s); give
+# it a 60 s stop timeout and an init (Quadlet and compose files do both).
+STOPSIGNAL SIGTERM
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD curl -fsS -o /dev/null http://127.0.0.1:7340/healthz || exit 1
 

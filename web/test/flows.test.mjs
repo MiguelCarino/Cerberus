@@ -133,9 +133,9 @@ test('every kind has a label, its fields and a form', () => {
 
 test('step forms show the fields the other values ask for', () => {
   const vis = (s, steps = [s]) => stepFields(s, steps).filter((f) => f.show !== false).map((f) => f.key);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'scratch' }), ['agent', 'workspace', 'task']);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'repo' }), ['agent', 'workspace', 'repo', 'task']);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'folder' }), ['agent', 'workspace', 'folder', 'task']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'scratch' }), ['agent', 'workspace', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'repo' }), ['agent', 'workspace', 'repo', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'folder' }), ['agent', 'workspace', 'folder', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
   assert.ok(!vis({ kind: 'fan_out', as: 'prompt' }).includes('agent'));
   assert.ok(vis({ kind: 'fan_out', as: 'session' }).includes('agent'));
   assert.ok(vis({ kind: 'if', test: 'json' }).includes('path'));
@@ -169,6 +169,8 @@ test('new steps get unique ids and read the step before them', () => {
   assert.equal(uniqueId('plan', []), 'plan');
   assert.equal(uniqueId('plan', ['plan', 'plan-2']), 'plan-3');
   assert.equal(uniqueId('End', []), 'end-step');
+  assert.equal(uniqueId('continue', []), 'continue-step');
+  assert.equal(uniqueId('Fail', []), 'fail-step');
   assert.equal(uniqueId('42 Weird Name!', []), 'weird-name');
   assert.equal(uniqueId('', []), 'step');
   assert.ok(uniqueId('x'.repeat(60), []).length <= 32);
@@ -539,4 +541,110 @@ test('runLogName: a safe file name', () => {
   assert.equal(runLogName({ flow_name: 'My flow / test', id: 'a b' }), 'My-flow-test-a-b.log');
   assert.equal(runLogName({}), 'flow-run.log');
   assert.equal(runLogName(null), 'flow-run.log');
+});
+
+// ---------- hand-off between steps (2026-11-15) ----------
+
+test('a session step can work in an earlier step\'s workspace', () => {
+  const steps = [
+    { id: 'w', kind: 'session', agent: 'a', workspace: 'scratch', task: 'x' },
+    { id: 'p', kind: 'plan', model: 'm', template: 't' },
+    { id: 'f', kind: 'fan_out', from: 'p', as: 'session', agent: 'a', template: '{item.task}' },
+    { id: 'q', kind: 'fan_out', from: 'p', as: 'prompt', template: '{item.task}' },
+    { id: 'j', kind: 'session', agent: 'a', workspace: 'step', from: 'f', task: '{steps.f.output}' },
+  ];
+  const fields = stepFields(steps[4], steps);
+  const ws = fields.find((x) => x.key === 'workspace');
+  assert.ok(ws.options.some(([v]) => v === 'step'), 'session workspaces offer step');
+  const from = fields.find((x) => x.key === 'from');
+  assert.equal(from.show, true);
+  assert.deepEqual(from.options.map(([v]) => v), ['w', 'f'], 'session steps and fan-outs run as sessions only');
+  assert.equal(stepFields(steps[0], steps).find((x) => x.key === 'from').show, false);
+  const fan = stepFields(steps[2], steps).find((x) => x.key === 'workspace');
+  assert.ok(!fan.options.some(([v]) => v === 'step'), 'a fan-out never works in a step workspace');
+  assert.deepEqual(cleanStep(steps[4]), { id: 'j', kind: 'session', agent: 'a', workspace: 'step', from: 'f', task: '{steps.f.output}' });
+  assert.deepEqual(cleanStep({ ...steps[0], from: 'stale' }), { id: 'w', kind: 'session', agent: 'a', workspace: 'scratch', task: 'x' });
+  const g = draftGraph({ steps });
+  assert.match(g.nodes.find((n) => n.id === 'st:j').sub, /step · of f/);
+});
+
+test('renaming a step follows field placeholders, and chips offer fields', () => {
+  const steps = [
+    { id: 'judge', kind: 'judge', on: 'w' },
+    { id: 'out', kind: 'output', template: '{steps.judge.output.failed} {steps.judge.output.json} {steps.judge.output} {steps.judges.output.x}' },
+  ];
+  const r = renameStepRefs(steps, 'judge', 'check');
+  assert.equal(r[1].template, '{steps.check.output.failed} {steps.check.output.json} {steps.check.output} {steps.judges.output.x}');
+  const chips = placeholdersFor([{ id: 'w', kind: 'session' }, { id: 'j', kind: 'judge' }], 2);
+  for (const c of ['{steps.w.output.final}', '{steps.w.output.workspace}', '{steps.j.output.passed}', '{steps.j.output.failed}']) {
+    assert.ok(chips.includes(c), c);
+  }
+});
+
+test('a kept fan-out item says so', () => {
+  assert.equal(stepUsage({ model: 'qwen3', reused: true }), 'qwen3 · kept from the last attempt');
+});
+
+test('prompt, plan and fan-out steps carry model settings', () => {
+  for (const k of ['prompt', 'plan', 'fan_out']) {
+    for (const f of ['temperature', 'max_tokens', 'thinking']) assert.ok(KIND_FIELDS[k].includes(f), k + '.' + f);
+  }
+  const keys = (s) => stepFields(s, [s]).filter((f) => f.show !== false).map((f) => f.key);
+  assert.ok(keys({ id: 'p', kind: 'plan' }).includes('thinking'));
+  assert.ok(keys({ id: 'f', kind: 'fan_out' }).includes('temperature'));
+  assert.ok(!keys({ id: 'f', kind: 'fan_out', as: 'session' }).includes('temperature'));
+  const temp = stepFields({ id: 'p', kind: 'prompt' }).find((f) => f.key === 'temperature');
+  assert.equal(temp.type, 'decimal');
+  // 0 is a real temperature; empty is unset; numbers stay numbers.
+  assert.deepEqual(cleanStep({ id: 'p', kind: 'plan', model: 'm', template: 't', temperature: 0, max_tokens: '512.7', thinking: 'off' }),
+    { id: 'p', kind: 'plan', model: 'm', template: 't', temperature: 0, max_tokens: 512, thinking: 'off' });
+  assert.deepEqual(cleanStep({ id: 'p', kind: 'prompt', model: 'm', template: 't', temperature: '', max_tokens: 0, thinking: '' }),
+    { id: 'p', kind: 'prompt', model: 'm', template: 't' });
+  assert.deepEqual(cleanStep({ id: 'p', kind: 'prompt', model: 'm', template: 't', temperature: '0.4' }),
+    { id: 'p', kind: 'prompt', model: 'm', template: 't', temperature: 0.4 });
+  // A fan-out run as sessions keeps none (sessions use their agent's settings).
+  assert.deepEqual(cleanStep({ id: 'f', kind: 'fan_out', as: 'session', agent: 'a', from: 'p', template: 'x', temperature: 0.2, thinking: 'on' }),
+    { id: 'f', kind: 'fan_out', as: 'session', agent: 'a', from: 'p', template: 'x' });
+  assert.equal(selectDefault({ thinking: undefined }, 'thinking'), '');
+});
+
+test('error settings: retry, on_error, min_ok and session settings', () => {
+  const vis = (s, steps = [s]) => stepFields(s, steps).filter((f) => f.show !== false).map((f) => f.key);
+  for (const k of ['prompt', 'plan', 'fan_out']) assert.ok(vis({ id: 'x', kind: k }).includes('retry'), k);
+  for (const k of ['session', 'judge', 'output', 'if', 'approve']) assert.ok(!vis({ id: 'x', kind: k }).includes('retry'), k);
+  for (const k of ['prompt', 'plan', 'fan_out', 'session', 'judge', 'output']) assert.ok(vis({ id: 'x', kind: k }).includes('on_error'), k);
+  assert.ok(!vis({ id: 'x', kind: 'if' }).includes('on_error'));
+  // session settings show on a session fan-out only; min_ok on every fan-out
+  assert.ok(!vis({ id: 'f', kind: 'fan_out', as: 'prompt' }).includes('max_attempts'));
+  assert.ok(vis({ id: 'f', kind: 'fan_out', as: 'session' }).includes('escalate_to'));
+  assert.ok(vis({ id: 'f', kind: 'fan_out' }).includes('min_ok'));
+  const esc = stepFields({ id: 's', kind: 'session' }).find((f) => f.key === 'escalate_to');
+  assert.equal(esc.type, 'agent');
+  assert.equal(esc.optional, true);
+  // on_error offers the next step, later steps and the end
+  const a = { id: 'a', kind: 'prompt' }, b = { id: 'b', kind: 'prompt' }, c = { id: 'c', kind: 'output' };
+  const oe = stepFields(b, [a, b, c]).find((f) => f.key === 'on_error');
+  assert.deepEqual(oe.options.map(([v]) => v), ['', 'continue', 'c', 'end']);
+  // cleanStep: numbers stay numbers, defaults drop out, retry is nested
+  assert.deepEqual(cleanStep({ id: 'p', kind: 'prompt', model: 'm', template: 't', retry: { max: '2', backoff_s: '5' }, on_error: 'continue' }),
+    { id: 'p', kind: 'prompt', model: 'm', template: 't', retry: { max: 2, backoff_s: 5 }, on_error: 'continue' });
+  assert.deepEqual(cleanStep({ id: 'p', kind: 'prompt', model: 'm', template: 't', retry: { max: 0, backoff_s: 5 }, on_error: 'fail' }),
+    { id: 'p', kind: 'prompt', model: 'm', template: 't' });
+  assert.deepEqual(cleanStep({ id: 's', kind: 'session', agent: 'a', task: 't', max_attempts: '3', escalate_to: 'claude', max_minutes: 30 }),
+    { id: 's', kind: 'session', agent: 'a', task: 't', max_attempts: 3, escalate_to: 'claude', max_minutes: 30 });
+  assert.deepEqual(cleanStep({ id: 'f', kind: 'fan_out', as: 'prompt', from: 'p', template: 'x', min_ok: '2', max_attempts: 3, escalate_to: 'claude' }),
+    { id: 'f', kind: 'fan_out', as: 'prompt', from: 'p', template: 'x', min_ok: 2 });
+  // renaming a step follows an on_error jump
+  assert.equal(renameStepRefs([{ id: 'a', kind: 'prompt', on_error: 'c' }, c], 'c', 'tell')[0].on_error, 'tell');
+});
+
+test('a judge step may judge a prompt or a fan-out of prompts', () => {
+  const p = { id: 'draft', kind: 'prompt' };
+  const fp = { id: 'parts', kind: 'fan_out', as: 'prompt' };
+  const fs = { id: 'jobs', kind: 'fan_out', as: 'session' };
+  const j = newStep('judge', [p, fp, fs]);
+  assert.equal(j.on, 'parts');
+  const on = stepFields(j, [p, fp, fs, j]).find((f) => f.key === 'on');
+  assert.deepEqual(on.options.map(([v]) => v), ['draft', 'parts']);
+  assert.match(on.hint, /judged as text/);
 });

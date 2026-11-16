@@ -412,13 +412,7 @@ func (g *Gateway) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		estimate()
 		return
 	}
-	model := xr.Model
-	id, info, known := g.resolve(r.Context(), model)
-	if !known {
-		if mm := g.mapModel(model); mm != "" {
-			id, info, known = g.resolve(r.Context(), mm)
-		}
-	}
+	_, id, info, known := g.lookup(r.Context(), xr.Model)
 	if !known || !info.Loaded || !info.Local || info.Backend != engine.BackendLlamaCpp {
 		if known && !info.Local {
 			if g.countNative(w, r, id, body) {
@@ -428,17 +422,41 @@ func (g *Gateway) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		estimate()
 		return
 	}
-	ep, release, err := g.src.Acquire(r.Context(), id)
-	if err != nil {
-		estimate()
-		return
+	var ep engine.Endpoint
+	if le, ok := g.src.(loadedEndpointer); ok {
+		// llama-server tokenizes on its HTTP thread: the count takes no
+		// request slot, so it never waits behind a running generation.
+		if ep, ok = le.LoadedEndpoint(r.Context(), id); !ok {
+			estimate()
+			return
+		}
+	} else {
+		var release func()
+		var err error
+		if ep, release, err = g.src.Acquire(r.Context(), id); err != nil {
+			estimate()
+			return
+		}
+		defer release()
 	}
-	defer release()
-	if n, err := llamaCount(r.Context(), g.client, ep, xr.Fields); err == nil {
+	ctx, cancel := context.WithTimeout(r.Context(), countTimeout)
+	defer cancel()
+	if n, err := llamaCount(ctx, g.client, ep, xr.Fields); err == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"input_tokens": n})
 		return
 	}
 	estimate()
+}
+
+// countTimeout bounds the engine's token count; after it the estimate
+// answers.
+var countTimeout = 10 * time.Second
+
+// loadedEndpointer is optionally implemented by a modelSource:
+// LoadedEndpoint is where a loaded local model answers, without a request
+// slot (engine.Manager.LoadedEndpoint).
+type loadedEndpointer interface {
+	LoadedEndpoint(ctx context.Context, id string) (engine.Endpoint, bool)
 }
 
 // countNative passes count_tokens to a provider that serves Messages.

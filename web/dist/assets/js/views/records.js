@@ -7,7 +7,7 @@
 import { api } from '../api.js';
 import { h, clear, openDialog, toast, errText } from '../dom.js';
 import { fmtInt, fmtMs, relTime } from '../util.js';
-import { recordsQuery, recordURL, summarize, toolCounts, switches, cacheShare, guardText, guardbenchText, FINISH_LABEL, OFF_TEXT } from '../records.js';
+import { recordsQuery, recordURL, threadURL, turnText, summarize, toolCounts, switches, cacheShare, guardText, guardbenchText, FINISH_LABEL, OFF_TEXT } from '../records.js';
 import { store } from '../store.js';
 
 // recordsSection returns {el, load(), destroy()}.
@@ -122,13 +122,37 @@ export function recordsSection() {
       full.guard ? ['Guard', `${full.guard.mode}: ${full.guard.flagged} flagged${(full.guard.held || []).length ? ` · held ${full.guard.held.join(', ')}` : ''}`] : null,
     ].filter(Boolean);
     const t = full.text;
+    // The conversation: this turn only, with a button that stitches in the
+    // earlier turns (one more audited read).
+    let conv = null;
+    if (t && t.messages) {
+      const pre = h('pre', { class: 'rec-pre', text: t.messages });
+      const head = h('h3', { class: 'rec-h', text: turnText(full) });
+      const more = full.prefix > 0 && threadURL(full.ref) ? h('button', {
+        class: 'btn btn-sm', type: 'button',
+        onclick: async (e) => {
+          const b = e.currentTarget;
+          b.disabled = true;
+          try {
+            const st = await api(threadURL(full.ref));
+            pre.textContent = (st.text && st.text.messages) || t.messages;
+            head.textContent = turnText(st);
+            b.remove();
+          } catch (err) {
+            b.disabled = false;
+            toast(errText(err), 'err');
+          }
+        },
+      }, 'Show earlier turns') : null;
+      conv = [head, more, pre];
+    }
     openDialog(() => ({
       title: 'Request record', sub: new Date(full.time).toLocaleString(), wide: true,
       body: h('div', { class: 'rec-detail' },
         h('dl', { class: 'rec-facts' }, facts.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])),
         t ? [
           t.system ? [h('h3', { class: 'rec-h', text: 'System prompt' }), h('pre', { class: 'rec-pre', text: t.system })] : null,
-          t.messages ? [h('h3', { class: 'rec-h', text: 'Conversation' }), h('pre', { class: 'rec-pre', text: t.messages })] : null,
+          conv,
           t.reasoning ? [h('h3', { class: 'rec-h', text: 'Thinking' }), h('pre', { class: 'rec-pre', text: t.reasoning })] : null,
           t.reply ? [h('h3', { class: 'rec-h', text: 'Reply' }), h('pre', { class: 'rec-pre', text: t.reply })] : null,
         ] : h('p', { class: 't-sec', text: 'No text kept (records keep counts only).' })),

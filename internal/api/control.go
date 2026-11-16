@@ -41,7 +41,7 @@ type controlService interface {
 	Feed(since time.Time, limit int) []session.FeedItem
 	SubscribeFeed() (<-chan session.FeedItem, func())
 	Record(id, kind, text string)
-	AttachMany(ids []string, backlogKiB int) (map[string][]byte, <-chan session.WallChunk, func(), error)
+	AttachManyFrom(ids []string, backlogKiB int, from map[string]session.StreamPos) (map[string]session.WallBacklog, <-chan session.WallChunk, func(), error)
 	Descendants(root string) []session.Info
 	IsDescendant(root, id string) bool
 	ClientSessions(client string) []session.Info
@@ -338,8 +338,10 @@ type wallChunk struct {
 // handleWallStream multiplexes several sessions' terminals on one SSE: one
 // "out" event per session with backlog:true (its last 8 KiB), then "out"
 // events as output arrives. When any session's stream ends the whole
-// stream ends, and the client reconnects (resetting its terminals on the
-// fresh backlogs).
+// stream ends, and the client reconnects. A reconnect that names each
+// session's position (from=<id>:<pos>) gets only what it missed for those,
+// as plain "out" (none when current), and a reset backlog only on a gap.
+// A "pos" event ({id: pos}) follows the backlogs.
 func (s *server) handleWallStream(w http.ResponseWriter, r *http.Request) {
 	if s.control == nil {
 		unavailable(w, "sessions")
@@ -368,7 +370,7 @@ func (s *server) handleWallStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids = visible
-	backlogs, ch, detach, err := s.control.AttachMany(ids, wallBacklogKiB)
+	backlogs, ch, detach, err := s.control.AttachManyFrom(ids, wallBacklogKiB, wallFrom(r.URL.Query()["from"]))
 	if err != nil {
 		writeError(w, controlErrStatus(err), err.Error())
 		return
@@ -379,10 +381,19 @@ func (s *server) handleWallStream(w http.ResponseWriter, r *http.Request) {
 		raw, err := json.Marshal(c)
 		return err == nil && sendEvent(w, rc, "out", raw) == nil
 	}
+	pos := make(map[string]string, len(ids))
 	for _, id := range ids {
-		if !send(wallChunk{ID: id, B64: string(b64(backlogs[id])), Backlog: true}) {
+		bl := backlogs[id]
+		pos[id] = bl.Pos
+		if !bl.Reset && len(bl.Backlog) == 0 {
+			continue // the client is current on this one
+		}
+		if !send(wallChunk{ID: id, B64: string(b64(bl.Backlog)), Backlog: bl.Reset}) {
 			return
 		}
+	}
+	if raw, err := json.Marshal(pos); err != nil || sendEvent(w, rc, "pos", raw) != nil {
+		return
 	}
 	ping := time.NewTicker(s.ping)
 	defer ping.Stop()
@@ -400,6 +411,21 @@ func (s *server) handleWallStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// wallFrom reads the wall stream's positions: one "from=<id>:<pos>" per
+// session the client is current on (step web-api).
+func wallFrom(vals []string) map[string]session.StreamPos {
+	if len(vals) == 0 {
+		return nil
+	}
+	out := make(map[string]session.StreamPos, len(vals))
+	for _, v := range vals {
+		if i := strings.LastIndexByte(v, ':'); i > 0 && len(out) < maxWallIDs {
+			out[v[:i]] = v[i+1:]
+		}
+	}
+	return out
 }
 
 // splitIDs splits a comma list, dropping blanks and duplicates.

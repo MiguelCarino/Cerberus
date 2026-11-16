@@ -665,7 +665,10 @@ func (e *Engine) Approve(actor, id string, ok bool, note string) (Run, error) {
 // from the step it stopped at: that step runs again, and the steps before
 // it keep their outputs. A step that stopped inside an agent session goes
 // on in that session (its workspace and conversation) when the runner is
-// a SessionResumer. The run gets a fresh allowance of its limits (time,
+// a SessionResumer. A fan-out step keeps the items its last attempt
+// passed when they would run the same input on the same model (not run
+// again, not charged, not counted toward max_steps); the rest run again.
+// The run gets a fresh allowance of its limits (time,
 // steps, tokens, cost); its totals keep counting. A rejected or passed
 // run, or one still going, answers ErrState.
 func (e *Engine) Continue(actor, id string) (Run, error) {

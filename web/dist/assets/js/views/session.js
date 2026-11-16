@@ -9,7 +9,7 @@ import { api, post, sid, LiveSource } from '../api.js';
 import { h, clear, openDialog, confirmDialog, toast, errText, pill } from '../dom.js';
 import { store } from '../store.js';
 import {
-  b64ToBytes, debounce, stateTone, isLive, canFollowUp, takesFollowUp, canStop, canDiscard, canResume,
+  b64ToBytes, streamPos, parsePosEvent, debounce, stateTone, isLive, canFollowUp, takesFollowUp, canStop, canDiscard, canResume,
   workspaceKind, workspaceLabel, canDiff, canAcceptSession, canSave, joinPath, fmtEnergy,
 } from '../util.js';
 import { sessionName, needsApproval, validateLimits, limitsText, limitsHelp } from '../control.js';
@@ -31,6 +31,7 @@ import { previewPanel } from './preview.js';
 import { previewChip } from '../preview.js';
 import { copyLater } from './chatdom.js';
 import { canWriteSessions, ownerLabel } from '../users.js';
+import { prefillText } from '../models.js';
 import { mount as mountNotFound } from './notfound.js';
 
 // mount shows the session. One the store does not know yet is fetched
@@ -224,15 +225,14 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
   });
 
   // ---------- output stream ----------
-  let fresh = true;
-  const write = (data) => {
-    if (fresh) { term.reset(); fresh = false; }
-    term.write(b64ToBytes(data));
-  };
-  const stream = new LiveSource(`${sid(id)}/stream`, {
-    open: () => { fresh = true; },
-    backlog: write,
-    out: write,
+  // A reconnect (the tab coming back, a dropped link) resumes from the
+  // last position: the server sends only what was missed, and "backlog"
+  // (which resets the terminal) only on a gap or a daemon restart.
+  const pos = streamPos();
+  const stream = new LiveSource(() => `${sid(id)}/stream${pos.get() ? `?from=${encodeURIComponent(pos.get())}` : ''}`, {
+    backlog: (data) => { pos.clear(); term.reset(); term.write(b64ToBytes(data)); },
+    out: (data) => { const b = b64ToBytes(data); pos.add(b.length); term.write(b); },
+    pos: (data) => { const v = parsePosEvent(data); pos.set(v && v.pos); },
   });
 
   // ---------- delegation ----------
@@ -257,7 +257,7 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
     if (!info) { titleEl.textContent = 'Loading…'; return; }
     titleEl.textContent = sessionName(info);
     metaEl.textContent = [ownerLabel(info, me), workspaceLabel(info), info.Agent + (info.Model ? ` · ${info.Model}` : ''),
-      info.Attempt ? `attempt ${info.Attempt}` : ''].filter(Boolean).join(' · ');
+      prefillText(prefill), info.Attempt ? `attempt ${info.Attempt}` : ''].filter(Boolean).join(' · ');
     const energy = sessionEnergyText(info);
     energyEl.textContent = energy ? `energy ${energy}` : '';
     energyEl.hidden = !energy;
@@ -459,7 +459,18 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
     if (limits) await patchSession(id, { Limits: limits }, 'Limits saved');
   }
 
+  // "reading prompt 12k/48k" while this session's model reads a long
+  // prompt (llama.cpp only; step web-api). A hint not renewed for 30 s is
+  // dropped, in case the last one was missed.
+  let prefill = null;
+  let prefillTimer = 0;
   const unsub = store.subscribe((kind, payload) => {
+    if (kind === 'prefill' && payload.session === id) {
+      prefill = payload.done ? null : payload;
+      clearTimeout(prefillTimer);
+      if (prefill) prefillTimer = setTimeout(() => { prefill = null; render(); }, 30000);
+      render();
+    }
     if (kind === 'session' && payload.ID === id) { info = payload; render(); }
     if (kind === 'sessions') { const s = store.session(id); if (s) { info = s; render(); } }
     if (kind === 'status' && info) render();
@@ -472,6 +483,7 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
 
   return () => {
     disposed = true;
+    clearTimeout(prefillTimer);
     popDrop();
     if (files) files.destroy();
     if (replay) replay.destroy();

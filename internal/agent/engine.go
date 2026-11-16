@@ -89,6 +89,7 @@ const (
 	EvAsk       = "ask"
 	EvNoTools   = "no_tools"
 	EvUsage     = "usage"
+	EvProgress  = "progress" // the model is reading the prompt (RunOptions.Progress)
 	EvNote      = "note"
 	EvDone      = "done"
 )
@@ -110,6 +111,8 @@ type Event struct {
 	Why     string
 	Usage   Usage
 	Done    *Done
+	// Progress is EvProgress's prompt tokens read so far, of Total.
+	Progress, Total int
 }
 
 // Usage is token counts.
@@ -155,6 +158,8 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		m["why"] = e.Why
 	case EvUsage:
 		m["prompt"], m["completion"] = e.Usage.Prompt, e.Usage.Completion
+	case EvProgress:
+		m["processed"], m["total"] = e.Progress, e.Total
 	case EvDone:
 		if e.Done != nil {
 			raw, err := json.Marshal(e.Done)
@@ -260,9 +265,25 @@ type RunOptions struct {
 	Wrap        func(argv []string) []string
 	MaxTokens   int
 	Temperature *float64
+	// Progress asks the model server for prompt reading progress
+	// (llama.cpp's return_progress) and emits it as EvProgress events.
+	Progress bool
+	// ContextTokens is the model's context window in tokens: above 70% of
+	// it, old tool results are elided from the request (fit.go). 0 asks the
+	// server's /models once per run; below 0 turns the estimate off (an
+	// overflow error still elides and retries once).
+	ContextTokens int
 	// System builds the system prompt per request (tools: whether tools go
 	// with it). Nil uses the terminal agent's prompt.
 	System func(tools bool) string
+	// Notes are lines added, in every request of the run, to the user
+	// messages at these indexes of Messages (a blank line between): the
+	// time a turn was sent (SentNote), which must not go in the system
+	// prompt. They never reach Messages, OnSave or Result: the stored and
+	// shown conversation stays as written. A caller that sends the same
+	// note with the same turn on later runs keeps the requests' prefix the
+	// same byte for byte, so an engine's prompt cache holds.
+	Notes map[int]string
 	// Refusal is what the model reads for a denied card (nil: "The user
 	// refused this." with the note).
 	Refusal func(note string) string
@@ -309,6 +330,11 @@ type engine struct {
 	calls    int
 	last     Usage
 	total    Usage
+
+	ctxTokens int       // the model's context (0 = not known)
+	squeezed  bool      // the server said the context overflowed: elide hard from now on
+	elided    int       // tool results elided in the last note
+	started   time.Time // the run's start: the day the default prompt names
 }
 
 // Run executes one turn and returns when the model answered without tools,
@@ -355,9 +381,9 @@ func Run(ctx context.Context, o RunOptions, emit func(Event)) Result {
 	c := newClient(o.Base, o.Key, o.Session)
 	c.name = o.Client
 	c.owner = o.Owner
-	e := &engine{o: o, emit: emit, client: c, tools: tools,
-		messages: append([]Message(nil), o.Messages...), toolsOn: !o.NoTools}
 	started := time.Now()
+	e := &engine{o: o, emit: emit, client: c, tools: tools, started: started,
+		messages: append([]Message(nil), o.Messages...), toolsOn: !o.NoTools}
 	err := e.loop(ctx)
 	d := Done{Steps: e.steps, Seconds: time.Since(started).Seconds(), Usage: e.last, Total: e.total,
 		Calls: e.calls, Tools: e.toolsOn}
@@ -399,7 +425,7 @@ func (e *engine) prompt(tools bool) string {
 	if e.o.System != nil {
 		return e.o.System(tools)
 	}
-	return systemPrompt(e.o.Cwd, string(e.o.Mode), tools, nil)
+	return systemPrompt(e.o.Cwd, string(e.o.Mode), tools, nil, e.started)
 }
 
 func (e *engine) save() {
@@ -418,6 +444,13 @@ func (e *engine) loop(ctx context.Context) error {
 	// Saved before the first request too, so a run that fails at once
 	// still has its task on record.
 	e.save()
+	switch {
+	case e.o.ContextTokens > 0:
+		e.ctxTokens = e.o.ContextTokens
+	case e.o.ContextTokens == 0:
+		e.ctxTokens = e.client.modelContext(ctx, e.o.Model)
+	}
+	retries := 0
 	for step := 0; step <= e.o.MaxSteps; {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -425,6 +458,7 @@ func (e *engine) loop(ctx context.Context) error {
 		last := step == e.o.MaxSteps
 		e.emit(Event{Type: EvStart, Step: step})
 		body := e.request(last)
+		e.fit(&body)
 		text, calls, streamed, err := e.one(ctx, body)
 		if err != nil {
 			if ctx.Err() != nil && strings.TrimSpace(text) != "" {
@@ -438,6 +472,25 @@ func (e *engine) loop(ctx context.Context) error {
 				continue
 			}
 			var se *ServerError
+			if ctx.Err() == nil && !streamed && len(calls) == 0 && errors.As(err, &se) {
+				if !e.squeezed && contextOverflow(se) {
+					// Once: elide every result but the newest turn's and ask again.
+					e.squeezed = true
+					e.emit(Event{Type: EvNote, Text: "the model's context is full (" + truncRunes(se.Message, 160) +
+						"): old tool results are shortened and the request is sent again"})
+					continue
+				}
+				if retries < len(retryWaits) && transientServer(se) {
+					wait := retryWaits[retries]
+					retries++
+					e.emit(Event{Type: EvNote, Text: fmt.Sprintf("the engine failed (%s): retrying in %s (%d of %d)",
+						truncRunes(describeError(se), 160), wait, retries, len(retryWaits))})
+					if !sleepCtx(ctx, wait) {
+						return ctx.Err()
+					}
+					continue
+				}
+			}
 			if ctx.Err() == nil && body.Tools != nil && !streamed && errors.As(err, &se) && noToolSupport(se) {
 				e.toolsOn = false
 				e.emit(Event{Type: EvNoTools, Why: se.Message})
@@ -446,6 +499,7 @@ func (e *engine) loop(ctx context.Context) error {
 			return err
 		}
 		e.steps = step + 1
+		retries = 0
 		if e.o.OnReply != nil {
 			e.o.OnReply()
 		}
@@ -476,6 +530,12 @@ func (e *engine) request(last bool) chatRequest {
 	e.system = e.prompt(tools)
 	msgs = append(msgs, Message{Role: "system", Content: e.system})
 	msgs = append(msgs, e.messages...)
+	for i, n := range e.o.Notes {
+		if i >= 0 && i < len(e.messages) && e.messages[i].Role == "user" && strings.TrimSpace(n) != "" {
+			m := &msgs[i+1] // a copy: e.messages keeps the turn as written
+			m.Content = strings.TrimRight(m.Content, "\n") + "\n\n" + n
+		}
+	}
 	if last && e.toolsOn {
 		msgs = append(msgs, Message{Role: "user", Content: lastStepNudge})
 	}
@@ -484,6 +544,7 @@ func (e *engine) request(last bool) chatRequest {
 		body.MaxTokens = e.o.MaxTokens
 	}
 	body.Temperature = e.o.Temperature
+	body.ReturnProgress = e.o.Progress
 	if tools {
 		body.Tools = e.toolSpecs()
 	}
@@ -531,6 +592,9 @@ func (e *engine) one(ctx context.Context, body chatRequest) (text string, calls 
 		}
 	}
 	err = e.client.stream(ctx, body, func(ch *chunk) {
+		if p := ch.PromptProgress; p != nil && p.Total > 0 {
+			e.emit(Event{Type: EvProgress, Progress: min(max(p.Processed, 0), p.Total), Total: p.Total})
+		}
 		if ch.Usage != nil {
 			e.last = Usage{Prompt: ch.Usage.PromptTokens, Completion: ch.Usage.CompletionTokens}
 			e.total.Prompt += ch.Usage.PromptTokens

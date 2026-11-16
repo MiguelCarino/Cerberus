@@ -35,6 +35,7 @@ import (
 	"carino.systems/cerberus/internal/config"
 	"carino.systems/cerberus/internal/engine"
 	"carino.systems/cerberus/internal/evals"
+	"carino.systems/cerberus/internal/flows"
 	"carino.systems/cerberus/internal/session"
 	"carino.systems/cerberus/internal/usage"
 	"carino.systems/cerberus/internal/users"
@@ -239,6 +240,11 @@ func (m evalModels) Complete(ctx context.Context, req evals.ModelRequest) (evals
 		// Thinking off, as the bench does; cloud APIs refuse these fields.
 		body["reasoning_effort"] = "none"
 		body["chat_template_kwargs"] = map[string]bool{"enable_thinking": false}
+		// The verdict's shape, enforced by the local engine's grammar
+		// (llama-server, LM Studio and Ollama take json_schema).
+		if len(req.Schema) > 0 {
+			body["response_format"] = jsonSchemaFormat("verdict", req.Schema)
+		}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -259,6 +265,12 @@ func (m evalModels) Complete(ctx context.Context, req evals.ModelRequest) (evals
 	if err != nil {
 		if ctx.Err() != nil {
 			return evals.ModelReply{}, ctx.Err()
+		}
+		// Typed with its status, so the judge can tell an engine reload
+		// (worth one retry) from a refusal.
+		var me *flows.ModelError
+		if errors.As(err, &me) {
+			return evals.ModelReply{}, &evals.ModelError{Status: me.Status, Message: me.Message}
 		}
 		return evals.ModelReply{}, err
 	}

@@ -149,8 +149,11 @@ func buildGraph(f Flow, r *Run, recs []StepRecord, liveItems map[string][]ItemRe
 			if rec.Session != "" {
 				n.Href = "#/s/" + rec.Session
 			}
-			if done && rec.Retries > 0 {
-				n.Detail = retryDetail(rec.Retries, rec.RetryError)
+			if done && rec.Retries+max(rec.Attempts-1, 0) > 0 {
+				n.Detail = retryDetail(rec.Retries+max(rec.Attempts-1, 0), rec.RetryError)
+			}
+			if done && rec.OnError != "" {
+				n.Detail = strings.TrimPrefix(n.Detail+"; failed, the run went on: "+clipLine(rec.Error, graphSubMax), "; ")
 			}
 			// The current step waits for the engine: a prompt or plan
 			// step while its call is held, a fan-out step while every
@@ -183,8 +186,8 @@ func buildGraph(f Flow, r *Run, recs []StepRecord, liveItems map[string][]ItemRe
 					label = "Item " + strconv.Itoa(it.Index+1)
 				}
 				in := Node{ID: id, Kind: NodeItem, Label: clipLine(label, graphSubMax), Sub: it.Model, State: it.State}
-				if it.Retries > 0 {
-					in.Detail = retryDetail(it.Retries, it.RetryError)
+				if it.Retries+max(it.Attempts-1, 0) > 0 {
+					in.Detail = retryDetail(it.Retries+max(it.Attempts-1, 0), it.RetryError)
 				}
 				if it.State == StepRunning && it.Waiting != "" {
 					in.State, in.Detail = StepQueued, it.Waiting
@@ -243,6 +246,9 @@ func buildGraph(f Flow, r *Run, recs []StepRecord, liveItems map[string][]ItemRe
 			continue
 		}
 		g.Edges = append(g.Edges, Edge{From: from, To: target(i, ""), Kind: EdgeNext, Count: 1})
+		if s.handlesErrors() && s.OnError != OnErrorContinue {
+			g.Edges = append(g.Edges, Edge{From: from, To: target(i, s.OnError), Kind: EdgeElse, Label: "on error", Count: 1})
+		}
 	}
 	g.Edges = append(g.Edges, itemEdges...)
 	for _, k := range askOrder {
@@ -269,6 +275,9 @@ func stepSub(s Step) string {
 		parts = append(parts, "from "+s.From, "as "+s.fanAs())
 	case KindSession:
 		parts = append(parts, s.Agent, s.workspace())
+		if s.workspace() == WorkspaceStep && s.From != "" {
+			parts = append(parts, "of "+s.From)
+		}
 	case KindJudge:
 		n := strconv.Itoa(len(s.Criteria)) + " criteria"
 		if len(s.Criteria) == 1 {

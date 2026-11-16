@@ -56,6 +56,17 @@ the image.
 Do not run the container and `cerberus install-service` on the same port:
 both default to 7340.
 
+Stopping. The daemon needs up to 45 s to stop cleanly: it records running
+flows as failed, stops sessions and unloads models. Podman and Docker give a
+container 10 s by default, then SIGKILL it. So `cerberus.container` sets
+`StopTimeout=60` (with `TimeoutStopSec=90` for the unit around it) and
+`compose.yaml` sets `stop_grace_period: 60s`. Both also run a small init
+(`RunInit=true`, `init: true`) as PID 1, which passes signals on and reaps
+processes that agents' commands leave behind. The image sets
+`STOPSIGNAL SIGTERM`. These Quadlet keys need a recent podman (checked
+with podman 6.1). On an older podman that rejects them, replace the two
+lines with `PodmanArgs=--init --stop-timeout=60`.
+
 ## Data
 
 Everything lives in one volume at `/var/lib/cerberus`: `config/` (config.json

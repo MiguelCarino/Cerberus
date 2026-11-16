@@ -184,6 +184,11 @@ a.flw-last:hover .t-sm, a.flw-last:focus-visible .t-sm { color: var(--accent); }
 .fe-tpl-box { display: flex; flex-direction: column; gap: 6px; }
 .fe-tpl-text { min-height: 72px; }
 .fe-json-box { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fe-retry { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-end; }
+/* A <label> inside .field: undo carino-ui's `.field label` (mono, uppercase)
+   so the two sub-labels read as hints under the field's own label. */
+.fe-retry-part { display: flex; flex-direction: column; gap: 2px; }
+.field .fe-retry-part { font-family: var(--sans); text-transform: none; letter-spacing: normal; }
 .fe-json { min-height: 64px; font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.45; white-space: pre; overflow-x: auto; }
 .fe-json.is-invalid { border-color: var(--err); }
 .fe-json-err { color: var(--err); }

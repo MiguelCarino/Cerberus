@@ -192,8 +192,16 @@ export function wallIds(sessions, { routeIds = [], kept = [], max = WALL_MAX } =
 }
 
 // wallStreamURL is the one multiplexed stream for a set of ids (≤ 16).
-export function wallStreamURL(ids) {
-  return `/api/wall/stream?ids=${(ids || []).slice(0, 16).map(encodeURIComponent).join(',')}`;
+// from (optional) maps an id to its stream position: a reconnect then gets
+// only what each tile missed.
+export function wallStreamURL(ids, from) {
+  const list = (ids || []).slice(0, 16);
+  let url = `/api/wall/stream?ids=${list.map(encodeURIComponent).join(',')}`;
+  for (const id of list) {
+    const p = from && from[id];
+    if (p) url += `&from=${encodeURIComponent(`${id}:${p}`)}`;
+  }
+  return url;
 }
 
 // parseWallEvent reads an `out` event's data ({id, b64}); null when broken.

@@ -53,6 +53,7 @@ var routeRoles = map[string]roleClass{
 	"/v1/":                        clsGateway,
 
 	"GET /api/status":                            clsAny,
+	"GET /api/gpu":                               clsAny,
 	"GET /api/models":                            clsWork,
 	"POST /api/models/{rest...}":                 clsAdmin,
 	"GET /api/usage":                             clsWork,
@@ -88,6 +89,7 @@ var routeRoles = map[string]roleClass{
 	"GET /api/sessions/{id}/preview":             clsWatch,
 	"POST /api/sessions/{id}/preview/start":      clsWork,
 	"POST /api/sessions/{id}/preview/stop":       clsWork,
+	"POST /api/sessions/{id}/guard/approve":      clsWork,
 	"GET /api/fs":                                clsAdmin,
 	"POST /api/sessions/{id}/{action}":           clsWork,
 	"DELETE /api/sessions/{id}":                  clsWork,
@@ -118,6 +120,9 @@ var routeRoles = map[string]roleClass{
 	"GET /api/agent/files/raw":           clsAgent,
 	"GET /api/agent/runs":                clsAgent,
 	"GET /api/agent/runs/{name}":         clsAgent,
+	"GET /api/agent/flows":               clsAgent,
+	"POST /api/agent/flows/{id}/run":     clsAgent,
+	"GET /api/agent/flows/runs/{run}":    clsAgent,
 	"/api/agent/":                        clsAgent,
 
 	"POST /api/sessions/{id}/files":       clsWork,

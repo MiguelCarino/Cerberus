@@ -109,6 +109,15 @@ type TaskSpec struct {
 	// inbox; with Count > 1 every session gets its own copy.
 	Staging string
 
+	// SameAs (with Workspace "same" and no Parent; flows' workspace
+	// "step") is an earlier session of the same owner, done, whose scratch
+	// or folder workspace this one works in, in place. Repo worktrees are
+	// refused.
+	SameAs string
+	// Seeds (scratch only) copy earlier sessions' workspace files into the
+	// new scratch folder before the session is queued (flowspace.go).
+	Seeds []Seed
+
 	// Owner is the user id the session belongs to (Phase 4a; "" = from
 	// before users, the legacy owner). Spawned children take their
 	// parent's owner and confinement.

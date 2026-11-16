@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -24,9 +25,14 @@ type ModelRequest struct {
 	Model     string
 	Messages  []Message
 	MaxTokens int
-	Client    string // ClientName
-	Run       string // the run id: usage is recorded with it as the session
-	Owner     string // the run's owner: charged for the call
+	// Schema is the JSON schema the answer should follow (the judge's
+	// VerdictSchema): the host sends it as response_format where the
+	// engine enforces one (local engines), else leaves it out. The answer
+	// is parsed the same way either way.
+	Schema json.RawMessage
+	Client string // ClientName
+	Run    string // the run id: usage is recorded with it as the session
+	Owner  string // the run's owner: charged for the call
 }
 
 // ModelReply is a completion and its usage.

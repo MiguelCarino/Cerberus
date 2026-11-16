@@ -142,6 +142,9 @@ func (c *SpawnClient) Call(ctx context.Context, name string, a map[string]any) (
 	if isDelegateTool(name) {
 		return c.callDelegate(ctx, name, ar)
 	}
+	if IsFlowTool(name) {
+		return c.callFlow(ctx, name, ar)
+	}
 	switch name {
 	case ToolSpawn:
 		task, err := need("task")

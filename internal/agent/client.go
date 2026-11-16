@@ -136,6 +136,9 @@ type chatRequest struct {
 	Tools         []toolSpec      `json:"tools,omitempty"`
 	MaxTokens     int             `json:"max_tokens,omitempty"`
 	Temperature   *float64        `json:"temperature,omitempty"`
+	// ReturnProgress asks llama.cpp for prompt_progress frames (the
+	// Cerberus gateway drops the field for other engines).
+	ReturnProgress bool `json:"return_progress,omitempty"`
 }
 
 // chunk is one streamed chat.completion.chunk (or a whole non-streamed reply,
@@ -151,6 +154,12 @@ type chunk struct {
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
 	Error json.RawMessage `json:"error"`
+	// PromptProgress is llama.cpp's prompt reading progress (asked with
+	// return_progress).
+	PromptProgress *struct {
+		Total     int `json:"total"`
+		Processed int `json:"processed"`
+	} `json:"prompt_progress"`
 }
 
 // delta keeps loosely typed fields raw: servers disagree on null, strings and

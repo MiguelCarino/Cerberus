@@ -245,6 +245,12 @@ test('a busy chat: messages before the last user message; replay from the last u
 
 // ---------- lines ----------
 
+test('statusParts shows the prompt being read (web-api-ops-8)', () => {
+  assert.deepEqual(statusParts({ model: 'qwen3', prefill: { processed: 12000, total: 48000 }, mode: 'ask' }),
+    ['qwen3', 'reading prompt 12k/48k', 'Ask me']);
+  assert.deepEqual(statusParts({ model: 'qwen3', prefill: null, mode: 'ask' }), ['qwen3', 'Ask me']);
+});
+
 test('statusParts: model, ctx used/total %, elapsed, cost, mode, next picks', () => {
   const st = { model: 'qwen3', used: 12300, context: 32768, elapsed: 4.25, cost: 0.0123, mode: 'ask', queue: 1, waiting: 1 };
   assert.deepEqual(statusParts(st), ['🔒 1 waiting', 'qwen3', 'ctx 12.3k / 32.8k (38%)', '⏱ 4.3 s', '$0.01', 'Ask me', '1 queued']);

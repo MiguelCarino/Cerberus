@@ -1,6 +1,9 @@
 // Models view: GPU cards, the model list with load/unload, and 24 h speed
-// and efficiency per model. Refreshes status every 10 s, only while this
-// view is open and the tab is visible.
+// and efficiency per model. The list follows /api/events ("models" and
+// "prefill", step web-api) instead of polling; only the GPU cards are read
+// every 10 s (GET /api/gpu, which lists no models), while this view is open
+// and the tab is visible. The 24 h figures are re-read on "usage" hints, at
+// most every 15 s.
 
 import { api, post } from '../api.js';
 import { h, clear, toast, errText, pill, confirmDialog } from '../dom.js';
@@ -9,12 +12,15 @@ import { fmtNum, fmtMiB, fmtEnergy, fmtUptime, relTime, versionLabel } from '../
 import { modelEnergy, fmtMoney } from '../monitor.js';
 import { openGetModels } from './getmodels.js';
 import { trashIcon } from './ctl.js';
-import { deleteModelMessage, busyText } from '../models.js';
+import { deleteModelMessage, busyText, failureText, mergeLive, reserveText, withSince, tickBusy } from '../models.js';
 
-const REFRESH_MS = 10000;
+const GPU_MS = 10000;
+const USAGE_MS = 15000;
 
 export function mount(root) {
   const gpuEl = h('div', { class: 'gpu-grid' });
+  // The VRAM a load leaves free below the card's top (railguard's line).
+  const reserveEl = h('p', { class: 'model-facts gpu-reserve', hidden: true });
   const hostEl = h('p', { class: 'view-sub' });
   const modelsEl = h('div', { class: 'model-list' }, h('p', { class: 't-sec', text: 'Loading…' }));
   root.append(h('section', { class: 'view view-pad' },
@@ -22,7 +28,7 @@ export function mount(root) {
       // Users and roles: loading, unloading, deleting and downloading
       // models are admin actions.
       store.can('models.manage') ? h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openGetModels().then(() => { if (!gone) refresh(); }) }, 'Get models') : null),
-    h('h2', { class: 'group-title', text: 'GPUs' }), gpuEl,
+    h('h2', { class: 'group-title', text: 'GPUs' }), gpuEl, reserveEl,
     h('h2', { class: 'group-title', text: 'Models' }), modelsEl));
 
   let models = [];
@@ -30,12 +36,24 @@ export function mount(root) {
   const busy = new Set();
   let timer = 0;
   let gone = false;
+  let usageAt = 0;
+  let usageTimer = 0;
+  // The last "models" event and a count of them: a refresh that was in
+  // flight while one arrived applies it again over its older snapshot.
+  let lastLive = null;
+  let liveSeq = 0;
 
+  const renderReserve = (r) => {
+    const text = reserveText(r);
+    reserveEl.textContent = text;
+    reserveEl.hidden = !text;
+  };
   const renderStatus = (st) => {
     if (!st) return;
     hostEl.textContent = [st.host, versionLabel(st.version), uptimeText(st.uptime)]
       .filter(Boolean).join(' · ');
     renderGPUs(gpuEl, st.gpu);
+    renderReserve(st.vram_reserve);
   };
 
   const renderModels = () => {
@@ -45,18 +63,19 @@ export function mount(root) {
     modelsEl.append(...sorted.map((m) => modelRow(m, agg.get(m.ID), busy.has(m.ID), toggle, remove)));
   };
 
+  // refresh reads everything once: on open, on return to the tab, on an
+  // event-stream reconnect and after an action. /api/status carries the
+  // model list (it used to be fetched twice).
   async function refresh() {
     clearTimeout(timer);
+    const seq = liveSeq;
     try {
-      const [st, ms, us] = await Promise.all([
-        store.refreshStatus(),
-        api('/api/models'),
-        api('/api/usage?limit=1').catch(() => null),
-      ]);
+      const [st, us] = await Promise.all([store.refreshStatus(), api('/api/usage?limit=1').catch(() => null)]);
       if (gone) return;
       renderStatus(st);
-      models = ms || [];
-      agg = new Map(((us && us.agg_24h) || []).map((a) => [a.Model, a]));
+      models = withSince((st && st.models) || []);
+      if (liveSeq !== seq && lastLive) models = mergeLive(models, lastLive).models;
+      setUsage(us);
       renderModels();
     } catch (e) {
       if (!gone) toast(errText(e), 'err');
@@ -64,10 +83,69 @@ export function mount(root) {
     schedule();
   }
 
+  function setUsage(us) {
+    usageAt = Date.now();
+    if (us) agg = new Map((us.agg_24h || []).map((a) => [a.Model, a]));
+  }
+
+  // The GPU cards (and the busy times on the list) every 10 s.
+  async function tickGPU() {
+    try {
+      const g = await api('/api/gpu');
+      if (gone) return;
+      renderGPUs(gpuEl, g && g.gpu);
+      renderReserve(g && g.vram_reserve);
+      models = tickBusy(models);
+      renderModels();
+    } catch { /* the next tick retries */ }
+    schedule();
+  }
+
   function schedule() {
     clearTimeout(timer);
-    if (!gone && !document.hidden) timer = setTimeout(refresh, REFRESH_MS);
+    if (!gone && !document.hidden) timer = setTimeout(tickGPU, GPU_MS);
   }
+
+  // A request finished: the 24 h figures may have moved. At most every 15 s.
+  function onUsage() {
+    if (usageTimer || gone) return;
+    usageTimer = setTimeout(async () => {
+      usageTimer = 0;
+      if (gone || document.hidden) return;
+      const us = await api('/api/usage?limit=1').catch(() => null);
+      if (gone || !us) return;
+      setUsage(us);
+      renderModels();
+    }, Math.max(0, USAGE_MS - (Date.now() - usageAt)));
+  }
+
+  async function onLive(live) {
+    lastLive = live;
+    liveSeq++;
+    const r = mergeLive(models, live);
+    models = r.models;
+    renderModels();
+    if (r.unknown) {
+      // A model appeared (a download finished, a listing changed).
+      try { models = mergeLive(withSince((await api('/api/models')) || []), live).models; } catch { return; }
+      if (!gone) renderModels();
+    }
+  }
+
+  function onPrefill(p) {
+    const m = models.find((x) => x.ID === p.model);
+    if (!m) return;
+    m.Prefill = p.done ? null : p;
+    renderModels();
+  }
+
+  const unsub = store.subscribe((kind, payload) => {
+    if (gone) return;
+    if (kind === 'models') onLive(payload);
+    else if (kind === 'prefill') onPrefill(payload);
+    else if (kind === 'usage') onUsage();
+    else if (kind === 'events-open') refresh();
+  });
 
   async function toggle(m) {
     busy.add(m.ID);
@@ -109,7 +187,9 @@ export function mount(root) {
 
   return () => {
     gone = true;
+    unsub();
     clearTimeout(timer);
+    clearTimeout(usageTimer);
     window.removeEventListener('cerberus:visible', onVisible);
     document.removeEventListener('visibilitychange', onHidden);
   };
@@ -154,11 +234,13 @@ function modelRow(m, a, busy, toggle, remove) {
     m.InFlight ? `${m.InFlight} in flight` : '', m.Loaded && m.LastUsed ? `used ${relTime(m.LastUsed)}` : '', m.Vision ? 'vision' : '']
     .filter(Boolean).join(' · ');
   const load = busyText(m);
+  const fail = failureText(m);
   return h('div', { class: 'model-row' },
     h('div', { class: 'model-main' },
       h('div', { class: 'model-id' }, h('span', { text: m.ID }), where),
       h('div', { class: 'model-facts', text: facts }),
       load ? h('div', { class: 'model-facts model-busy', text: load }) : null,
+      fail ? h('div', { class: 'model-facts model-fail', text: fail }) : null,
       h('div', { class: 'model-perf' },
         perf('tok/s', a && fmtNum(a.AvgTokPerSec)),
         perf('tok/J', a && fmtNum(a.AvgTokPerJ, 2)),

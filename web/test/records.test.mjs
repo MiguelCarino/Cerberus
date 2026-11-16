@@ -58,3 +58,16 @@ test('guardbenchText (E5 red-team last run)', async () => {
   const e = guardbenchText({ state: 'done', model: 'qg', detection: 1, false_alarm: 0, attacks: 36, benign: 25, errors: 3 });
   assert.match(e, /3 errored/);
 });
+
+test('threadURL and turnText: a line keeps its new turn, stitched on demand', async () => {
+  const { threadURL, turnText } = await import('../dist/assets/js/records.js');
+  assert.equal(threadURL('2026-11-05/123-456/789'), '/api/records/2026-11-05/123-456/789?thread=1');
+  assert.equal(threadURL('nope'), null);
+  assert.equal(turnText({}), 'Conversation');
+  assert.equal(turnText({ prefix: 0 }), 'Conversation');
+  assert.equal(turnText({ prefix: 1 }), 'Conversation (this turn; 1 earlier message not shown)');
+  assert.equal(turnText({ prefix: 7 }), 'Conversation (this turn; 7 earlier messages not shown)');
+  assert.equal(turnText({ prefix: 7, earlier: 3 }), 'Conversation (joined from 3 earlier requests)');
+  assert.equal(turnText({ prefix: 7, earlier: 1, missing: true }), 'Conversation (joined from 1 earlier request; the start is not in the records)');
+  assert.equal(turnText({ prefix: 7, earlier: 0, missing: true }), 'Conversation (no earlier requests found; the start is not in the records)');
+});

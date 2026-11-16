@@ -274,7 +274,7 @@ func (m flowModels) Complete(ctx context.Context, req flows.ModelRequest) (flows
 	if client == "" {
 		client = flows.ClientName
 	}
-	body, err := json.Marshal(map[string]any{"model": req.Model, "messages": req.Messages, "stream": false})
+	body, err := json.Marshal(h.completionBody(req))
 	if err != nil {
 		return flows.ModelReply{}, err
 	}
@@ -311,6 +311,58 @@ func (m flowModels) Complete(ctx context.Context, req flows.ModelRequest) (flows
 		out.Model = req.Model
 	}
 	return out, nil
+}
+
+// completionBody is the gateway request of a flow call. Temperature and
+// max_tokens go to every model (the gateway clips max_tokens to the
+// model's cap). The answer's schema and the thinking switch go to local
+// models only: llama-server, LM Studio and Ollama enforce json_schema with
+// a grammar, while cloud APIs differ (OpenAI's strict mode wants an object
+// at the top, others refuse the field), so a cloud call relies on the
+// prompt and the runner's parse as before. json_schema, not json_object:
+// LM Studio refuses json_object.
+func (h *FlowHost) completionBody(req flows.ModelRequest) map[string]any {
+	body := map[string]any{"model": req.Model, "messages": req.Messages, "stream": false}
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	if (len(req.Schema) == 0 && req.Thinking == "") || !h.localModel(req.Model) {
+		return body
+	}
+	if len(req.Schema) > 0 {
+		body["response_format"] = jsonSchemaFormat("answer", req.Schema)
+	}
+	switch req.Thinking {
+	case flows.ThinkingOff:
+		body["reasoning_effort"] = "none"
+		body["chat_template_kwargs"] = map[string]bool{"enable_thinking": false}
+	case flows.ThinkingOn:
+		body["chat_template_kwargs"] = map[string]bool{"enable_thinking": true}
+	}
+	return body
+}
+
+// localModel reports whether id ("default" = engines.default_model) is a
+// model a local engine lists.
+func (h *FlowHost) localModel(id string) bool {
+	if id == "" || id == "default" {
+		id = h.conf().Engines.DefaultModel
+	}
+	for _, m := range h.modelList() {
+		if m.ID == id {
+			return m.Local
+		}
+	}
+	return false
+}
+
+// jsonSchemaFormat is an OpenAI-style response_format that asks for JSON
+// following schema (flows and the eval judge).
+func jsonSchemaFormat(name string, schema json.RawMessage) map[string]any {
+	return map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": name, "schema": schema}}
 }
 
 // parseCompletion reads a non-streamed chat completion reply (or the
@@ -476,7 +528,8 @@ func clipRunes(s string, n int) string {
 // Start creates one session for a session step (or fan-out item).
 func (s flowSessionRunner) Start(ctx context.Context, req flows.SessionRequest) (string, error) {
 	t := session.TaskSpec{Task: req.Task, Agent: req.Agent, Model: req.Model, Count: 1,
-		Name: clipRunes(req.Name, 80), Tags: flowSessionTags(req.Tags, req.Flow)}
+		Name: clipRunes(req.Name, 80), Tags: flowSessionTags(req.Tags, req.Flow),
+		MaxAttempts: req.MaxAttempts, EscalateTo: req.EscalateTo, Limits: session.Limits{MaxMinutes: req.MaxMinutes}}
 	switch req.Workspace {
 	case flows.WorkspaceRepo:
 		repo, err := s.h.resolveRepo(req.Repo)
@@ -486,6 +539,20 @@ func (s flowSessionRunner) Start(ctx context.Context, req flows.SessionRequest) 
 		t.Workspace, t.Dir, t.Repo = session.WorkspaceRepo, repo, repo
 	case flows.WorkspaceFolder:
 		t.Workspace, t.Dir = session.WorkspaceFolder, req.Folder
+	case flows.WorkspaceStep:
+		// An earlier step's session(s): the session manager checks that
+		// each is done, has a workspace and has this owner.
+		switch {
+		case req.SameAs != "":
+			t.Workspace, t.SameAs = session.WorkspaceSame, req.SameAs
+		case len(req.Seeds) > 0:
+			t.Workspace = session.WorkspaceScratch
+			for _, sd := range req.Seeds {
+				t.Seeds = append(t.Seeds, session.Seed{Session: sd.Session, Into: sd.Into})
+			}
+		default:
+			return "", errors.New("no earlier session to work in")
+		}
 	default:
 		t.Workspace = session.WorkspaceScratch
 	}
@@ -554,7 +621,7 @@ func (s flowSessionRunner) Wait(ctx context.Context, id string) (flows.SessionRe
 		}
 		if flowSessionFinal(in.State) {
 			cancel()
-			return sessionResult(in), nil
+			return s.h.sessionResult(in), nil
 		}
 	follow:
 		for {
@@ -575,7 +642,13 @@ func (s flowSessionRunner) Wait(ctx context.Context, id string) (flows.SessionRe
 				}
 				if flowSessionFinal(ev.Session.State) {
 					cancel()
-					return sessionResult(ev.Session), nil
+					// The event's copy may predate the files written last;
+					// the manager's own is current.
+					in := ev.Session
+					if cur, ok := m.Get(id); ok && flowSessionFinal(cur.State) {
+						in = cur
+					}
+					return s.h.sessionResult(in), nil
 				}
 			}
 		}
@@ -589,6 +662,208 @@ func sessionResult(in session.Info) flows.SessionResult {
 		sum = in.Error
 	}
 	return flows.SessionResult{State: in.State, Summary: sum}
+}
+
+// Limits of what a session step hands to the next steps.
+const (
+	flowMaxFiles      = 200
+	flowMaxWalk       = 20000 // entries looked at in a folder workspace
+	flowChecksTail    = 4 << 10
+	flowFinalMax      = 8 << 10
+	flowTranscriptCut = 32 << 10 // read before masking, then cut to flowFinalMax
+)
+
+// sessionResult is the session's final state plus what a later step can
+// build on: its workspace, the files it made or changed, the checks tail,
+// a repo session's diff summary and the agent's last answer. Every text
+// is masked like eval evidence (the vault's values, then token shapes)
+// before it is cut.
+func (h *FlowHost) sessionResult(in session.Info) flows.SessionResult {
+	res := sessionResult(in)
+	if in.State == session.StateAccepted || in.State == session.StateDiscarded {
+		return res // the workspace is gone or merged
+	}
+	if in.Worktree != "" {
+		if st, err := os.Stat(in.Worktree); err == nil && st.IsDir() {
+			res.Workspace = in.Worktree
+		}
+	}
+	mask := h.maskText
+	if c := strings.TrimSpace(in.ChecksOutput); c != "" {
+		res.Checks = tailBytes(mask(c), flowChecksTail)
+	}
+	if in.Workspace == session.WorkspaceRepo {
+		if d, ok := h.d.Sessions.(interface{ Diff(string) (string, error) }); ok {
+			if diff, err := d.Diff(in.ID); err == nil {
+				res.DiffStat, res.Files = diffStat(diff, res.Workspace)
+			}
+		}
+	} else if res.Workspace != "" {
+		since := time.Time{}
+		if in.Workspace == session.WorkspaceFolder {
+			since = in.RunStarted // a folder held files before: only new or changed ones
+			if since.IsZero() {
+				since = in.Created
+			}
+		}
+		res.Files = workspaceFiles(res.Workspace, since)
+	}
+	res.Final = h.finalText(in.ID, mask)
+	return res
+}
+
+// maskText hides the vault's values (and those pinned into live runs),
+// then every token shape, as evalSessions.Mask does.
+func (h *FlowHost) maskText(text string) string {
+	if m, ok := h.d.Sessions.(interface{ MaskSecrets([]string) []string }); ok {
+		if out := m.MaskSecrets([]string{text}); len(out) == 1 {
+			text = out[0]
+		}
+	}
+	return session.MaskTokens(text)
+}
+
+// finalText is the agent's last reply (the built-in agent keeps it in
+// conversation.json), else the tail of the transcript; masked, at most
+// flowFinalMax bytes.
+func (h *FlowHost) finalText(id string, mask func(string) string) string {
+	if lr, ok := h.d.Sessions.(interface{ LastReply(string) (string, error) }); ok {
+		if text, err := lr.LastReply(id); err == nil && strings.TrimSpace(text) != "" {
+			return headBytes(mask(text), flowFinalMax)
+		}
+	}
+	tr, ok := h.d.Sessions.(interface{ Transcript(string) ([]byte, error) })
+	if !ok {
+		return ""
+	}
+	b, err := tr.Transcript(id)
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	if len(b) > flowTranscriptCut {
+		b = b[len(b)-flowTranscriptCut:]
+	}
+	return strings.TrimSpace(tailBytes(mask(strings.ToValidUTF8(string(b), "")), flowFinalMax))
+}
+
+// headBytes is s cut to at most n bytes (on a rune boundary) with "…".
+func headBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// tailBytes is the last n bytes of s (from a line start when one is
+// near) with "…" before it.
+func tailBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := len(s) - n
+	for cut < len(s) && !utf8RuneStart(s[cut]) {
+		cut++
+	}
+	if nl := strings.IndexByte(s[cut:], '\n'); nl >= 0 && nl < 200 {
+		cut += nl + 1
+	}
+	return "…\n" + s[cut:]
+}
+
+func utf8RuneStart(b byte) bool { return b&0xC0 != 0x80 }
+
+// workspaceFiles lists the regular files under root (not .git, not
+// symlinks), changed at or after since when it is set, sorted by path; at
+// most flowMaxFiles, after looking at no more than flowMaxWalk entries.
+func workspaceFiles(root string, since time.Time) []flows.SessionFile {
+	out := []flows.SessionFile{}
+	seen := 0
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		seen++
+		if seen > flowMaxWalk {
+			return filepath.SkipAll
+		}
+		if d.IsDir() && d.Name() == ".git" && p != root {
+			return filepath.SkipDir
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil || (!since.IsZero() && fi.ModTime().Before(since)) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return nil
+		}
+		out = append(out, flows.SessionFile{Path: filepath.ToSlash(rel), Bytes: fi.Size()})
+		if len(out) >= flowMaxFiles {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return out
+}
+
+// diffStat summarises a unified diff: one "path | +a -d" line per file
+// (at most flowMaxFiles), then the totals; files are the changed paths
+// with their size in the worktree (0 when deleted or unknown).
+func diffStat(diff, worktree string) (string, []flows.SessionFile) {
+	type stat struct {
+		path     string
+		add, del int
+	}
+	var list []*stat
+	var cur *stat
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			path := line[len("diff --git "):]
+			if i := strings.LastIndex(path, " b/"); i >= 0 {
+				path = path[i+3:]
+			}
+			cur = &stat{path: path}
+			list = append(list, cur)
+		case cur == nil, strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+"):
+			cur.add++
+		case strings.HasPrefix(line, "-"):
+			cur.del++
+		}
+	}
+	files := []flows.SessionFile{}
+	if len(list) == 0 {
+		return "", files
+	}
+	var b strings.Builder
+	adds, dels := 0, 0
+	for i, st := range list {
+		adds += st.add
+		dels += st.del
+		if i < flowMaxFiles {
+			fmt.Fprintf(&b, "%s | +%d -%d\n", st.path, st.add, st.del)
+			f := flows.SessionFile{Path: st.path}
+			if worktree != "" && filepath.IsLocal(filepath.FromSlash(st.path)) {
+				if fi, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(st.path))); err == nil && fi.Mode().IsRegular() {
+					f.Bytes = fi.Size()
+				}
+			}
+			files = append(files, f)
+		}
+	}
+	if len(list) > flowMaxFiles {
+		fmt.Fprintf(&b, "... and %d more files\n", len(list)-flowMaxFiles)
+	}
+	fmt.Fprintf(&b, "%d files changed, %d insertions(+), %d deletions(-)", len(list), adds, dels)
+	return b.String(), files
 }
 
 // Stop stops a session the flow started.

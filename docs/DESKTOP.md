@@ -26,6 +26,61 @@ and `cerberus serve` also adds `~/.local/bin` and `~/bin` when they exist. An ag
 elsewhere needs a full path in its profile's `command`, or a `systemctl --user edit cerberus`
 override that extends `Environment=PATH=…`.
 
+### LM Studio and railguard
+
+LM Studio's daemon (llmster) starts the first time anything runs `lms`, inside the caller's
+cgroup, and stays there. Cerberus therefore starts it in `lmstudio.service` when that unit exists,
+else in its own `cerberus-lmstudio.scope` in `app.slice` (`engines.lmstudio.unit`). On stop it
+unloads the models it loaded in LM Studio. Atrium's railguard may still end a model when VRAM stays
+past its line: Cerberus then says so in the log, the inbox and the model's card, and reloads it with
+a smaller GPU share. Before railguard acts it asks through `railguard-pressure.json`, and Cerberus
+unloads idle models first.
+
+**Smoke and dev runs must not touch the desktop's engines.** A test or dev daemon (another port,
+a scratch config) sets `engines.lmstudio.enabled` and `engines.ollama.enabled` to `false`, and never
+runs a bare `lms` command. Otherwise its first model listing starts LM Studio's daemon inside the
+test's own scope (an agent's command scope, with its memory cap), and every model the real service
+loads afterwards runs there. That is what happened on 2026-11-01.
+
+### What Cerberus reads from railguard
+
+Cerberus never needs railguard, and railguard never reads Cerberus' token or config. With
+railguard installed, Cerberus reads three files in `$XDG_STATE_HOME/hypr`
+(`~/.local/state/hypr` when the variable is unset). It only reads them. Railguard counts as
+present when `railguard.json` or `railguard-history.jsonl` is there.
+
+- **`railguard.json`**, railguard's settings. Every key is optional; a missing key, or one of the
+  wrong type, takes railguard's default, and a number out of range is clamped into it: `vram`
+  (true), `vram_pct` (97, from 80 to 100), `vram_s` (12, from 3 to 120), `managed_units`
+  (`["cerberus-lmstudio.scope","cerberus.service","lmstudio.service"]`; the scope is where
+  Cerberus starts LM Studio's daemon when `lmstudio.service` is not there), `managed_grace_s`
+  (20, from 5 to 60) and `vram_hard_pct` (99.5, from 80 to 100, a percentage of usable VRAM: the
+  total less the part the NVIDIA driver reserves for itself). Cerberus reads the file exactly as
+  railguard does, key by key (SCOPE "Railguard contract and engine hardening"). Cerberus uses
+  `vram` and `vram_pct` for its VRAM reserve. With the
+  reserve on auto (`engines.vram_reserve_mib` = 0), a load leaves the space above railguard's
+  line free, plus 768 MiB. On a 24 GB card at 97% that is 1505 MiB. The Models view shows the
+  reserve in effect under the GPU cards, for example "Railguard line 97% · reserve 1505 MiB".
+  Without railguard the reserve is 1024 MiB or 4% of the card, whichever is larger.
+- **`railguard-pressure.json`**, railguard's ask. Railguard writes it (atomically) when VRAM
+  stays past its line and the process it would end runs in one of `managed_units`:
+
+  ```json
+  {"v":1,"time":1763251200,"resource":"vram","used_mib":24010,"total_mib":24564,
+   "target_mib":23059,"act_at":1763251220,
+   "managed_units":["cerberus-lmstudio.scope","cerberus.service","lmstudio.service"]}
+  ```
+
+  Cerberus looks for it every 2 s while a local model is loaded. It unloads idle models, least
+  recently used first, until use is at or under `target_mib`, and never touches a model that is
+  answering. A file older than 60 s, or with `v` other than 1, is ignored. Railguard deletes the
+  file when the card is back under the line or after it acted.
+- **`railguard-history.jsonl`**, what railguard did. When a model's engine dies, Cerberus reads the
+  lines from 15 s before to 5 s after and names the cause on the model's card ("Ended by Railguard:
+  VRAM 97% full"). Kinds `vram`, `memory` and `game-vram` count. `vram-asked` (railguard wrote the
+  pressure file) and `vram-shed` (VRAM fell below the line in time, nothing was killed) are not
+  deaths. A kill after an ignored ask stays kind `vram`, with a reason ending in "; asked first".
+
 ### Point Atrium LLM chat at Cerberus
 
 ```sh

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -174,8 +175,10 @@ func TestInboxReceivesEverySentMessage(t *testing.T) {
 	n.Send(Message{Title: "Cerberus: openai budget", Body: "past soft cap"})
 	n.Send(Message{Title: "DAC tariff risk", Urgency: "critical", Kind: "alert"})
 	n.Send(Message{Title: "Doctor", Kind: "doctor", Level: "warn", Link: "#/doctor"})
+	n.Send(Message{Title: "Agent guard held a tool call", Kind: "guard", Level: "warn", SessionID: "s2", Link: "#/s/s2", Held: []string{"bash"},
+		Owner: "u-ana"}) // the session's owner answers it (web-api-1)
 	n.wg.Wait()
-	if len(rec.calls) != 5 {
+	if len(rec.calls) != 6 {
 		t.Fatalf("calls = %q", rec.calls)
 	}
 	want := []inbox.Item{
@@ -184,12 +187,13 @@ func TestInboxReceivesEverySentMessage(t *testing.T) {
 		{Kind: "budget", Level: "warn", Title: "Cerberus: openai budget", Body: "past soft cap"},
 		{Kind: "alert", Level: "crit", Title: "DAC tariff risk"},
 		{Kind: "doctor", Level: "warn", Title: "Doctor", Link: "#/doctor"},
+		{Kind: "guard", Level: "warn", Title: "Agent guard held a tool call", Link: "#/s/s2", Held: []string{"bash"}, Owner: "u-ana"},
 	}
 	if len(ib.items) != len(want) {
 		t.Fatalf("inbox = %+v", ib.items)
 	}
 	for i, w := range want {
-		if ib.items[i] != w {
+		if !reflect.DeepEqual(ib.items[i], w) {
 			t.Errorf("item %d = %+v, want %+v", i, ib.items[i], w)
 		}
 	}

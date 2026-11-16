@@ -169,6 +169,7 @@ func TestDefaultLimit(t *testing.T) {
 			v := &fakeVRAM{}
 			v.free.Store(-1)
 			m := newManager(cfg, totalVRAM{v, tc.total}, quietLog(), []Backend{b})
+			m.railguard = nil // hermetic: never this machine's railguard
 			if got := modelInfo(m, "m").MaxParallel; got != tc.want {
 				t.Fatalf("limit %d, want %d", got, tc.want)
 			}
@@ -406,8 +407,18 @@ func TestLMSLoadArgs(t *testing.T) {
 	}
 	tiny := base
 	tiny.plan = &loadPlan{FreeMiB: 100}
-	if got := lmsLoadArgs(tiny, 600, ""); !slices.Contains(got, "0.10") {
-		t.Fatalf("clamped low: %v", got)
+	if got := lmsLoadArgs(tiny, 600, ""); !slices.Contains(got, "off") {
+		t.Fatalf("no room on the GPU: %v, want --gpu off", got)
+	}
+	low := base
+	low.plan = &loadPlan{FreeMiB: 2300} // 0.10 by the ratio, but under the KV + overhead (2637)
+	if got := lmsLoadArgs(low, 600, ""); !slices.Contains(got, "off") {
+		t.Fatalf("budget under the part that does not scale: %v, want --gpu off", got)
+	}
+	floor := base
+	floor.plan = &loadPlan{FreeMiB: 3000}
+	if got := lmsLoadArgs(floor, 600, ""); !slices.Contains(got, "0.14") {
+		t.Fatalf("a real split: %v", got)
 	}
 	if got := lmsLoadArgs(tight, 600, "max"); !slices.Equal(got, append(append(slices.Clone(head), "--gpu", "max"), tail...)) {
 		t.Fatalf("explicit gpu: %v", got)
@@ -437,17 +448,24 @@ func TestLMStudioLoadPassesParallelAndGPU(t *testing.T) {
 }
 
 func TestLlamaNGLAndGGUF(t *testing.T) {
-	if n := llamaNGL(17000, 32768, 64, 11093, nil); n != 31 { // 64 x 0.49998
+	if n := llamaNGL(estimateNeedMiB(17000, 32768, 1), 17000, 64, 11093, nil); n != 31 { // 64 x 0.49998
 		t.Fatalf("ngl %d, want 31", n)
 	}
-	if n := llamaNGL(17000, 32768, 64, 100000, nil); n != 0 {
+	if n := llamaNGL(estimateNeedMiB(17000, 32768, 1), 17000, 64, 100000, nil); n != 0 {
 		t.Fatalf("fits: ngl %d", n)
 	}
-	if n := llamaNGL(17000, 32768, 64, 1000, []string{"--n-gpu-layers=10"}); n != 0 {
+	if n := llamaNGL(estimateNeedMiB(17000, 32768, 1), 17000, 64, 1000, []string{"--n-gpu-layers=10"}); n != 0 {
 		t.Fatalf("user set it: ngl %d", n)
 	}
-	if n := llamaNGL(17000, 32768, 0, 1000, nil); n != 0 {
+	if n := llamaNGL(estimateNeedMiB(17000, 32768, 1), 17000, 0, 5000, nil); n != 0 {
 		t.Fatalf("unknown layers: ngl %d", n)
+	}
+	// No room on the GPU (a budget of 0 after the reserve and vramCut):
+	// CPU only, not the 0.10 floor (contract-engine-6).
+	for _, free := range []int{0, 1000, 2300} {
+		if n := llamaNGL(estimateNeedMiB(17000, 32768, 1), 17000, 64, free, nil); n != -1 {
+			t.Fatalf("budget %d: ngl %d, want -1 (CPU only)", free, n)
+		}
 	}
 
 	var b bytes.Buffer

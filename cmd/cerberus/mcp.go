@@ -19,8 +19,9 @@ import (
 // that lets any MCP-capable agent running in a Cerberus session start and
 // steer child sessions: the six cerberus_* tools, which call the daemon's
 // restricted /api/agent scope with the session's own agent token. It reads
-// CERBERUS_URL, OPENAI_API_KEY (the session agent token, never the admin
-// token) and CERBERUS_SESSION, as written into the session's mcp.json.
+// CERBERUS_URL, CERBERUS_AGENT_TOKEN or else OPENAI_API_KEY (the session
+// agent token, never the admin token) and CERBERUS_SESSION, as the session
+// manager wires them in (mcp.json, Codex -c flags, opencode.json).
 //
 // Only the tools capability is offered. Requests are answered as they
 // finish (a long cerberus_wait does not hold up a ping), notifications are
@@ -54,7 +55,9 @@ const (
 		"(summaries of long logs or files, drafts, translations, boilerplate) to a local model with " +
 		"cerberus_ask (cerberus_models lists them; files are read on this machine, so their text never " +
 		"enters your context) and check what comes back. cerberus_spawn starts an agent session in a " +
-		"scratch folder; you see and steer only the sessions you started, and limits and approval apply."
+		"scratch folder; you see and steer only the sessions you started, and limits and approval apply. " +
+		"cerberus_flows lists the owner's saved flows (tested recipes of models, sessions and a judge); " +
+		"cerberus_run_flow starts one and cerberus_flow_run waits for its result."
 )
 
 // mcpSupportedVersions lists the protocol versions served, newest first.
@@ -100,7 +103,7 @@ func mcpCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	setUsage(fs)
 	base := fs.String("url", os.Getenv("CERBERUS_URL"), "the daemon's URL (default $CERBERUS_URL)")
-	key := fs.String("key", os.Getenv("OPENAI_API_KEY"), "the session's agent token (default $OPENAI_API_KEY)")
+	key := fs.String("key", agentTokenFromEnv(), "the session's agent token (default $CERBERUS_AGENT_TOKEN, else $OPENAI_API_KEY)")
 	sess := fs.String("session", os.Getenv("CERBERUS_SESSION"), "the calling session (default $CERBERUS_SESSION)")
 	clientName := fs.String("client", "", "run for an outside agent as the MCP client NAME (cerberus pair --mcp --name NAME)")
 	cfgPath := fs.String("config", "", "config file, with --client (default ~/.config/cerberus/config.json)")
@@ -127,6 +130,7 @@ func mcpCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	srv := newMCPServer(caller, stdout)
 	if *clientName != "" {
 		srv.instructions = mcpClientInstructions
+		srv.extra = agent.FlowTools() // flows are for outside agents only
 	}
 	if err := srv.serve(context.Background(), stdin); err != nil {
 		fmt.Fprintln(stderr, "cerberus mcp:", err)
@@ -135,11 +139,25 @@ func mcpCmd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// agentTokenFromEnv is the session's agent token: CERBERUS_AGENT_TOKEN
+// (set for agents such as Codex, which keep OPENAI_API_KEY for their own
+// provider and pass a server only the variables they are told to), else
+// OPENAI_API_KEY (Claude Code's mcp.json).
+func agentTokenFromEnv() string {
+	if v := os.Getenv("CERBERUS_AGENT_TOKEN"); v != "" {
+		return v
+	}
+	return os.Getenv("OPENAI_API_KEY")
+}
+
 // mcpServer answers MCP requests on one stream.
 type mcpServer struct {
 	tools        mcpCaller
 	out          io.Writer
 	instructions string
+	// extra are tools offered besides agent.SpawnTools: the flow tools,
+	// for an MCP client.
+	extra []agent.SpawnTool
 
 	wmu     sync.Mutex // one message per write
 	mu      sync.Mutex
@@ -288,8 +306,8 @@ func (s *mcpServer) handle(ctx context.Context, line []byte) {
 	case "ping":
 		reply(map[string]any{})
 	case "tools/list":
-		tools := make([]map[string]any, 0, 6)
-		for _, t := range agent.SpawnTools() {
+		tools := make([]map[string]any, 0, 12)
+		for _, t := range s.toolList() {
 			tools = append(tools, map[string]any{"name": t.Name, "description": t.Description, "inputSchema": t.Schema})
 		}
 		reply(map[string]any{"tools": tools})
@@ -302,7 +320,7 @@ func (s *mcpServer) handle(ctx context.Context, line []byte) {
 			s.fail(req.ID, rpcInvalidParams, "tools/call needs a tool name and object arguments")
 			return
 		}
-		if !knownTool(p.Name) {
+		if !s.knownTool(p.Name) {
 			s.fail(req.ID, rpcInvalidParams, "unknown tool "+p.Name)
 			return
 		}
@@ -388,8 +406,13 @@ func mcpServerInfo() map[string]any {
 	return map[string]any{"name": "cerberus", "title": "Cerberus sessions", "version": version}
 }
 
-func knownTool(name string) bool {
-	for _, t := range agent.SpawnTools() {
+// toolList is every tool this server offers.
+func (s *mcpServer) toolList() []agent.SpawnTool {
+	return append(agent.SpawnTools(), s.extra...)
+}
+
+func (s *mcpServer) knownTool(name string) bool {
+	for _, t := range s.toolList() {
 		if t.Name == name {
 			return true
 		}

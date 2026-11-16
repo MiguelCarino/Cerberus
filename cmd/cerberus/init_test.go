@@ -196,3 +196,42 @@ func TestInitYesJSON(t *testing.T) {
 		t.Fatalf("second run: token kept %v\n%s", cfg2.Server.Token == tok, out.String())
 	}
 }
+
+// A new config runs sessions in cerberus-sessions.slice; an existing one
+// keeps the slice it names (web-api-ops-3).
+func TestInitSessionSlice(t *testing.T) {
+	m, home, _ := fixtureMachine(t)
+	cfgPath := filepath.Join(home, ".config", "cerberus", "config.json")
+	var out, errb bytes.Buffer
+	if code := runInit([]string{"--yes"}, strings.NewReader(""), &out, &errb, m); code != 0 {
+		t.Fatalf("init %d: %s", code, errb.String())
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil || cfg.Guard.SystemdSlice != "cerberus-sessions.slice" {
+		t.Fatalf("new config slice %q (%v)", cfg.Guard.SystemdSlice, err)
+	}
+
+	// An existing config on the old default keeps it. (On a closed port:
+	// never the owner's real daemon.)
+	cfg.Guard.SystemdSlice = "agents.slice"
+	cfg.Server.Listen = freeAddr(t)
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if code := runInit([]string{"--yes"}, strings.NewReader(""), &out, &errb, m); code != 0 {
+		t.Fatalf("second init %d: %s", code, errb.String())
+	}
+	if cfg2, _ := config.Load(cfgPath); cfg2.Guard.SystemdSlice != "agents.slice" {
+		t.Fatalf("existing config slice changed to %q", cfg2.Guard.SystemdSlice)
+	}
+
+	// Other systems leave the default alone.
+	m2, home2, _ := fixtureMachine(t)
+	m2.goos = "darwin"
+	if code := runInit([]string{"--yes"}, strings.NewReader(""), &out, &errb, m2); code != 0 {
+		t.Fatalf("darwin init %d: %s", code, errb.String())
+	}
+	if cfg3, _ := config.Load(filepath.Join(home2, ".config", "cerberus", "config.json")); cfg3.Guard.SystemdSlice != "agents.slice" {
+		t.Fatalf("darwin slice %q", cfg3.Guard.SystemdSlice)
+	}
+}

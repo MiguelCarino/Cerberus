@@ -155,7 +155,7 @@ func TestResumeWithNewText(t *testing.T) {
 	if strings.Contains(sys, "OLD SYSTEM PROMPT") || !strings.Contains(sys, cwd) {
 		t.Errorf("system prompt not rebuilt: %q", sys)
 	}
-	if last := lastRequestMessage(req); last["content"] != "now add a LICENSE" {
+	if last := lastRequestMessage(req); withoutSentNote(t, last["content"]) != "now add a LICENSE" {
 		t.Errorf("last message %v", last)
 	}
 	if !strings.Contains(out.String(), "resumed (2 messages)") {
@@ -186,7 +186,7 @@ func TestResumeWithoutNewText(t *testing.T) {
 	if got := requestRoles(req); got != "system,user,assistant,user" {
 		t.Fatalf("roles %s", got)
 	}
-	if last := lastRequestMessage(req); last["content"] != continueText {
+	if last := lastRequestMessage(req); withoutSentNote(t, last["content"]) != continueText {
 		t.Errorf("last message %v", last)
 	}
 

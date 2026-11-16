@@ -12,6 +12,8 @@ services:
     image: localhost/cerberus:latest
     container_name: cerberus
     restart: unless-stopped
+    init: true              # reaps processes left by agents' commands
+    stop_grace_period: 60s  # time to finish runs and unload models (default 10 s)
     ports:
       - "127.0.0.1:7340:7340"
       - "127.0.0.1:7350-7369:7350-7369" # work previews (server.preview_ports)

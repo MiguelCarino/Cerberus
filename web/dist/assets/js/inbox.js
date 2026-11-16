@@ -145,6 +145,21 @@ export function flowApprovalRun(it) {
   return m ? m[1] : '';
 }
 
+// guardHeldSession is the session id of an agent guard hold in a Cerberus
+// session (Kind "guard", Link "#/s/<id>"), or "" for any other item: such
+// an item gets "Approve once" in the list (step web-api).
+export function guardHeldSession(it) {
+  if (!it || it.Kind !== 'guard') return '';
+  const m = /^#\/s\/([A-Za-z0-9._-]+)$/.exec(safeRoute(it.Link) || '');
+  return m ? m[1] : '';
+}
+
+// guardHeldText names what "Approve once" lets through.
+export function guardHeldText(it) {
+  const names = (it && Array.isArray(it.Held) ? it.Held : []).filter((n) => typeof n === 'string' && n);
+  return names.length ? `Run ${names.join(', ')} once` : 'Run the held call once';
+}
+
 // badgeText is the unread badge: "" for none, "99+" past 99.
 export function badgeText(n) {
   if (!Number.isFinite(n) || n <= 0) return '';

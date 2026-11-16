@@ -35,6 +35,7 @@ type fixture struct {
 	now      time.Time
 	users    *users.Store
 	linger   string
+	show     string // systemctl --user show output (the sessions slice)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -95,6 +96,9 @@ func (f *fixture) envFor() Env {
 			if name == "git" && f.gitOut != "" {
 				return f.gitOut, nil
 			}
+			if name == "systemctl" && f.show != "" && len(args) > 2 && args[1] == "show" {
+				return f.show, nil
+			}
 			return "", errMissing
 		},
 		DiskFree:  func(string) (uint64, error) { return f.free, nil },
@@ -143,7 +147,7 @@ func (f *fixture) run() map[string]Check {
 func TestHealthyFixtureAllOK(t *testing.T) {
 	f := newFixture(t)
 	rep := Run(context.Background(), f.envFor())
-	if len(rep.Checks) != 24 {
+	if len(rep.Checks) != 26 {
 		t.Fatalf("%d checks", len(rep.Checks))
 	}
 	for _, c := range rep.Checks {
@@ -154,7 +158,7 @@ func TestHealthyFixtureAllOK(t *testing.T) {
 			t.Errorf("%s: empty name or detail", c.ID)
 		}
 	}
-	if rep.Worst() != OK || rep.Counts[OK] != 24 {
+	if rep.Worst() != OK || rep.Counts[OK] != 26 {
 		t.Fatalf("counts %v", rep.Counts)
 	}
 }

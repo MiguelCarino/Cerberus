@@ -1,20 +1,49 @@
 package gateway
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"carino.systems/cerberus/internal/notify"
 )
 
+// slotsFn answers the fake engine's /slots; release closes when the test
+// lets the stream end.
+type slotsFn func(w http.ResponseWriter, r *http.Request, release <-chan struct{})
+
+// slotsHang is a wedged engine: /slots never answers.
+func slotsHang(w http.ResponseWriter, r *http.Request, release <-chan struct{}) {
+	select {
+	case <-release:
+	case <-r.Context().Done():
+	}
+}
+
+// slotsCounting is a slow engine still decoding: each answer shows a
+// counter one higher.
+func slotsCounting() slotsFn {
+	var n atomic.Int64
+	return func(w http.ResponseWriter, r *http.Request, _ <-chan struct{}) {
+		fmt.Fprintf(w, `[{"id":0,"is_processing":true,"next_token":[{"n_decoded":%d}]}]`, n.Add(1))
+	}
+}
+
+// slotsFrozen is a hang the engine still answers for: a slot processing,
+// and nothing moving.
+func slotsFrozen(w http.ResponseWriter, r *http.Request, _ <-chan struct{}) {
+	_, _ = io.WriteString(w, `[{"id":0,"is_processing":true,"next_token":[{"n_decoded":7}]}]`)
+}
+
 // stallHarness: a local engine that streams one chunk and then goes quiet
-// until released; its /slots hangs (wedged) or answers (just slow).
-func stallHarness(t *testing.T, slotsOK bool) (*Gateway, *crashingSource, func(), func() []notify.Message) {
+// until released; slots answers its /slots.
+func stallHarness(t *testing.T, slots slotsFn) (*Gateway, *crashingSource, func(), func() []notify.Message) {
 	t.Helper()
 	oldTimeout := probeTimeout
 	probeTimeout = 100 * time.Millisecond
@@ -25,14 +54,7 @@ func stallHarness(t *testing.T, slotsOK bool) (*Gateway, *crashingSource, func()
 	t.Cleanup(free)
 	gw, src, _ := crashGateway(t, true, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slots" {
-			if !slotsOK {
-				select {
-				case <-release:
-				case <-r.Context().Done():
-				}
-				return
-			}
-			_, _ = io.WriteString(w, `[{"id":0,"is_processing":true}]`)
+			slots(w, r, release)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -49,6 +71,7 @@ func stallHarness(t *testing.T, slotsOK bool) (*Gateway, *crashingSource, func()
 	var msgs []notify.Message
 	gw.notifier = func(m notify.Message) { mu.Lock(); msgs = append(msgs, m); mu.Unlock() }
 	gw.wd.stallNs.Store(int64(200 * time.Millisecond))
+	gw.wd.cpuTime = func(int) (time.Duration, bool) { return 0, false }
 	get := func() []notify.Message {
 		deadline := time.Now().Add(2 * time.Second)
 		for {
@@ -64,8 +87,12 @@ func stallHarness(t *testing.T, slotsOK bool) (*Gateway, *crashingSource, func()
 	return gw, src, free, get
 }
 
+// A wedged engine (no output, /slots never answers, no CPU time used) is
+// stalled: one notification, a reload without the crash path's slot cut.
 func TestStalledEngineFailsAndReloads(t *testing.T) {
-	gw, src, _, msgs := stallHarness(t, false)
+	gw, src, _, msgs := stallHarness(t, slotsHang)
+	src.pid = 4242
+	gw.wd.cpuTime = func(int) (time.Duration, bool) { return time.Second, true } // flat
 	done := make(chan string, 1)
 	go func() { done <- postChat(gw, `{"model":"qwen","stream":true}`).Body.String() }()
 	var body string
@@ -77,8 +104,8 @@ func TestStalledEngineFailsAndReloads(t *testing.T) {
 	if !strings.Contains(body, "start") || !strings.Contains(body, "engine_stalled") {
 		t.Errorf("body %q", body)
 	}
-	if src.crashed.Load() != 1 {
-		t.Errorf("MarkCrashed %d times", src.crashed.Load())
+	if src.stalled.Load() != 1 || src.crashed.Load() != 0 {
+		t.Errorf("MarkStalledGen %d times, MarkCrashed %d times: want 1, 0", src.stalled.Load(), src.crashed.Load())
 	}
 	if m := msgs(); len(m) != 1 || !strings.Contains(m[0].Body, "qwen") {
 		t.Errorf("notifications %+v", m)
@@ -88,31 +115,131 @@ func TestStalledEngineFailsAndReloads(t *testing.T) {
 	}
 }
 
+// A source without MarkStalledGen still gets the crash report.
+func TestStallFallsBackToCrashReport(t *testing.T) {
+	gw, _, _, _ := stallHarness(t, slotsHang)
+	plain := &plainCrashSource{crashingSource: gw.src.(*crashingSource)}
+	gw.src = plain
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	if !strings.Contains(body, "engine_stalled") || plain.crashed.Load() != 1 {
+		t.Errorf("crashed %d body %q", plain.crashed.Load(), body)
+	}
+}
+
+// plainCrashSource hides crashingSource's MarkStalledGen.
+type plainCrashSource struct{ *crashingSource }
+
+func (p *plainCrashSource) MarkStalledGen() {}
+
 func TestStalledTranslatedStreamEndsWithError(t *testing.T) {
-	gw, _, _, _ := stallHarness(t, false)
+	gw, _, _, _ := stallHarness(t, slotsHang)
 	rec := postMessages(gw, `{"model":"qwen","max_tokens":5,"stream":true,"messages":[]}`)
 	if b := rec.Body.String(); !strings.Contains(b, "event: error") || !strings.Contains(b, "stopped responding") {
 		t.Errorf("translated stream %q", b)
 	}
 }
 
+// A slow engine whose /slots counters move is never stalled.
 func TestSlowButAliveIsNotStalled(t *testing.T) {
-	gw, src, release, _ := stallHarness(t, true)
+	gw, src, release, _ := stallHarness(t, slotsCounting())
 	go func() { time.Sleep(900 * time.Millisecond); release() }()
 	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
 	if !strings.Contains(body, " end") || strings.Contains(body, "engine_stalled") {
 		t.Errorf("a slow engine that answers checks was cut off: %q", body)
 	}
-	if src.crashed.Load() != 0 {
-		t.Error("marked crashed")
+	if src.crashed.Load() != 0 || src.stalled.Load() != 0 {
+		t.Error("marked crashed or stalled")
 	}
 	if gw.wd.probes.Load() == 0 {
 		t.Error("never probed a quiet request")
 	}
 }
 
+// An engine that answers /slots with a slot processing and nothing moving
+// (and no CPU time used) is hung: the old watchdog took any answer as
+// healthy.
+func TestFrozenSlotsAreStalled(t *testing.T) {
+	gw, src, _, msgs := stallHarness(t, slotsFrozen)
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	if !strings.Contains(body, "engine_stalled") || src.stalled.Load() != 1 {
+		t.Errorf("stalled %d body %q", src.stalled.Load(), body)
+	}
+	if m := msgs(); len(m) != 1 {
+		t.Errorf("notifications %+v", m)
+	}
+}
+
+// The same frozen answer, but llama-server keeps using CPU time: it is
+// working on something the counters do not show (a long prompt read).
+func TestFrozenSlotsWithCPUTimeAreBusy(t *testing.T) {
+	gw, src, release, _ := stallHarness(t, slotsFrozen)
+	src.pid = 4242
+	var cpu atomic.Int64
+	gw.wd.cpuTime = func(pid int) (time.Duration, bool) {
+		if pid != 4242 {
+			t.Errorf("cpu time of pid %d", pid)
+		}
+		return time.Duration(cpu.Add(int64(time.Second))), true
+	}
+	go func() { time.Sleep(900 * time.Millisecond); release() }()
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	if !strings.Contains(body, " end") || src.stalled.Load() != 0 {
+		t.Errorf("stalled %d body %q", src.stalled.Load(), body)
+	}
+}
+
+// llama-server is inside a long batch: /slots answered once with a slot
+// processing, then times out while the process uses CPU time. That is
+// busy, not dead.
+func TestLongBatchIsBusyNotStalled(t *testing.T) {
+	var answered atomic.Bool
+	gw, src, release, _ := stallHarness(t, func(w http.ResponseWriter, r *http.Request, rel <-chan struct{}) {
+		if answered.CompareAndSwap(false, true) {
+			slotsFrozen(w, r, rel)
+			return
+		}
+		slotsHang(w, r, rel) // a batch longer than the probe timeout
+	})
+	src.pid = 4242
+	var cpu atomic.Int64
+	gw.wd.cpuTime = func(int) (time.Duration, bool) { return time.Duration(cpu.Add(int64(time.Second))), true }
+	go func() { time.Sleep(1200 * time.Millisecond); release() }()
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	if !strings.Contains(body, " end") || src.stalled.Load() != 0 || src.crashed.Load() != 0 {
+		t.Errorf("stalled %d crashed %d body %q", src.stalled.Load(), src.crashed.Load(), body)
+	}
+	if gw.wd.probes.Load() < 3 {
+		t.Errorf("%d probes: the busy path was not exercised", gw.wd.probes.Load())
+	}
+}
+
+// Busy has a bound: a spinning GPU hang also burns CPU time.
+func TestBusyProbesAreBounded(t *testing.T) {
+	gw, src, _, _ := stallHarness(t, slotsHang)
+	gw.wd.busyMax = 1
+	src.pid = 4242
+	var cpu atomic.Int64
+	gw.wd.cpuTime = func(int) (time.Duration, bool) { return time.Duration(cpu.Add(int64(time.Second))), true }
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	if !strings.Contains(body, "engine_stalled") || src.stalled.Load() != 1 {
+		t.Errorf("stalled %d body %q", src.stalled.Load(), body)
+	}
+}
+
+// Failures must span StallSec: two quick failures are not enough.
+func TestStallNeedsFailuresToSpanStallSec(t *testing.T) {
+	gw, src, release, _ := stallHarness(t, slotsHang)
+	gw.wd.stallNs.Store(int64(700 * time.Millisecond)) // tick 250 ms, failures every ~350 ms
+	go func() { time.Sleep(1500 * time.Millisecond); release() }()
+	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()
+	// Quiet from 0; probes fail from ~0.75 s; two failures span ~0.35 s < 0.7 s.
+	if strings.Contains(body, "engine_stalled") || src.stalled.Load() != 0 {
+		t.Errorf("stalled before the failures spanned StallSec: %q", body)
+	}
+}
+
 func TestIdleMeansNoProbes(t *testing.T) {
-	gw, _, release, _ := stallHarness(t, true)
+	gw, _, release, _ := stallHarness(t, slotsCounting())
 	release()
 	postChat(gw, `{"model":"qwen","stream":true}`)
 	time.Sleep(400 * time.Millisecond) // the loop notices nothing is in flight and stops
@@ -130,7 +257,7 @@ func TestIdleMeansNoProbes(t *testing.T) {
 }
 
 func TestWatchdogOffWhenZero(t *testing.T) {
-	gw, _, release, _ := stallHarness(t, false)
+	gw, _, release, _ := stallHarness(t, slotsHang)
 	gw.SetStall(0)
 	go func() { time.Sleep(500 * time.Millisecond); release() }()
 	body := postChat(gw, `{"model":"qwen","stream":true}`).Body.String()

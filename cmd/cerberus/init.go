@@ -23,6 +23,7 @@ import (
 	"carino.systems/cerberus/internal/api/qr"
 	"carino.systems/cerberus/internal/config"
 	"carino.systems/cerberus/internal/platform"
+	"carino.systems/cerberus/packaging"
 )
 
 // `cerberus init` (day phase 4): one command from a fresh machine to a
@@ -431,6 +432,13 @@ func runInit(args []string, stdin io.Reader, stdout, stderr io.Writer, m machine
 
 	ans := m.ask(out, newLineReader(stdin), yes, cfg, d)
 	set, certCmd := initSettings(cfg, d, ans)
+	// A new config on Linux runs sessions in their own slice
+	// (cerberus-sessions.slice, which install-service writes; a slice
+	// with no file is created with systemd's defaults). An existing
+	// config keeps the slice it names.
+	if !exists && m.goos == "linux" && cfg.Guard.SystemdSlice == config.Defaults().Guard.SystemdSlice {
+		set["guard.systemd_slice"] = packaging.SessionSliceName
+	}
 
 	before := cfg.Clone()
 	if !exists && cfg.TokenSnapshot() == "" {

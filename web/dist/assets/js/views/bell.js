@@ -21,7 +21,7 @@ import { sessionName } from '../control.js';
 import { canWriteSessions } from '../users.js';
 import {
   normInbox, applyEvent, markRead, groupByDay, clockTime, safeRoute, badgeText, shouldNotify,
-  keepStreamWhenHidden, levelTone, flowApprovalRun,
+  keepStreamWhenHidden, levelTone, flowApprovalRun, guardHeldSession, guardHeldText,
 } from '../inbox.js';
 
 const KEY_DESKTOP = 'cerberus.inbox.desktop';
@@ -322,9 +322,13 @@ function itemRow(it) {
   const main = route
     ? h('a', { class: 'bell-item', href: route, onclick: (e) => { e.preventDefault(); open(it); } }, body)
     : h('button', { class: 'bell-item', type: 'button', onclick: () => open(it) }, body);
-  // An approval still waiting: the daemon marks it read once decided.
+  // An approval still waiting: the daemon marks it read once decided. A
+  // guard hold waits until it is answered (Answered), not until it is read:
+  // opening it to look at the session first keeps "Approve once".
   const run = store.can('flows') ? flowApprovalRun(it) : '';
-  const answer = run && (!it.Read || decided.has(it.ID)) ? approvalRow(it, run) : null;
+  const held = !run && canWriteSessions(store.me()) ? guardHeldSession(it) : '';
+  const answer = run && (!it.Read || decided.has(it.ID)) ? approvalRow(it, run)
+    : held && (!it.Answered || decided.has(it.ID)) ? guardRow(it, held) : null;
   return h('div', { class: `bell-row tone-${tone}${it.Read ? '' : ' unread'}`, role: 'listitem' },
     answer ? h('div', { class: 'bell-stack' }, main, answer) : main,
     h('button', { class: 'bell-del', type: 'button', 'aria-label': `Delete “${it.Title || 'notification'}”`, onclick: () => remove(it) }, '✕'));
@@ -360,6 +364,38 @@ function approvalRow(it, run) {
   return h('div', { class: 'bell-answer' },
     h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: (e) => answer(true, e.currentTarget) }, 'Approve'),
     h('button', { class: 'btn btn-sm', type: 'button', onclick: (e) => answer(false, e.currentTarget) }, 'Reject'));
+}
+
+// guardRow is "Approve once" under an agent guard hold in a session: it
+// types the approval into the session as the user's next message (POST
+// /api/sessions/{id}/guard/approve), and the daemon marks the item
+// answered (and read).
+function guardRow(it, sid) {
+  if (decided.has(it.ID)) return h('div', { class: 'bell-answer' }, h('span', { class: 'bell-note', text: decided.get(it.ID) }));
+  const approve = async (b) => {
+    b.disabled = true;
+    try {
+      const res = await apiResult(`/api/sessions/${encodeURIComponent(sid)}/guard/approve`, { method: 'POST', body: { item: it.ID } });
+      if (res.ok) {
+        decided.set(it.ID, 'Approved once');
+        it.Answered = true;
+        toast('Sent to the agent: go ahead, this once', 'ok');
+        if (!it.Read) { state = markRead(state, [it.ID]); renderBadge(); }
+      } else if (res.status === 409 || res.status === 404) {
+        decided.set(it.ID, 'Already answered');
+        toast('This held call is no longer waiting.', 'warn');
+      } else {
+        toast(res.message, 'err');
+      }
+    } catch (e) {
+      toast(errText(e), 'err');
+    }
+    if (isOpen) renderList();
+  };
+  return h('div', { class: 'bell-answer' },
+    h('button', { class: 'btn btn-sm btn-primary', type: 'button', title: guardHeldText(it),
+      onclick: (e) => approve(e.currentTarget) }, 'Approve once'),
+    h('span', { class: 'bell-note', text: 'The guard is not a security boundary.' }));
 }
 
 // open marks the item read and follows its route.

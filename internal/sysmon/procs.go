@@ -259,7 +259,7 @@ func (s *sampler) static(pid int, r rawProc) staticInfo {
 			}
 		}
 	}
-	in.group = groupName(cg, r.comm)
+	in.group = groupName(cg, r.comm, s.m.sessionSlice())
 	if in.uid == s.m.uid {
 		if b, err := os.ReadFile(filepath.Join(dir, "environ")); err == nil {
 			for _, kv := range bytes.Split(b, []byte{0}) {
@@ -289,16 +289,26 @@ func (s *sampler) userName(uid int) string {
 	return n
 }
 
-// groupName turns a cgroup path into an app name.
-func groupName(cg, comm string) string {
+// groupName turns a cgroup path into an app name. slice is the slice
+// Cerberus sessions run in (guard.systemd_slice): a session's scope
+// (cerberus-<id>-<attempt>-<hex>.scope) groups as "session <id>", anything
+// else in that slice by the slice's name. railguard's agents.slice (agent
+// commands) groups as "agents".
+func groupName(cg, comm, slice string) string {
 	if cg == "" || cg == "/" {
 		return comm
 	}
-	if strings.Contains(cg, "agents.slice") {
-		return "agents"
-	}
 	last := cg[strings.LastIndexByte(cg, '/')+1:]
 	last = strings.ReplaceAll(last, `\x2d`, "-")
+	if id := sessionScope(last); id != "" {
+		return "session " + id
+	}
+	if slice != "" && strings.Contains(cg, "/"+slice+"/") {
+		return strings.TrimSuffix(slice, ".slice")
+	}
+	if strings.Contains(cg, "/agents.slice/") {
+		return "agents"
+	}
 	switch {
 	case last == "init.scope":
 		return "systemd"
@@ -332,6 +342,47 @@ func groupName(cg, comm string) string {
 		return comm
 	}
 	return comm
+}
+
+// sessionScope is the session id of a Cerberus session scope name
+// (cerberus-<id>-<attempt>-<4 hex>.scope; "" for anything else).
+func sessionScope(unit string) string {
+	rest, ok := strings.CutPrefix(unit, "cerberus-")
+	if !ok {
+		return ""
+	}
+	rest, ok = strings.CutSuffix(rest, ".scope")
+	if !ok {
+		return ""
+	}
+	i := strings.LastIndexByte(rest, '-')
+	if i < 0 || len(rest)-i-1 != 4 || !isHex(rest[i+1:]) {
+		return ""
+	}
+	rest = rest[:i]
+	j := strings.LastIndexByte(rest, '-')
+	if j <= 0 || !isDigits(rest[j+1:]) {
+		return ""
+	}
+	return rest[:j]
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return s != ""
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func isID(s string) bool {

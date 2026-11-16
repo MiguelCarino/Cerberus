@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -515,6 +516,11 @@ func TestWallStreamMultiplexes(t *testing.T) {
 			t.Fatalf("backlog event %s %+v %q", name, c, text)
 		}
 	}
+	name, raw := st.next(t)
+	var pos map[string]string
+	if name != "pos" || json.Unmarshal(raw, &pos) != nil || pos[a] == "" || pos[b] == "" {
+		t.Fatalf("pos event %s %s", name, raw)
+	}
 	for _, id := range []string{b, a} {
 		if code, _ := e.call("POST", "/api/sessions/"+id+"/input", `{"data":"to-`+id+`\r"}`, "admin"); code != 200 {
 			t.Fatal("input failed")
@@ -531,6 +537,38 @@ func TestWallStreamMultiplexes(t *testing.T) {
 	}
 	if strings.Contains(seen[a], "to-"+b) || strings.Contains(seen[b], "to-"+a) {
 		t.Fatalf("output crossed sessions: %q", seen)
+	}
+
+	// A reconnect that names both positions (each moved on by what it
+	// received) gets no backlog; a stale position gets its backlog again
+	// (web-api-ops-7).
+	moved := func(id string) string {
+		i := strings.LastIndexByte(pos[id], '.')
+		n, _ := strconv.Atoi(pos[id][i+1:])
+		return pos[id][:i] + "." + strconv.Itoa(n+len(seen[id]))
+	}
+	st2 := e.stream("/api/wall/stream?ids=" + a + "," + b + "&from=" + a + ":" + moved(a) + "&from=" + b + ":stale.1")
+	gotB := false
+	for {
+		name, raw = st2.next(t)
+		if name == "pos" {
+			break
+		}
+		c, text := decode(raw)
+		switch {
+		case name != "out":
+			t.Fatalf("event %s %s", name, raw)
+		case c.ID == a && c.Backlog:
+			t.Fatalf("the current session was reset: %q", text) // late echo bytes may come as plain out
+		case c.ID == b:
+			if !c.Backlog || !strings.Contains(text, "hello-"+b) {
+				t.Fatalf("stale session: %+v %q", c, text)
+			}
+			gotB = true
+		}
+	}
+	if !gotB {
+		t.Fatal("the stale session got no backlog")
 	}
 }
 

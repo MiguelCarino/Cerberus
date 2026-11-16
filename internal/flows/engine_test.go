@@ -55,7 +55,7 @@ func TestRunEveryModelStep(t *testing.T) {
 	if len(outs) != 2 || outs[0] != "[small] html:Page:write a" {
 		t.Fatalf("fan output %#v", fan.Output)
 	}
-	// merge got the system prompt and the fan-out output JSON-encoded
+	// merge got the system prompt and the fan-out output as titled sections
 	var mergeReq ModelRequest
 	for _, c := range h.models.Calls() {
 		if c.Step == "merge" {
@@ -66,7 +66,7 @@ func TestRunEveryModelStep(t *testing.T) {
 		}
 	}
 	if mergeReq.Messages[0].Role != "system" || mergeReq.Messages[0].Content != "You merge for Site." ||
-		!strings.Contains(mergeReq.Messages[1].Content, `["[small] html:Page:write a"`) {
+		mergeReq.Messages[1].Content != "Merge ### 1. Page (html)\n[small] html:Page:write a\n\n### 2. Look (CSS)\n[cloud/x] CSS:Look:write b" {
 		t.Fatalf("merge request %+v", mergeReq.Messages)
 	}
 	// if: contains is case-insensitive → then: save; skipme skipped

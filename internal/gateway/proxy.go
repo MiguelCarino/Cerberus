@@ -60,6 +60,8 @@ type call struct {
 	text     strings.Builder // the answer so far, when capturing (or keeping text for a record)
 
 	// G3: the request record.
+	recording  bool     // records are on for this call
+	recReq     *request // the request the record reads (shaped once, lazily)
 	shape      *reqShape
 	stream     bool
 	family     string
@@ -126,13 +128,8 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req
 		return
 	}
 	ctx := r.Context()
-	id, info, known := g.resolve(ctx, req.model)
-	if !known {
-		if m := g.mapModel(req.model); m != "" {
-			req.model = m
-			id, info, known = g.resolve(ctx, m)
-		}
-	}
+	name, id, info, known := g.lookup(ctx, req.model)
+	req.model = name
 	c.rec.Model = id
 	checked := false
 	if known && !info.Local {
@@ -163,6 +160,11 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req
 			path, req.native = p, true
 		}
 	}
+	if _, asked := req.fields["return_progress"]; asked && !(ep.Local && ep.Backend == engine.BackendLlamaCpp) {
+		// llama.cpp's own field: other engines and cloud APIs may refuse
+		// it (Cerberus' chat asks for it on every model).
+		delete(req.fields, "return_progress")
+	}
 	if path != "/embeddings" && !req.native && req.stream && ep.Local && ep.Backend == engine.BackendLlamaCpp {
 		// Progress frames while a long prompt is read: output for the stall
 		// watchdog. Kept from clients that did not ask for them.
@@ -177,7 +179,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req
 			g.noteOnce(c.rec.Client+"|"+id, note, "model", id, "client", c.rec.Client)
 		}
 	}
-	g.startRecord(c, r, req) // again: what goes upstream, defaults included
+	g.shapeRecord(c) // what goes upstream, defaults included
 	if path == "/chat/completions" && !req.native {
 		c.guardRun = g.startGuard(c, req)
 	}
@@ -192,8 +194,8 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req
 	}
 	ctx, cancelFlight := context.WithCancelCause(ctx)
 	defer func() { cancelFlight(nil) }()
-	c.flight = g.track(id, ep, cancelFlight)
-	defer func() { g.untrack(c.flight) }()
+	c.flight = g.track(id, c.rec.SessionID, ep, cancelFlight)
+	defer func() { g.endPrefill(c.flight); g.untrack(c.flight) }()
 	energy0 := g.energyNow()
 	fg, canForget := g.src.(forgetter)
 	if g.forward(ctx, w, r, c, req, ep, path, body, ep.Local && canForget) {
@@ -207,8 +209,9 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request, path string, req
 			g.fail(w, c, st, typ, err.Error())
 			return
 		}
+		g.endPrefill(c.flight)
 		g.untrack(c.flight)
-		c.flight = g.track(id, ep, cancelFlight)
+		c.flight = g.track(id, c.rec.SessionID, ep, cancelFlight)
 		if body, err = req.encode(ep.Model, path != "/embeddings"); err != nil {
 			g.fail(w, c, http.StatusInternalServerError, "server_error", err.Error())
 			return
@@ -229,6 +232,40 @@ func (g *Gateway) energyShare(energy0 float64) float64 {
 	}
 	n := max(g.localInFlight.Load(), 1)
 	return max(g.energyNow()-energy0, 0) / float64(n)
+}
+
+// cachedResolver is optionally implemented by a modelSource: ResolveCached
+// matches a model against the listing at hand, never forcing a new one.
+type cachedResolver interface {
+	ResolveCached(ctx context.Context, id string) (engine.ModelInfo, bool)
+}
+
+// lookup resolves the model a client named. It returns the name to use
+// (model, or its model_map target), the canonical id and whether the
+// engine knows it. With a cache-aware source the order is: a match in the
+// listing at hand, then model_map, then a forced listing. So a mapped name
+// such as claude-sonnet-4-5 costs no backend listing. Without one it is
+// the old order: resolve, then model_map.
+func (g *Gateway) lookup(ctx context.Context, model string) (string, string, engine.ModelInfo, bool) {
+	if cr, ok := g.src.(cachedResolver); ok {
+		if m, ok := cr.ResolveCached(ctx, model); ok {
+			return model, m.ID, m, true
+		}
+		if mm := g.mapModel(model); mm != "" {
+			id, info, known := g.resolve(ctx, mm)
+			return mm, id, info, known
+		}
+		id, info, known := g.resolve(ctx, model)
+		return model, id, info, known
+	}
+	id, info, known := g.resolve(ctx, model)
+	if !known {
+		if mm := g.mapModel(model); mm != "" {
+			id, info, known = g.resolve(ctx, mm)
+			return mm, id, info, known
+		}
+	}
+	return model, id, info, known
 }
 
 // resolve maps id to the engine's model when the source can, so usage
@@ -371,10 +408,25 @@ func engineCrashed(status int, msg string) bool {
 // be replayed); it tells the engine, which reloads the model on the next
 // request with one slot fewer, and answers 503 so callers know a retry may
 // work (engine.IsTransientText matches this text).
+//
+// When the engine knows why the model's engine ended (railguard ended it,
+// a signal from outside), the 503 says that instead, e.g. "local engine
+// ended by Railguard (VRAM 97% full); reloading with a smaller GPU share".
 func (g *Gateway) engineFailed(w http.ResponseWriter, c *call, gen uint64, upstream string) {
 	g.markCrashed(c.rec.Model, gen)
-	g.fail(w, c, http.StatusServiceUnavailable, "engine_failed",
-		"local engine failed: "+upstream+" (it will be reloaded)")
+	msg := "local engine failed: " + upstream + " (it will be reloaded)"
+	if ft, ok := g.src.(failureTexter); ok {
+		if why := ft.FailureText(c.rec.Model); why != "" {
+			msg = why
+		}
+	}
+	g.fail(w, c, http.StatusServiceUnavailable, "engine_failed", msg)
+}
+
+// failureTexter is optionally implemented by a modelSource: FailureText
+// names why a local model's engine just ended ("" when unknown).
+type failureTexter interface {
+	FailureText(id string) string
 }
 
 // markCrashed tells the engine; gen is the load that served the request
@@ -476,7 +528,7 @@ func (g *Gateway) relayBody(w http.ResponseWriter, body io.Reader, c *call) erro
 					c.reasoningN++
 					c.addReason(m.ReasoningContent + m.Reasoning)
 				}
-				if c.shape != nil {
+				if c.recording {
 					c.noteCalls(m.ToolCalls)
 				}
 				if s := string(m.ToolCalls); s != "" && s != "null" && s != "[]" {
@@ -541,7 +593,7 @@ func (g *Gateway) finish(c *call) {
 		g.log.Debug("gateway request failed", "model", c.rec.Model, "status", c.rec.Status, "err", c.rec.Error)
 	}
 	g.priceCall(c)
-	if c.shape != nil {
+	if c.recording {
 		for _, k := range c.calls {
 			g.issued.add(k.ID)
 		}

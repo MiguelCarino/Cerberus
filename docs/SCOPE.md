@@ -253,6 +253,20 @@ type AcceptOpts struct { Message string; Push bool }
   token), `TERM=xterm-256color`. When the agent exits, or 10 s after a stop, every process left in its
   session is killed. When `Guard.SystemdSlice` is set and `systemd-run` is on PATH
   (Linux), the command is wrapped as `systemd-run --user --scope --quiet --slice=<slice> -p MemoryMax=<Guard.SessionMemoryMax> -- cmd…`.
+  *As built (step records-downloads-slice):* the scope also gets `-p ManagedOOMPreference=avoid` when
+  `systemctl --version` says systemd 248 or newer (asked once per daemon; an older systemd refuses the
+  property and the scope would not start). The slice is now Cerberus's own. `packaging/cerberus-sessions.slice`
+  sets `MemoryMax` = `guard.max_sessions` x `guard.session_memory_max` (3 x 6G = 18432M by default),
+  `MemoryHigh` at 90% of it, `CPUWeight=100` and no `ManagedOOMMemoryPressure=kill`.
+  `cerberus install-service` writes it beside `cerberus.service`, sized from the config at that time.
+  `cerberus init` sets `guard.systemd_slice` to `cerberus-sessions.slice` for a new config on Linux. An
+  existing config keeps its slice, and the config default stays `agents.slice` (config is add-only). A slice
+  with no unit file starts with systemd's defaults, so a missing file is harmless. The doctor's
+  `session_slice` check runs `systemctl --user show <slice> -p ManagedOOMMemoryPressure -p MemoryMax -p
+  CPUWeight` and warns on `kill`, on a `MemoryMax` under max_sessions x session_memory_max now (the file is
+  sized once, at install), and on a CPU weight under 100. sysmon groups a session scope
+  (`cerberus-<id>-<attempt>-<hex>.scope`) as `session <id>`, anything else in the configured slice by the
+  slice's name, and railguard's `agents.slice` as `agents`. The slice name applies live on config reload.
 - **Agent profiles** (`config.AgentProfile`): `Command []string` with placeholders `{task}`, `{task_file}`,
   `{model}`, `{base_url}`, `{cwd}`, `{session}`. The task is also written to `sessions/<id>/task.md`. Built-in
   defaults (see config defaults): `cerberus` (the built-in agent), `claude` (interactive), `claude-headless`,
@@ -1639,6 +1653,8 @@ Keep its wording ("LLM chat") and vendor neutrality.
   `setHemisphere` (north by default). Surroundings are the time of day only. Golden fixtures under
   `web/test/fixtures/mascots/` come from the desktop `mascots.py --frame` plus a read-only markup dump for colours;
   every theme matches text, bubble, colour runs and head anchor exactly.
+- **A stable system prompt (2026-11-15).** The chat's system prompt says "Today is Sunday 2026-11-15." (the date
+  only), and each user turn carries its sent time in the requests alone. See G3 "As built: a stable system prompt".
 
 
 ---
@@ -1691,6 +1707,18 @@ metadata (the coverage test enforces it).
 - `GET/POST /api/downloads`, `DELETE /api/downloads/{id}`, progress on the event stream; `cerberus pull <ref>`.
 - Web: a "Get models" sheet in Models with a search box (LM Studio catalogue via `lms get --json` if available,
   Ollama library names typed, HF URL pasted), queue with progress and cancel.
+- *As built (step records-downloads-slice): split GGUF.* A Hugging Face link to any file of a split set
+  (`<name>-0000k-of-0000N.gguf`) queues the whole set as one job. The job is named by the first file, and a
+  link to another file of the same set returns the same job. Each file's size is asked first (a `HEAD`
+  through the same host checks). The disk must hold what is still to come of the whole set + 2 GiB. The
+  progress counts the whole set. Each file goes to its own `.part` with Range resume and is checked against
+  its own `X-Linked-Etag`. Only when every file is complete are they all renamed, so a half set never
+  shows as a model. A failure or shutdown keeps the `.part` files for a resume (complete ones are only
+  re-verified), and a cancel removes them all. A checksum given with the link is one file's, so with a set
+  it must come with the first file's link. The `.source` note sits beside the first file. `HFDest` also
+  names the first file. On the engine side, `scanGGUF` lists a split set only when every shard is on disk.
+  Its size is the sum of the shard sizes, no longer the first shard times N. An incomplete set is logged at
+  debug level with the missing file names.
 
 ## Leaderboard
 
@@ -2065,7 +2093,8 @@ this list is newer.
   good, and the better answer where one was given; answers rated bad never. Cerberus ships no
   trainer: `cerberus finetune train` exports into a run folder and runs `finetune.train_command`
   with `{dataset}`, `{base_model}` and `{out}`.
-- Not built yet: offering the tools to opencode and aider over MCP.
+- Codex and opencode sessions get the tools too since 2026-11-15 (profile field `mcp_style`; see
+  "Flows and agent hardening"). Aider has no MCP client, so it cannot have them.
 
 ## Navigation, Settings and versions (after the day plan)
 
@@ -2263,8 +2292,9 @@ A **flow** is a saved recipe: a trigger plus a list of steps that hand work to m
 sessions. It builds on delegation (`callLocal` through the in-process gateway), agent sessions,
 the inbox and the Flow view. Phase 1 is the engine, its API, the CLI and the MCP fix; phase 2 is
 the **Flows** view (designer, runs, templates). Chat-intent triggers and per-chat/per-model
-prompt enrichment are phase 3; event triggers and a `cerberus_run_flow` MCP tool are phase 4.
-They are out of scope here, but the formats must not block them.
+prompt enrichment are phase 3; event triggers are phase 4. They are out of scope here, but the
+formats must not block them. The `cerberus_run_flow` MCP tool, first planned for phase 4, is built:
+see "As built: judge revisions, step errors and flows over MCP" under "Flows and agent hardening".
 
 Words: *flow* = the recipe; *run* = one execution; *step* = one node. The read-only session graph
 stays "Flow view"; a run's graph is drawn by the same renderer (`flowgraph.js`).
@@ -2295,6 +2325,9 @@ stays "Flow view"; a run's graph is drawn by the same renderer (`flowgraph.js`).
     session (profile, model as the profile says) with the rendered task as a child of nothing, tagged
     `flow:<flow id>`, and waits for a final state (passed/failed/stopped/...). Output =
     `{session, state, summary}` (summary = the last activity line). Never auto-accepts.
+    (2026-11-15: the output also has `workspace`, `files`, `checks`, `diff_stat` and `final`, and
+    `workspace: step` with `from` works where an earlier step's session worked; see "Flows and agent
+    hardening" at the end.)
   - `if` `{test, then: step id, else: step id}`; test is one of `contains` / `matches` (regex, RE2)
     / `equals` / `json` (a dotted path equal to a value) / `state` (a session step's final state),
     against `{steps.<id>.output}`. Jumping only forward; a jump to "end" stops.
@@ -2302,8 +2335,10 @@ stays "Flow view"; a run's graph is drawn by the same renderer (`flowgraph.js`).
     Reject ends the run as `rejected`.
   - `output` `{to: "notify"|"inbox"|"file", template, file?}`: a notification, an inbox entry, or a
     file in the run folder (name sanitised, inside the run folder only).
-- **Templates** are plain text with `{input}`, `{steps.<id>.output}` (JSON-encoded when not a
-  string), `{item.*}` inside fan-out, `{date}`, `{time}`, `{flow.name}`. No code runs; unknown
+- **Templates** are plain text with `{input}`, `{steps.<id>.output}` (written for a model to read
+  since 2026-11-15: a fan-out's texts as titled sections, other values as indented JSON without HTML
+  escaping; `{steps.<id>.output.json}` is the compact JSON and `{steps.<id>.output.<dotted.path>}`
+  one field), `{item.*}` inside fan-out, `{date}`, `{time}`, `{flow.name}`. No code runs; unknown
   placeholders are an error at save time (validation) and render as empty never.
 - **limits** `{max_steps 50, max_tokens 200000, max_cost_usd 1.00, max_parallel 2, timeout_min 60}`
   with these defaults; each step's model calls go through the gateway (usage recorded with client
@@ -2418,7 +2453,8 @@ Only what differs from, or settles, the text above.
   past each passed step, so a run stopped between steps does not repeat one). That step runs again
   and earlier steps keep their outputs. A session step that stopped inside a session goes on in
   that session (`Manager.Resume`: same workspace, conversation and resume command) instead of
-  starting a new one. Fan-out items always start over. Each Continue gives a fresh allowance of
+  starting a new one. Fan-out items always start over (since 2026-11-15, items that passed with the
+  same input and model are kept; see the last section). Each Continue gives a fresh allowance of
   every limit: `timeout_min` starts again, and `max_steps`, `max_tokens` and `max_cost_usd` count
   from the totals at that moment (`base_steps`, `base_tokens`, `base_cost_usd`). The totals keep
   counting, and `continued` counts the Continues. Each attempt of a step keeps its own record. A
@@ -2560,6 +2596,14 @@ fan-out cancelled its siblings on the first error. The flows half of the fix:
 Engine half of the 2026-11-03 fix. A fan-out sent 3 prompts at once to a 27B model that
 LM Studio had loaded with full GPU offload and 4 slots. CUDA ran out of memory, the engine
 aborted, and the flow failed.
+
+> **Correction (2026-11-15).** The diagnosis above was wrong. The timings show railguard's
+> SIGTERM, not a CUDA out-of-memory. The flow's request to qwen started at 00:06:40 and failed
+> after 30838 ms with LM Studio's 400 "terminated". At 00:07:12 railguard's history records
+> "VRAM 98% full" and the end of `llama-server` (pid 2813161, 20.5 GB of VRAM). That process ran
+> in an agent's command scope, where an earlier `lms` call had started LM Studio's daemon. The
+> queue and room work below still stands. The fix for the real cause is in "Railguard contract
+> and engine hardening (2026-11-15)".
 
 - **Per-model queue** (`engine/queue.go`). A local model admits at most N requests at
   once. Extra callers wait in `Acquire` in FIFO order, and a cancelled context takes them
@@ -3266,6 +3310,7 @@ at startup for a pattern without a class (fail closed).
 | `GET /preview/{id}/{path...}` | WATCH | |
 | `/v1/` | GW | budget, attribution |
 | `GET /api/status` | ANY | filtered per role |
+| `GET /api/gpu` | ANY | GPU snapshot and VRAM reserve (step web-api) |
 | `GET /api/models` | WORK | |
 | `POST /api/models/{rest...}` | ADM | |
 | `GET /api/usage` | WORK | own for user |
@@ -3293,6 +3338,7 @@ at startup for a pattern without a class (fail closed).
 | `GET /api/sessions/{id}/preview` | WATCH | work previews (2026-11-03) |
 | `POST /api/sessions/{id}/preview/start` | WORK | Run preview; audited |
 | `POST /api/sessions/{id}/preview/stop` | WORK | audited |
+| `POST /api/sessions/{id}/guard/approve` | WORK | agent guard "Approve once" (step web-api); audited |
 | `GET /api/fs` | ADM | host folder browser |
 | `POST /api/sessions/{id}/{action}` | WORK | accept: RepoShare.Accept |
 | `DELETE /api/sessions/{id}` | WORK | |
@@ -4261,6 +4307,62 @@ over a session, cache-hit ratio, tool-error rate per tool). A row opens the full
 **Tests.** Rotation by day and by size; retention; `text=none` writes no text field at all; redaction;
 the client family table; reads of text are audited; non-admins get 403.
 
+**As built (step records-downloads-slice).**
+- **New turn only.** `text.messages` holds only the request's new turn: the messages after its last
+  assistant message. `prefix` (new on the line, omitted when 0) counts the messages before it. An agent
+  loop of n turns now writes each message once, not n times. System prompts stay whole on every line
+  (level `all`), since they tell threads apart. A line with `prefix` 0 holds the whole conversation, which
+  covers first turns and every line written before this change.
+- **Stitching.** `records.Store.Stitch` joins a line to its earlier turns. Each step back takes the latest
+  earlier line of the same session, client and system prompt whose message count plus its reply makes
+  the prefix, and puts that line's turn and `assistant: <reply>` in front. It reads the line's day and the
+  day before. A gap is marked `…[N messages not recorded]`. It answers `earlier` (lines joined) and
+  `missing` (the start was not found). `GET /api/records/{day}/{file}/{offset}?thread=1` returns the
+  stitched line and is audited once. In the web record dialog the heading says "this turn; N earlier
+  messages not shown", and **Show earlier turns** loads the stitched conversation. E4's
+  `trajectory.Build` stitches the same way: a new-turn line continues the thread whose last record has
+  prefix-1 messages (then the most messages, then the newest). With no such thread it starts one and
+  notes `earlier_messages`.
+- **Size cap within a day.** The store sweeps on every new file (a new day and every 64 MiB rotation) and
+  after every `max_mib`/8 bytes written. When the current day alone passes `max_mib`, its oldest closed
+  files go. The open file is never removed. Before, the sweep ran once per UTC day and never touched the
+  current day.
+- **One shape per request.** The gateway reads a request's shape once: after it is shaped for its
+  endpoint, or at the end when it failed before that. Before, it read the shape twice and threw the first
+  one away. The vault's secrets are sorted once per line, not once per field.
+
+### As built: a stable system prompt (2026-11-15)
+
+- **The problem.** The chat (`chat/run.go`) and the built-in agent (`agent/prompt.go`) wrote "Today is
+  Monday 2006-01-02 15:04" into the system prompt, so it changed every minute. Stitching only joins lines
+  with the same system prompt (level `all`), so turns from different minutes never joined. Every engine also
+  lost its prompt cache of the whole conversation, because the first message changed.
+- **The day only.** Both prompts now name the date (`agent.DayLayout`, "Today is Sunday 2026-11-15."), taken
+  once per run, so the prompt is the same byte for byte all day. A conversation that crosses midnight still
+  starts a new thread in the records.
+- **The time goes with the turn.** `agent.RunOptions.Notes` (new) maps message indexes to lines added to those
+  user turns in every request of the run, after a blank line: `agent.SentNote` gives
+  `[sent Sunday 2026-11-15 09:05 local time]`. Notes never reach `Messages`, `OnSave` or `Result`, so the chat
+  file, the web view and `conversation.json` keep the text as typed. A note on a message that is not a user
+  turn is ignored.
+  - The chat keeps each user turn's note per chat in memory (`live.notes`, with the text it was made for) and
+    sends the earlier turns with their own notes again. A later request therefore repeats the earlier one
+    exactly, and the engine's cache holds past it. A note whose turn changed is dropped, as is the note of a
+    message dropped after a failure. After a restart or idle eviction the old turns go without notes, and the
+    cache breaks once at that point.
+  - The built-in agent notes only the newest user turn of its run (`agent.NewestUserNote`). A resumed session's
+    earlier turns go without notes.
+  - The gateway records the turn as sent, note included, so a stitched thread shows when each turn was sent.
+- **Flows** build no such prompt: `{date}` and `{time}` are template variables that the user places, and the
+  built-in plan, judge and quick-answer system prompts carry no time.
+- **Tests.** `chat/stableprompt_test.go`: `TestSystemPromptHoldsAllDay`; `TestTurnsMinutesApartKeepThePrefix`
+  (two turns four minutes apart: byte-identical system prompts, the first turn's note repeated on the second
+  request, the stored messages as typed, and `records.Stitch` joining the two lines into one thread);
+  `TestTurnAcrossMidnight` (23:58 then 00:03: the second run names the new day, the first turn keeps its
+  Sunday note beside the Monday one, nothing stored carries a note).
+  `agent/stableprompt_test.go`: `TestSystemPromptNamesTheDayOnly` and `TestNotesOnlyInRequests` (notes in
+  every request, never in the result or in what `OnSave` keeps).
+
 ## G4. Token budgets (`internal/gateway`)
 
 - **One budget field with three names.** `max_tokens`, `max_completion_tokens` and `max_output_tokens`
@@ -4309,6 +4411,9 @@ can answer `/health` from its HTTP thread while every slot is stuck.
 **Tests.** Use a fake engine that stops writing mid-stream and fails `/slots`. Check that waiters get 503,
 the model reloads and one notification goes out. Check that a slow engine still showing progress is not
 stalled, and that idle means zero probes (a counter in the test).
+
+As built, the probe reads progress and a stall takes no slot off the limit: see "As built: stall
+watchdog, model lookup and bench" at the end of this file.
 
 ## G6. Stable bench (`cmd/cerberus bench`, `internal/bench`, new)
 
@@ -4416,7 +4521,7 @@ token_budget_aliases}`. The built-in agent (and so the Chat view) shows `Thinkin
 - `prompt_progress` is requested on every streamed llama.cpp request without probing the binary (llama-server
   ignores unknown fields). It is stripped for clients that did not ask, and it counts as output for the
   watchdog.
-- **Not done:** the "reading prompt P/T" line in the Chat view and the session's model line.
+- **Not done:** the "reading prompt P/T" line in the Chat view and the session's model line. Built later: "As built: web and API (step web-api)".
 - Busy, queue and stall figures show in the Models view only (`busyText`), not in the Monitor.
 
 **G2 agent guard** ([internal/gateway/guard.go](../internal/gateway/guard.go),
@@ -4438,7 +4543,7 @@ token_budget_aliases}`. The built-in agent (and so the Chat view) shows `Thinkin
 - `watch` never delays a reply: the `cerberus_guard` chunk carries the verdicts if they are in. The usage and
   records lines wait for them (`finish`).
 - **Not done:** "Approve once" in the inbox and the feed entry. A held call notifies with `Kind: "guard"`, and
-  the user answers "go ahead", which is a new turn with nothing to screen.
+  the user answers "go ahead", which is a new turn with nothing to screen. "Approve once" in the bell was built later, for sessions: "As built: web and API (step web-api)".
 - Counters: `/api/status` → `agent_guard` (admins), the line at the top of Usage → Request records, the usage
   record (`GuardFlagged`, `GuardHeld`) and the records line (`guard`). Doctor gained `agent_guard`.
 - Tested with a fake classifier only. The suggested model is in `~/models/Qwen3Guard-Gen-0.6B.Q8_0.gguf`
@@ -4772,7 +4877,9 @@ As built (E2):
   earlier iterations in a cell's detail.
 - Flow judge step: fields `on`, `criteria`, `gates`, `persona`, `model` (the eval types, validated by
   `evals.ValidateCriteria`, the eval rules for gates and criteria). `on` must be an earlier
-  `session` step (a fan-out run as sessions is not accepted). `model` "" or "default" means
+  `session` step (a fan-out run as sessions is not accepted). Since 2026-11-15 `on` may also be a
+  prompt step or a fan-out run as prompts: the answer is judged as text and a failed gate asks the
+  model again (see "Flows and agent hardening"). `model` "" or "default" means
   `evals.judge_model`, then `engines.default_model`. An unknown persona is a warning when the catalog
   knows personas. The step's session is linked from its graph node. `evals.enabled` off makes judge
   steps fail.
@@ -4940,3 +5047,819 @@ As built (E5):
   package or `make cross`; the gate stage runs those. `go vet` for windows and darwin passed on the
   packages I touched. There is no web button to start a run (the spec only asks for the rates in
   Usage); runs are started from the CLI or a POST.
+
+# Railguard contract and engine hardening (2026-11-15)
+
+Atrium's railguard is the desktop memory watchdog. When VRAM stays above its line
+(`vram_pct`, 97% by default) for `vram_s` seconds, it ends the compute process that holds the
+most VRAM. A model server is that process, so a long generation could be killed mid-request.
+This section is the contract between railguard and Cerberus, and the engine work that follows
+from it. Cerberus never needs railguard: with no railguard files it uses generic defaults.
+Railguard never reads Cerberus' token or config.
+
+**The contract** (both repos match it exactly):
+
+- Settings live in `$XDG_STATE_HOME/hypr/railguard.json` (default
+  `~/.local/state/hypr/railguard.json`). Every key is optional. Missing keys take railguard's
+  defaults: `vram` true, `vram_pct` 97, `vram_s` 12, `managed_units`
+  `["cerberus-lmstudio.scope","cerberus.service","lmstudio.service"]` (sorted; the scope is
+  where Cerberus starts LM Studio's daemon without lmstudio.service), `managed_grace_s` 20 (5 to
+  60), `vram_hard_pct` 99.5. Both sides read the file the same way, railguard's `read_settings`:
+  - The file is read as Python's `json.load` reads it: UTF-8, `NaN`, `Infinity` and `-Infinity`
+    allowed, a repeated key takes its last value. A file that does not load (bad UTF-8, a BOM, bad
+    syntax, extra data) or is not an object gives all the defaults.
+  - Then each key on its own: one bad value never drops the file or the other keys.
+  - `vram` is Python truthiness (`0`, `""`, `[]`, `{}`, `null` and `false` are off; the string
+    `"false"` is on).
+  - The four numbers go through Python's `float()`. Ints, floats, booleans and numeric strings
+    convert: spaces around (ASCII ones by C's `isspace`, which leaves out U+001C to U+001F, and
+    Unicode spaces), `_` between digits, `inf` and `nan` in any case with a sign, Unicode digits.
+    Then they are clamped as `min(hi, max(lo, x))` into railguard's `RANGES` (`vram_pct` 80 to 100,
+    `vram_s` 3 to 120, `managed_grace_s` 5 to 60, `vram_hard_pct` 80 to 100). NaN lands on the low
+    end. `vram_s` and `managed_grace_s` are truncated to whole seconds; the two percentages stay
+    floats. A value `float()` refuses (null, a list, an object, a non-numeric string) keeps that
+    key's default.
+  - `managed_units`, when a list, is `sorted({str(x) for x in v if str(x).strip()})`: every entry
+    by Python's `str()` (`3` is "3", `3.0` "3.0", `null` "None", an object its repr), blank ones
+    left out. Any other type keeps the default; `[]` means never ask.
+  - The shared fixture is Atrium's `home/.config/hypr/tests/fixtures/railguard-settings-cases.json`.
+    `test_railguard.py` checks railguard against it. Cerberus keeps a copy in
+    `internal/railguard/testdata/` (plus a `source` key) and checks `railguard.parse` against every
+    case (`TestFixtureCases`). `TestFixtureMatchesAtrium` fails when the copy drifts from Atrium's
+    file, and skips when Atrium is not on the machine.
+
+  Railguard is present on a machine when `railguard.json` or `railguard-history.jsonl` exists in
+  that folder.
+- `vram_hard_pct` is a percentage of usable VRAM, not of the total: on the total, 99.5% can never
+  be reached. Railguard computes it as gpu.py reports the card:
+  - `usable = total - vram_reserved` when `0 < vram_reserved < total`, else `usable = total`
+    (railguard's `gpu_usable`). Both are in MiB.
+  - `vram_reserved` is NVML's v2 memory info `reserved` field (`nvmlDeviceGetMemoryInfo_v2`), the
+    memory the driver keeps for itself, which `used` never reaches (about 455 MiB on a 24 GB card).
+    It is NVIDIA only and is 0 with a driver that has only the old call, whose `used` counts the
+    reserve.
+  - The hard rule fires when `used >= usable * vram_hard_pct / 100`. Railguard then asks nobody and
+    acts at once.
+
+  `vram_pct`, the line, stays `100 * used / total`, which is what Cerberus' reserve plans under.
+- Pressure file: `railguard-pressure.json` in the same folder, written atomically by railguard
+  when it asks managed engines for VRAM instead of killing:
+  `{"v":1,"time","resource":"vram","used_mib","total_mib","target_mib","act_at","managed_units"}`.
+  Railguard deletes it when the card is back under the line or after it acted. A reader ignores
+  a file older than 60 s or with `v` other than 1.
+- History: `railguard-history.jsonl` lines `{"time","kind","why","name","pid","unit","gb"}`
+  (plus `vram_gb`). New kinds: `vram-asked` (the pressure file was written) and `vram-shed`
+  (VRAM fell below the line within the grace, nothing killed). A kill after an ignored ask
+  stays kind `vram`, with a why ending in "; asked first", and only then: an engine that freed
+  the card when asked is asked again on the next fill (railguard stops asking after 3 sheds in
+  10 minutes, and then kills with no "; asked first").
+
+## As built: VRAM planning (step vram-planning)
+
+- **Reading railguard** (`internal/railguard`, new). `railguard.Dir()` and
+  `railguard.Read(dir)` return the settings and whether railguard is present. A malformed file
+  falls back to the defaults. (Review fix: a value out of range is clamped, and a bad key keeps
+  only its own default, as railguard does; see the contract above.) The package only reads.
+- **VRAM reserve.** New setting `engines.vram_reserve_mib` (add-only, with schema metadata,
+  live on reload): 0 is auto (the default), -1 is off, N is N MiB.
+  - Auto with railguard present and its VRAM watch on is ceil(total × (100 − vram_pct) / 100)
+    + 768 MiB. On a 24564 MiB card at 97% that is 1505 MiB.
+  - Auto without railguard (or with its VRAM watch off) is max(1024 MiB, 4% of the total).
+  - Auto while the total VRAM is unknown is 0. The GPU reader knows free VRAM only when it
+    knows the total, so this happens only with test fakes.
+  - `engine.VRAMReserve(setting, total, settings, present)` computes it. The manager and the
+    doctor both call it, so they always agree.
+- **One need for every decision** (`engine/guardline.go`). `planNeedMiB(info, limit)` is
+  either the footprint learned on an earlier load (below) or the estimate size × 1.15 + 512 +
+  KV. The KV slots match what the engine allocates: llama.cpp counts its shared `-c` once; LM
+  Studio counts ctx for each `--parallel` slot (the queue limit, else 4); Ollama counts once,
+  with 4096 tokens when the model sets no context.
+  - `ensureLoaded` now takes the queue limit before `makeRoom`, then passes the same need to
+    `makeRoom`, to the RAM check and (through `loadPlan.NeedMiB`) to the split. Before this,
+    `makeRoom` planned without the KV cache. It kept idle models loaded, and the new model then
+    spilled to the CPU or pushed the card past railguard's line.
+- **makeRoom keeps the reserve.** It evicts idle models until the need fits in free VRAM less
+  the reserve. `loadPlan.FreeMiB` is that budget, never below 0. (Review fix: a budget under
+  1536 MiB, or under the part of the need that does not shrink with the share, loads CPU only,
+  `--gpu off` / `-ngl 0`, instead of the 0.10 floor.) After each eviction it reads the GPU again and keeps the larger figure, because an
+  engine can free more than the model's size. The room-timeout error names the reserve.
+  - Side effect (as the review expected): with the larger need, a load now waits for busy
+    models (up to `wait_for_room_sec`) in some cases where it used to load with a split. The
+    RAM check also refuses sooner. Both match the "wait rather than overcommit" rule above.
+- **After the load.** The manager reads the GPU once more. When less than the reserve is free,
+  it unloads idle models (least recently used first, never busy ones) until the reserve is
+  free again, and logs each one. When none is left, it logs a warning.
+- **The split** (`gpusplit.go`). `lms load --gpu <ratio>` and llama.cpp `-ngl` use the plan's
+  need and the reduced budget. The ratio is still budget / need, clamped to 0.10–0.95.
+  `engines.lmstudio.gpu` still wins. When it would put more on the GPU than the budget holds,
+  LM Studio's `Load` logs a warning.
+- **Learned footprints** (`engine/footprint.go`). The manager reads free VRAM just before and
+  just after a load. The difference is a sample, keyed by (backend, model, ctx, slots). The
+  next plan for that key uses the median of the last 3 samples (of two, the larger) + 512 MiB
+  in place of the estimate. (Review fix: it was the smallest, which one sample made low by
+  memory freed outside Cerberus during the load kept for three loads.)
+  - A sample is dropped when another load or unload ran during the load, or when this load
+    evicted something first (the evicted engine may still be handing memory back).
+  - A sample is also dropped when it is under the weights (review fix: was half the weights),
+    or above twice the estimate plus 2 GiB.
+  - A sample taken with a split is scaled to the whole model, but only when the share is known
+    exactly: LM Studio with the `--gpu` ratio Cerberus passed, or `max`. llama.cpp `-ngl` is
+    rounded to whole layers and may be the owner's own, and Ollama picks its own split, so
+    their split loads are not sampled.
+  - The samples persist as `engine-footprints.json` in the data folder (mode 0600, written
+    atomically). A missing or corrupt file, or one with `v` other than 1, falls back to the
+    estimate. Tests use an in-memory store.
+- **cgroup room in the RAM check** (`platform.CgroupRoomMiB`, with a stub off Linux). It reads
+  `/proc/<pid>/cgroup` (the v2 `0::` line) and walks up the cgroup tree. At each level that
+  sets `memory.max`, the room is the limit less `memory.current`, less page cache (`file` in
+  `memory.stat`, which the kernel reclaims first). The smallest room wins. -1 means no limit
+  or unknown.
+  - Only LM Studio uses it, through `~/.lmstudio/.internal/llmster-pid.lock`. `overcommit`
+    takes RAM = min(MemAvailable, room). The refusal then reads "its engine's cgroup limit
+    leaves N MiB RAM". llama.cpp children share Cerberus' own cgroup, which sets no limit
+    today, and Ollama runs elsewhere. The split does not use the room.
+- **Doctor** (`vram_reserve`, in `api/doctor/vram.go`). It reads the total VRAM through
+  nvidia-smi (`Env.VRAMTotalMiB`), and railguard's settings from `Env.RailguardDir` (default
+  `$XDG_STATE_HOME/hypr`, else `~/.local/state/hypr`). It only reads.
+  - With railguard watching VRAM, it warns when total − reserve is above railguard's line, and
+    when the reserve is off. The fix names the reserve that would stay under the line, or
+    railguard's `never_kill` list, which is the owner-side alternative.
+  - Without railguard, it warns when the reserve is under 3% of the card.
+  - With no local engine on, or the total unknown, it reports ok. The doctor now has 25 checks
+    (26 with `session_slice`, from the cerberus-sessions.slice step).
+- **Not done, and why.** The planned change "apply the GPU share to weights only", with the
+  ratio (budget − KV − 600) / size, was skipped because it is wrong for this card. Take the
+  27B case: size 16921 MiB, 32k ctx, 1 slot, 19890 MiB free, a 1505 MiB reserve. That formula
+  gives 0.93. The measured use at `--gpu 0.95` (18.7 to 20.8 GB) shows about 4.7 GB that does
+  not scale with the share. At 0.93 the model would use about 20.4 GB, more than the 19.9 GB
+  that is free. The existing ratio, budget / need, gives 0.83, which leaves the reserve intact.
+  So the ratio stays as it was, and learned footprints correct the need over time.
+- **Tests.**
+  - `engine/guardline_test.go`: the reserve table; reading railguard from a temp
+    `XDG_STATE_HOME`; the plan shapes; an idle model evicted when only the KV fails to fit
+    (plan 27000 free, 28562 need); a busy model waited for; the journal case (an 18 GB idle
+    model and a small model with 4 slots) with the reserve auto, from railguard and off; a
+    budget of 0 still gives `--gpu 0.10`; the 27B split (about 0.83 with the reserve, 0.90
+    with it off, no flag when it fits); the after-load check evicting once and never a busy
+    model; the cgroup cap on the RAM check; the `engines.lmstudio.gpu` warning.
+  - `engine/footprint_test.go`: the store (last 3, the smallest wins, persistence across a
+    restart, corrupt and other-version files ignored); sample bounds and split scaling; a
+    learned need used on the next load; samples skipped when an unload overlaps or the load
+    evicted first.
+  - `railguard/railguard_test.go`, `platform/cgroup_linux_test.go` (fake roots: 16G limit
+    with 2G used gives 14336 MiB; a tighter parent wins; page cache is not counted; no
+    limit; cgroup v1), `config/vram_reserve_test.go`, and `api/doctor/vram_test.go`.
+  - The doctor's check counts went from 24 to 25 in `doctor_test.go`, `api/security_test.go`
+    and `cmd/cerberus/safety_test.go`.
+
+## As built: railguard contract, engine deaths and LM Studio's daemon (step railguard-contract)
+
+- **Reading the contract** (`internal/railguard/pressure.go`). `ReadPressure(dir, now)` returns
+  railguard's ask. It ignores a missing or malformed file, `v` other than 1, a `resource` other
+  than `vram`, no `target_mib`, and a `time` more than 60 s off. `History(dir, from, to)` reads
+  the last 64 KiB of `railguard-history.jsonl` and skips bad lines.
+- **Answering an ask** (`engine/pressure.go`). A loop looks for the pressure file every 2 s, but
+  only while a local model is loaded. With nothing loaded it waits, with no timer, until a load
+  wakes it. It looks on Linux only (`NewManager` sets the reader there; nothing else does).
+  - On a valid ask it reads the GPU afresh and unloads idle local models, least recently used
+    first, until use is at or under `target_mib`. It never touches a busy model, so railguard's
+    own protection stays. It logs one Warn line and sends a notification of Kind `engine`:
+    "Railguard asked for VRAM", "Unloaded X (N MiB)." With nothing idle it logs once per ask.
+  - When Cerberus' reader does not know the total, it uses the ask's `used_mib` and subtracts
+    what it unloaded.
+- **Proactive shed.** While local requests run (the GPU monitor polls every second), the same
+  loop checks Cerberus' own reading. When use sits at or above railguard's line minus 1% for
+  6 s, it sheds idle models down to total less the VRAM reserve, and notifies "VRAM almost
+  full". A shorter spike resets the count. It is off when the reserve is off (-1) and when
+  railguard is present with its VRAM watch off. Without railguard it uses the default line, 97%.
+- **Engine deaths** (`engine/killcause.go`). An engine death is noticed once per load, from
+  three places:
+  - a llama.cpp exit Cerberus did not ask for;
+  - a failed request (`MarkCrashed`);
+  - a listing that no longer shows a model Cerberus loaded.
+
+  Each one gets a `Failure{Time, Cause, Text}` in `ModelInfo.LastFailure` (JSON `LastFailure`,
+  omitted when nil). It is logged once at Warn and sent once as a notification of Kind
+  `engine`, Level `warn`, linking to `#/models`.
+  - **Attribution.** Cerberus reads railguard's history from 15 s before to 5 s after the
+    death. A line counts when its kind is `vram`, `memory` or `game-vram`, and when its pid is
+    the llama-server Cerberus spawned, or its name is `llama-server` or `llmster` in an engine
+    unit. The engine units are railguard's `managed_units`, Cerberus' own unit and the unit of
+    LM Studio's daemon (read from `/proc/<pid>/cgroup`). The 2026-11-03 line is attributed
+    this way: LM Studio's daemon lived in that agent scope. Other units, other kinds and lines
+    outside the window never match, so a real CUDA crash is not blamed on railguard.
+  - **Causes.** `railguard-vram` ("ended by Railguard: VRAM 97% full"), `railguard-memory`,
+    `railguard-game`, `signal` ("killed by SIGTERM from outside Cerberus (a memory watchdog,
+    the OOM killer or a user)"), `crash` (SIGSEGV, SIGABRT, or an engine error reply), `exit`
+    (an exit code), and `vanished` ("unloaded outside Cerberus (possibly LM Studio's TTL,
+    Atrium game mode or another client)").
+  - **Slots.** Only a crash takes a slot off the limit (`crashCut`), as before. A railguard
+    kill or an outside stop signal (SIGTERM, SIGKILL, SIGINT, SIGHUP) does not. This follows
+    the verifiers of web-api-ops-1 and engine-gateway-6: an unattributed SIGKILL may be the
+    kernel's OOM killer, and it is still reported, but it takes no slot.
+  - **GPU share.** A railguard VRAM kill adds 1024 MiB to the model's `vramCut` (at most 4096).
+    The next load's split budget (`loadPlan.FreeMiB`) is that much smaller, so `--gpu` and
+    `-ngl` come out lower. One step comes back for each hour with no new kill. A memory kill
+    does not change the VRAM plan.
+  - **Late lines.** Railguard may write its line a few seconds after the request failed. A
+    failure without a cause is looked up again 6 s later and before the next load of that
+    model, for up to a minute. When the line is there now, the failure is renamed, a slot the
+    crash took is given back, and a VRAM kill cuts the share. So a flow's retry already plans
+    differently when the line arrived in time.
+  - **The gateway's 503.** With a recent cause, `engineFailed` says "local engine ended by
+    Railguard (VRAM 97% full); reloading with a smaller GPU share", or "local engine killed by
+    SIGTERM … ; it will be reloaded". `IsTransientText` matches it: a 503 is transient, and
+    `local engine ended` was added to the crash words for statusless callers.
+- **llama.cpp exits.** `reap` reads the exit status: signal and code, through
+  `platform.ExitSignal` (unix; Windows always says none). Cerberus' own stop removes the process
+  from the map before it signals it, so a process still in the map ended from outside. The
+  backend records `exitInfo{Time, PID, Code, Signal, ByUs}` and calls the manager's hook. A
+  crash report waits up to 750 ms for the exit (`exitSince`), because a failed request can come
+  back before the exit is reaped. An exit Cerberus caused is never a crash.
+  - `Manager.Unload` now bumps the load's sequence, so a request it cut short does not count as
+    a crash.
+  - The previous run's log is kept as `logs/<id>.log.1` before a reload truncates `<id>.log`.
+  - Each llama-server gets `oom_score_adj` 500 (best effort; Linux only), so the kernel picks a
+    model before the daemon.
+- **Vanished models.** A listing that no longer shows a model Cerberus loaded is recorded when
+  the model's idle TTL has not passed (with up to 30 s of slack). LM Studio unloading a model
+  after the `--ttl` Cerberus gave it is normal and is not recorded. llama.cpp is left out (its
+  exits come from the backend), as are models with a request in flight (the request reports
+  it).
+- **LM Studio's daemon** (`engine/lmsdaemon.go`, setting `engines.lmstudio.unit`, add-only,
+  restart). Before any `lms` call except `lms daemon …`, Cerberus checks that the daemon runs:
+  the pid in `~/.lmstudio/.internal/llmster-pid.lock` exists. When it does not:
+  - `auto` (empty, the default) runs `systemctl --user start lmstudio.service` when that unit is
+    loaded, and waits up to 20 s for the daemon;
+  - else it runs `systemd-run --user --scope --collect --quiet --unit=cerberus-lmstudio
+    --slice=app.slice lms daemon up` when systemd-run and a user bus exist;
+  - else the old way: the next `lms` call starts the daemon in Cerberus' own cgroup. (Review
+    fix: this is not remembered for the run. Placement runs under its own deadline of 140 s,
+    not the `lms` call's 30 s, and a failed one is tried again on the next call that finds the
+    daemon down, at most once a minute.)
+  - `none` is always the old way. Any other value names a user unit to start, with the same
+    fallbacks.
+
+  Off Linux, and in test binaries (`testing.Testing()`), nothing changes. On Shutdown, LM
+  Studio unloads the identifiers Cerberus loaded (`lms unload`, within `shutdownGrace`). It
+  runs `lms daemon down` only when llmster runs in Cerberus' own cgroup now (review fix: it
+  was "when Cerberus started it the old way", which a failed placement made true for a daemon
+  that later lived in lmstudio.service). It never starts the daemon to do this. The pid in
+  the lock file counts only when `/proc/<pid>/comm` is `llmster` (or its exe is LM Studio's):
+  a lock left by a SIGKILL or a reboot may name any other process.
+- **RAM room of that unit.** Already built in step vram-planning: `overcommit` takes the
+  smaller of MemAvailable and the room in the daemon's cgroup, wherever the daemon runs.
+- **Packaging.**
+  - `packaging/cerberus.service` gains `OOMPolicy=continue` and `ManagedOOMPreference=avoid`
+    (some systemd versions ignore the latter for user units; the comment says so). Its
+    shutdown comment now says what `KillMode=mixed` does: whatever is left in the unit is
+    SIGKILLed as soon as the daemon exits. `systemd-analyze --user verify` passes on a copy.
+    The installed unit is untouched: the owner runs `cerberus install-service` to update it.
+  - `cerberus.container` gains `RunInit=true`, `StopTimeout=60` and `TimeoutStopSec=90`.
+    `compose.yaml` gains `init: true` and `stop_grace_period: 60s`. The Containerfile gains
+    `STOPSIGNAL SIGTERM`. `docs/CONTAINER.md` explains them. Quadlet's dry run on podman 6.1
+    turns them into `--stop-timeout 60 --init`.
+  - Not done: the `install-service` drop-in with `TimeoutStopFailureMode=kill`. The verifier
+    of web-api-ops-2 did not agree to it (it kept `OOMPolicy=continue` as the main value).
+- **Wiring.** `serve` passes `engine.WithNotifier(notifier.Send)`.
+- **Docs.** `docs/DESKTOP.md` gains "LM Studio and railguard": smoke and dev configs set
+  `engines.lmstudio.enabled` and `engines.ollama.enabled` to false and never run a bare `lms`.
+  The "model queue and room" section above has a correction.
+- **Tests.**
+  - `railguard/pressure_test.go`: a valid ask; stale, future, wrong-version, wrong-resource and
+    malformed asks; the history window with the real 2026-11-03 line; the tail of a long file.
+  - `engine/killcause_test.go`:
+    - attribution: the real line matches through LM Studio's daemon's unit, not through the
+      defaults alone; ±window near misses; the pid; a `stuck` line; no file;
+    - an LM Studio railguard kill: no slot cut, the budget 1024 MiB lower, a lower `--gpu`,
+      one notification, the gateway text transient;
+    - cut steps, max and decay;
+    - a late history line giving the slot back;
+    - Unload during a request is not a crash;
+    - vanished versus TTL.
+  - `engine/killcause_llama_test.go` (Linux): a fake llama-server killed by SIGTERM gives no
+    slot cut, one notification, and keeps `m.log.1`; Unload gives none; the child's
+    `oom_score_adj` is 500; a crash report that races the reaper still sees SIGKILL.
+  - `engine/pressure_test.go`: the LRU shed down to the target; busy left alone; no ask means
+    nothing; the real file reader; no probes with nothing loaded; the proactive shed after
+    6 s, not after a 2 s spike, not while idle, not with the reserve off.
+  - `engine/lmsdaemon_test.go`: the unit is preferred; the scope arguments; the old way; `none`
+    and a named unit; Shutdown unloads only Cerberus' models and runs `daemon down` only after
+    the old way, and calls nothing with the daemon down.
+  - `gateway/crash_test.go` (`TestEngineFailedNamesCause`), `platform/oom_linux_test.go`, and
+    `packaging/embed_test.go` (the unit's keys and comment, the container stop keys).
+- **Models view.** A model card shows its last engine death for a day, under the load line:
+  "Ended by Railguard: VRAM 97% full (3 min ago)" (`failureText` in `web/dist/assets/js/
+  models.js`, tested in `web/test/models-busy.test.mjs`; `sw.js` BUILD rebuilt). Not yet
+  checked in a browser.
+- **Not done.** The plan's "lower the RAM spill allowance after a memory kill" was left out:
+  the cgroup room already bounds the spill.
+
+## As built: stall watchdog, model lookup and bench (step watchdog-gateway)
+
+This step corrects G5 and G6 as built, and the gateway's hot path.
+
+- **Stall watchdog reads progress (G5).** The watchdog no longer takes a slow `/slots` answer for
+  a dead engine. llama-server answers `/slots` only between two decode batches, and a batch on a
+  model partly on the CPU can take longer than a probe. Each probe now has one of three outcomes
+  (`internal/gateway/stall.go`):
+  - progress: the `/slots` answer changed since the last one (a counter moved), or llama-server
+    answered and used CPU time since the last probe, or no slot is processing, or the engine gives
+    no signal (Ollama and LM Studio lists, a 404). Progress clears the failures;
+  - busy: the probe timed out while the engine showed work (its last answer had a slot processing,
+    or its CPU time rose). Busy neither clears nor adds a failure, for up to 8 probes in a row,
+    because a spinning GPU hang also burns CPU time;
+  - failure: refused, reset, a 5xx, a timeout with no sign of work, or the same `/slots` answer
+    twice while a slot is processing and no CPU time was used. The old watchdog took that last
+    case as healthy and missed the hang.
+
+  The probe timeout is max(5 s, `StallSec`/4). A model is stalled after two failures that span at
+  least `StallSec`. With the default 120 s, a hung engine is cut about 4 to 5 minutes after its
+  last output.
+- **A stall is not a crash.** `engine.Manager.MarkStalledGen` marks the model for reload (the hung
+  llama-server is stopped before the next load) without the crash path's slot cut. It records
+  `LastFailure` with cause `stalled`, which the Models view shows. It sends no engine
+  notification, since the gateway already sends "Model engine stalled". A report against an
+  older load changes nothing. A model source without it still gets `MarkCrashed`.
+- **CPU time.** `engine.Endpoint` gains `PID` (llama.cpp only, not in JSON).
+  `platform.ProcessCPUTime` reads `/proc/<pid>/stat` on Linux; on other systems it reports
+  unknown, and the watchdog then relies on `/slots` alone.
+- **Not done: GPU utilisation as a progress signal.** It is machine-wide. A game or
+  Folding@home on the same card would keep it up and hide every real hang.
+- **Model lookup before `model_map`.** `Manager.ResolveCached` matches against the listing at hand
+  and never forces a new one. The gateway (`lookup` in `proxy.go`, also used by `count_tokens`)
+  tries it first, then `model_map`, then the forcing `Resolve`. So a mapped name such as
+  `claude-sonnet-4-5` costs no `lms ls` and no GGUF walk. `Manager.resolve` keeps a negative cache:
+  an id that missed a forced listing less than 5 s ago misses again without listing. The cache is
+  bounded at 256 ids.
+- **Stale-while-revalidate listing.** `ensureFresh` without force blocks only on the very first
+  listing. A cache older than 5 s is served as it is, while one background listing renews it
+  (an atomic guard; it takes `refreshMu`, so a forced refresh still waits its turn). Forced
+  refreshes and the reaper's minute refresh are unchanged.
+- **count_tokens takes no slot.** `Manager.LoadedEndpoint` returns a loaded local model's endpoint
+  with no admission, no in-flight count and no idle-time stamp. The count runs with a 10 s
+  timeout, and the estimate answers after that.
+- **Transport.** The gateway has its own transport, cloned from Go's default with 32 idle
+  connections per upstream (Go's default is 2) and a 90 s idle timeout. It is shared by requests,
+  the stall probe and token counting, and the client still has no timeout.
+- **Not done: coalesced SSE flushes.** The verifier dropped that change and its benchmark.
+- **Bench (G6).** Each measured sample's prompt starts with its own line, "Run <nonce> (<tag>).",
+  so no two samples share a prefix that an engine could reuse from its prompt cache.
+  `prompts.json` and its pinned hashes are unchanged. The bench sends `"cache_prompt": false` only
+  to models that `/v1/models` lists as local, because cloud APIs may reject unknown fields. It
+  reads `usage.prompt_tokens_details.cached_tokens` into `Sample.CachedTokens`, and prefill tok/s
+  counts only the uncached tokens. Runs carry `measure: 2`. `bench compare` says when two runs
+  were measured differently: older runs counted the prompt cache as prefill.
+- **Tests.**
+  - `gateway/stall_test.go`: a wedged engine is stalled with one notification and no crash
+    report; the crash-report fallback; moving counters are never stalled; frozen counters are
+    stalled; frozen counters with rising CPU time are busy; a long batch (one answer, then
+    timeouts with CPU time) is busy; busy is bounded; failures must span `StallSec`; idle means
+    zero probes.
+  - `gateway/hotpath_test.go`: a mapped name never reaches the forcing Resolve; count_tokens
+    answers while the only slot is held; a count that times out gives the estimate; two waves of
+    four requests open four connections.
+  - `engine/resolve_cache_test.go`: an unknown id lists once per 5 s; the miss cache bound;
+    ResolveCached never forces; a stale cache is served in well under the 300 ms listing, with one
+    background renewal; a forced refresh during a background one; LoadedEndpoint takes no slot;
+    MarkStalledGen keeps the slots, reloads cleanly and sends no notification.
+    `TestModelsCacheAndOverrides` now waits for the background renewal.
+    `killcause_llama_test.go` checks `Endpoint.PID`.
+  - `platform/cputime_linux_test.go`; `bench/bench_test.go` (`TestSamplesDefeatThePromptCache`,
+    `TestSummaryFlagsOlderMeasure`).
+- **Follow-up.** The verifier suggested adding `ANTHROPIC_DEFAULT_SONNET_MODEL` and
+  `ANTHROPIC_DEFAULT_OPUS_MODEL` to the claude-local profile defaults. That edits a default in
+  `config.go`, which this step keeps add-only, so it is left for later.
+
+## As built: web and API (step web-api)
+
+- **Prompt reading progress (G5, web-api-ops-8).** This was "Not done" in the gateway phase.
+  - The gateway already asks llama.cpp for `prompt_progress` on every streamed local request. Each
+    frame now also updates the request's flight (`gateway/prefill.go`). `Gateway.Busy()` gains
+    `Prefill` (the oldest request still reading), and `engine.ModelInfo` gains `Prefill`
+    (`{model, session, processed, total}`), so `/api/status` and `/api/models` carry it. Reading
+    ends at the first output or when the request ends. A flight exists only while the stall
+    watchdog is on (the default), so with `engines.stall_sec` = 0 there is no progress.
+  - `Gateway.SubscribePrefill` feeds a `prefill` hint on `/api/events`, coalesced to one a second
+    per request (model and session). The last one has `done: true`. A session id the caller may
+    not see is blanked, in the event and in `/api/status`.
+  - The gateway now drops `return_progress` for any endpoint other than local llama.cpp: other
+    engines and cloud APIs may refuse it.
+  - The built-in agent gains `RunOptions.Progress`: the request asks `return_progress`, and frames
+    come out as `progress` events (`{processed, total}`). The CLI agent leaves it off. The chat
+    turns it on and passes at most two a second to its stream (plus the last).
+  - UI: the Chat view's status line, the session's meta line and the model's load line read
+    "reading prompt 12k/48k" (`prefillText` in `models.js`). A session's line drops a hint not
+    renewed in 30 s. LM Studio and Ollama send no progress: a model of theirs busy for a minute
+    says "LM Studio gives no prompt progress".
+- **Models view without polling (web-api-ops-6).** The listing was already stale-while-revalidate
+  (step watchdog-gateway).
+  - `engine.Manager.SubscribeChanges` gives a hint after a load, an unload, a death, a request
+    starting or ending, and a request queueing. `ModelsCached` reads the listing at hand and never
+    lists.
+  - `/api/events` gains `models` `{models: [{id, loaded, in_flight, max_parallel, waiting,
+    wait_since, busy_since, stalls, last_used, last_failure}]}` for local models (and any model
+    with requests in flight). It is coalesced to one a second and sent only when it changed. Times
+    are absolute, so a busy model does not change every second. It goes to the roles that see
+    models in `/api/status` (admin, user, chat).
+  - New `GET /api/gpu` (class ANY) returns the GPU snapshot and the VRAM reserve. It lists no
+    models.
+  - The Models view reads `/api/status` once (it carries the models; `/api/models` was fetched
+    twice before) and `/api/usage` once. Then it follows `models` and `prefill` events, reads
+    `/api/gpu` every 10 s while visible, and re-reads usage on `usage` hints, at most every 15 s.
+    An id it does not know makes it refetch `/api/models`.
+  - `LiveSource.failed()` probes `/api/me` instead of `/api/status`.
+- **Terminal resume (web-api-ops-7).** Each session output has an epoch (per output object and
+  daemon run) and counts the bytes `Write` was given. These are already masked, so they are the
+  bytes a client receives. A position is `<epoch>.<offset>`.
+  - `GET /api/sessions/{id}/stream?from=<pos>` sends only what was missed, as `out`, or nothing,
+    when the position is in the held tail. "Held" means in memory, or the last `scrollback_tail_kib`
+    on disk after release. It sends `backlog` (the client resets) without a position, on a gap,
+    for another epoch (a daemon restart), or for a position ahead of the output. A `pos`
+    `{pos}` event follows either. Each `out` moves the position on by its decoded length.
+  - The wall stream takes `from=<id>:<pos>` once per session. A session the client is current on
+    gets no event. A resumed one gets plain `out`; a reset one gets `out` with `backlog: true`.
+    A `pos` `{id: pos}` event follows the backlogs.
+  - `session.js` and `wall.js` keep the positions (`streamPos` in `util.js`) and call
+    `term.reset()` only on a backlog. `LiveSource` takes a URL function for this.
+- **Compressed UI assets (web-api-ops-10).** `.js`, `.mjs`, `.css`, `.svg`, `.json`,
+  `.webmanifest`, `.txt` and `.md` under `/assets/`, and `sw.js` and the manifest, are served gzip
+  when the request accepts it (`q=0` refuses). The ETag is `"<tag>-gz"` with its own 304, and
+  `Vary: Accept-Encoding` goes on both variants.
+  - Each file is compressed once per process, on its first gzip request (`BestCompression`, kept
+    only when under 90% of the raw size). It is lazy, so start-up and every test server skip the
+    work.
+  - A `Range` request gets identity bytes. SSE and JSON responses are never compressed. Gzipping
+    large JSON bodies was optional and is not done.
+- **Approve once (G2, web-api-ops-11, as the verifier narrowed it).** This was "Not done" in the
+  gateway phase.
+  - A hold in a Cerberus session now notifies with `Link: "#/s/<id>"` and `Held` (the call names;
+    new add-only field on `notify.Message` and `inbox.Item`). Chats and outside `/v1` clients get
+    no link and no button.
+  - `POST /api/sessions/{id}/guard/approve {item}` (class WORK, the session owner check, audited
+    as "guard approve once: …") takes the bell's unread `guard` item for that session. It types
+    "Go ahead: run <names> this once." and Enter into the session as the user's next message. The
+    names are cleaned to one printable line of at most 64 characters each. It marks the item read.
+    A second press gets 409, and another session's item, a non-guard item or an unknown one gets
+    404.
+  - This deviates from the planned marker header. The next turn carries no guard flag (G2), and
+    the user's message names the tool, so the call goes through without a header the guard would
+    have to trust. An agent token never reaches the route, so an agent cannot approve its own hold.
+  - The bell shows "Approve once" under such an item, with "The guard is not a security boundary."
+    (`guardHeldSession` in `inbox.js`).
+  - Not done: a feed entry. The session activity feed does not record guard holds today, so there
+    is nothing to put a button on.
+- **Railguard contract in the UI (the p3 config fix, Cerberus half).** `engine.Manager.VRAMReserveNow`
+  feeds `vram_reserve` `{mib, source, line_pct}` in `/api/status` (roles that see models) and
+  `/api/gpu`. The Models view shows it under the GPU cards: "Railguard line 97% · reserve 1505
+  MiB", "VRAM reserve 2048 MiB (set in Settings)", "VRAM reserve 1024 MiB (no Railguard)" or
+  "VRAM reserve off". Each model's `LastFailure` was already on its card (step railguard-contract),
+  and now also arrives by event. `docs/DESKTOP.md` gains "What Cerberus reads from railguard":
+  `railguard.json` and its keys, the pressure file and its fields, and the history kinds,
+  including `vram-asked` and `vram-shed`.
+- **Tests.**
+  - Go:
+    - `api/uigzip_test.go`: the gzip variant, its 304, identity without Accept-Encoding, q=0,
+      Range, small files and fonts, sw.js.
+    - `api/guardapprove_test.go`: one approval typed, read, audited; second press 409; wrong item
+      or session 404; CSRF.
+    - `api/modelsfeed_test.go`: a models event from the cached listing, none when unchanged;
+      prefill in status and coalesced events ending with done; `/api/gpu` reads no models.
+    - `api_test.go` (`TestSessionStream` now expects `pos`; `TestSessionStreamResume`) and
+      `control_test.go` (the wall `pos` event, a resumed and a stale session).
+    - `gateway/prefill_test.go` (Busy and hints from a fake llama stream; `return_progress`
+      stripped for a cloud endpoint) and `gateway/guard_test.go` (the hold's link and names).
+    - `engine/changes_test.go`: hints on load, request start and end, and unload; no listing and
+      no hint while idle.
+    - `session/resume_test.go`: exact, behind, a chunk, ahead, another epoch, malformed, a gap past
+      the limit, after release, a new output; the wall per session.
+    - `agent/engine_test.go` (`TestRunProgress`), `chat/progress_test.go` (spacing), and
+      `notify/notify_test.go` (`Held` reaches the inbox).
+  - Node: `prefillText`, `noProgressNote`, `mergeLive`, `withSince`, `tickBusy` and `reserveText`
+    (`models-busy.test.mjs`); `statusParts` with prefill (`chat.test.mjs`); `streamPos`,
+    `parsePosEvent` and `wallStreamURL` with positions (`control.test.mjs`); `guardHeldSession`
+    (`extras.test.mjs`). `sw.js` BUILD rebuilt.
+  - Not checked in a browser yet.
+
+## As built: review fixes (step review, 2026-11-15)
+
+The merged lanes were reviewed; these are the Cerberus fixes. Railguard's own half
+(`vram_hard_pct` against usable memory, the growth baseline from before the crossing, asking
+again after a shed) is in Atrium.
+
+- **LM Studio's daemon** (contract-engine-2, -3). Placement no longer latches "the old way" and
+  has its own deadline; `lms daemon down` on Shutdown only when llmster's cgroup is Cerberus'
+  own; `llmsterPID` checks the process (`platform.ProcessName`, a stub off Linux).
+- **`cerberus-lmstudio.scope` is managed** (contract-engine-5): in `railguard.Defaults()` and the
+  contract, so railguard asks for a model in that scope before it kills it.
+- **CPU only when the GPU has no room** (contract-engine-6, `cpuOnly` in `gpusplit.go`). A
+  budget under 1536 MiB, or under the need less the weights with headroom, gives LM Studio
+  `--gpu off` and llama.cpp `-ngl 0`. A railguard kill's vramCut therefore ends at CPU only and
+  no longer reloads into the same kill. Such a load is not sampled as a footprint.
+- **Footprints** (contract-engine-7): the median sample; samples under the weights are dropped.
+- **Attribution** (contract-engine-8). A known pid must match exactly. A crash report against a
+  llama.cpp model whose process still runs carries that pid (`pidReporter`), and a llama.cpp
+  death with no pid is never matched by unit. An LM Studio death matches by unit only in
+  llmster's unit and railguard's `managed_units`, less Cerberus' own unit unless llmster runs
+  there. A vanished model looks back at most a minute.
+- **The proactive shed and ask answers** (contract-engine-9) unload only models Cerberus loaded
+  (`modelState.ours`): another client's LM Studio model may be mid-answer, and railguard deals
+  with it.
+- **Settings parsing** (contract-engine-11): `railguard.parse` mirrors `read_settings` key by
+  key (see the contract). encoding/json could not do this: it refuses `NaN` and `Infinity`, which
+  Python reads, and loses the int/float difference that `str()` shows. `railguard/pyjson.go`
+  therefore reads the file as Python's `json.load` does and gives Python's `bool()`, `float()` and
+  `str()`/`repr()` of the values. The known gaps are files where railguard itself stops with an
+  exception `read_settings` does not catch: an integer literal past float's range (`float()`
+  raises OverflowError; Cerberus clamps it) and nesting past what Python's C scanner takes
+  (RecursionError at about 52,000 levels on an 8 MiB stack; Cerberus reads up to 100,000 and
+  takes the defaults beyond). `TestPyEdgeCases` pins 27 more files to what `read_settings` gave
+  for them.
+- **Review fixes (2026-11-15, second check).** A differential run of railguard's real
+  `read_settings` against `railguard.parse` over 45,000 generated files (every Unicode digit and
+  space in `float()`, every code point through `str()`/`repr()`, 20,000 random `float()` strings,
+  20,000 mutated files, nesting from 880 to 100,000 levels) found four gaps, now closed and pinned
+  in `TestPyEdgeCases`:
+  - `float()` strips only C's ASCII spaces: U+001C to U+001F stay and make it refuse the value
+    (`"\u001c5"` keeps the default), though `str.isspace` counts them for `managed_units`.
+  - `float()` takes a sign before `nan` (`"-nan"`, `"+NaN"`), which Go's strconv does not.
+  - A lone surrogate (`"\ud800"`) is kept in the str by Python; Cerberus now keeps its WTF-8
+    bytes, which sort where Python sorts it and `repr()` as `'\ud800'` (it was U+FFFD).
+  - Python reads about 52,000 nested levels, not the 900 the parser allowed, so a deeply nested
+    `managed_units` entry or an unrelated key no longer drops the whole file; `repr()` writes into
+    one builder so deep values stay linear.
+- **Tests.** `railguard/railguard_test.go` (clamping, strings, a bad key);
+  `railguard/fixture_test.go` (the shared fixture, the drift check against Atrium's copy, Python's
+  edge cases); `engine/lmsdaemon_test.go` (retry after a minute, its own deadline,
+  `daemon down` by cgroup); `engine/guardline_test.go` (`TestLLMsterPIDChecksTheProcess`, CPU
+  only at budget 0); `engine/queue_test.go` (`--gpu off`, `-ngl 0`); `engine/footprint_test.go`
+  (the median, a low sample); `engine/killcause_test.go` (`TestAttributeOnlyTheRightEngine`);
+  `engine/pressure_test.go` (`TestShedLeavesOtherClientsModels`).
+
+# Flows and agent hardening (2026-11-15)
+
+## As built: step hand-off (templates and sessions)
+
+- **Outputs written for a model.** `{steps.<id>.output}` no longer hands the next model escaped
+  JSON. A string is itself. A fan-out's list of texts becomes one section per item, titled from the
+  item records: `### 1. Home page (html)`, then the text as written (markup, `&` and real line
+  breaks). Without item records, a list of one-line texts is a `- ` list. Anything else (a JSON
+  prompt's object, a judge or session output) is indented JSON without HTML escaping. The stored
+  output and its shape are unchanged ("Output = the list of results"), and `if` tests still compare
+  against the same parsed values and the same compact text as before. Output steps render the same
+  way, so a notification or file shows the readable form too.
+- **Raw and field forms.** `{steps.<id>.output.json}` is the compact JSON (no HTML escaping) for
+  templates that really want JSON. `{steps.<id>.output.<dotted.path>}` is one field, found with the
+  same `lookup` as the `json` test (numbers index lists, and the JSON inside a reply text is parsed
+  first), rendered like a whole output. A missing field renders as "", like a skipped step. Save-time
+  validation accepts these forms for earlier steps only and refuses empty path parts
+  (`output.`, `output..x`). `output.json` is always the raw form, so a field named `json` cannot be
+  read by path.
+- **Richer session output.** A session step (and each fan-out item run as a session) now outputs
+  `{session, state, summary, workspace, files, checks, diff_stat, final}`. The first three keys are
+  as before. `workspace` is the folder the agent worked in ("" once accepted, discarded or gone).
+  `files` is `[{path, bytes}]`, at most 200, `.git` and symlinks left out: every file of a scratch
+  workspace, the files a folder workspace changed since the run started, and the changed paths of a
+  repo session's diff. `checks` is the last 4 KiB of the checks output. `diff_stat` (repo sessions)
+  is one `path | +a -d` line per file, then the totals. `final` is the built-in agent's last reply
+  from its `conversation.json` (new `Manager.LastReply`), else the last 8 KiB of the transcript.
+  Every text is masked like eval evidence (the vault's values, then token shapes) before it is cut.
+  Other agents give the transcript tail as `final`.
+- **Workspace "step".** A session step can set `workspace: step` and `from: <step id>`. When `from`
+  is a session step, the new session works in that session's folder in place: a scratch folder as a
+  folder session (session `TaskSpec.SameAs`, set only by flows; the sessions API clears it), a
+  folder session's folder again. When `from` is a fan-out run as sessions, the new session gets a
+  fresh scratch folder with each item's files copied under `parts/<n>-<slug of the title>/`
+  (`TaskSpec.Seeds`, copied through `os.Root` before the session is queued; `.git`, symlinks and
+  `deny_paths` matches are skipped; more than 5000 files or 256 MiB is refused). The session manager
+  refuses a source that is still running, accepted, discarded, has no workspace, or belongs to
+  another owner. A repo session's worktree is refused as a source: it is not accepted yet, and a
+  second session in it would muddle accept and discard. Accept it, then use `workspace: repo`. The
+  verifier's exception (a repo step on the same worktree) is not built, because the session manager
+  gives every repo session its own worktree. Non-admin owners pass the same confinement as a spawned
+  child working in its parent's folder (`confineTask` lets `same` through; the source is theirs).
+  A fan-out cannot use `workspace: step` (validation error). Note: deleting or discarding the source
+  session deletes its scratch folder, also under a session that works in it in place.
+- **Continue keeps passed fan-out items.** `loop()` keeps the newest failed, limited or canceled
+  record of each step (unless a later attempt passed). A continued fan-out keeps an item when that
+  record has it as passed, with the same title and kind, the same route model (the new
+  `ItemRecord.route`; older records fall back to `model`), and the template renders the same input
+  now (so `{date}` or `{time}` in a template can make it run again). A kept item has `reused: true`,
+  its earlier output and session, and no usage: it is not charged again and does not count toward
+  `max_steps`. The step's input says how many were kept. Items run as sessions are kept the same
+  way, but a session item that stopped mid-run starts over (resuming it is a larger change). The run
+  page shows "kept from the last attempt" on such items.
+- **Templates.** Plan → Delegate → Merge and Website say the parts come one section each. Website's
+  Assemble task asks for a short closing note, and its last output gives
+  `{steps.assemble.output.workspace}` and `{steps.assemble.output.final}`.
+- **Editor.** Session steps offer "An earlier step's workspace" with a step picker of earlier
+  session steps and fan-outs run as sessions; `from` is dropped when another workspace is chosen.
+  Placeholder chips add `final`, `workspace` and `files` of session steps and `passed` and `failed`
+  of judge steps. Renaming a step also renames `{steps.<id>.output.<path>}` placeholders.
+  `sw.js` was rebuilt.
+
+## As built: agent context, retries and step model settings
+
+- **Context hygiene (built-in agent).** `internal/agent/fit.go`. The engine learns the model's
+  window once per run: `RunOptions.ContextTokens`, the new `cerberus agent --context N` flag, else
+  `GET <base>/models` (`cerberus.ctx`, then `context_length`, 5 s timeout; unknown = 0). Before each
+  request it estimates the size (message and tool-call bytes plus the tool specs' JSON, over 3.5;
+  an image counts 1000 tokens). Above 70% of the window it replaces old tool results with
+  `(output of <tool> elided to save context: N chars; run it again if you need it)`, oldest first,
+  until the estimate fits. The newest 4 tool-calling turns keep their results whole; results under
+  200 bytes are left alone. Only the content changes, so every tool_call keeps its tool message.
+  Turns are found by position, not by call id (some servers reuse ids). The system prompt, the
+  task and the last user turn are never touched. Elision happens on the request copy only:
+  `OnSave` and `conversation.json` keep the full history, so a resume (which replays it) elides
+  again from the source. A note says how many results were shortened when the count grows.
+- **Overflow retry.** A 400/413/422/500 (or a stream error) whose text says the context is full
+  (`context size|length|window|limit`, `context_length`, `exceeds … context`, `too long`,
+  `too many tokens`, `n_ctx`), before any reply text and with no tool call, switches the run to hard
+  elision (every result but the newest turn's, whatever the estimate) and sends the request once
+  more, with a note. A second overflow fails the run as before. Budget errors that only name
+  `max_tokens` do not match. With no known window this is the only elision.
+- **Transient retries (built-in agent).** A request that failed before any reply text and with no
+  tool call, whose error `engine.IsTransientText(status, message)` calls temporary (502/503 unless
+  the model never fits or a budget ran out, a crash text, a refused or reset connection), is sent
+  again up to 2 times, after 2 s and then 6 s (`retryWaits`), with a note "the engine failed (…):
+  retrying in 2s (1 of 2)". The count resets after each answered step. The waits end at once on a
+  stop. 429, other 4xx, "not enough free VRAM" and a cancel are never retried. Reasoning that
+  streamed before the failure shows again on the retry.
+- **Judge retry.** `evals.ModelError{Status, Message}` is new; `evalModels.Complete` turns the
+  gateway's `*flows.ModelError` into it. `judgeOne` sends a call that failed with a transient
+  `ModelError` once more after 2 s (`judgeRetryWait`, waits end on cancel). Plain errors (a budget
+  from `budgetErr`), limits, other 4xx and cancels are not retried. The failed call's usage still
+  counts. The parse retry is unchanged and separate. Feedback calls are not retried (they already
+  fall back to the plain feedback).
+- **Answer schemas.** `flows.ModelRequest` gains `Schema`, `Temperature`, `MaxTokens` and
+  `Thinking`; `evals.ModelRequest` gains `Schema`. Plan steps send an array schema of
+  `{title, kind, task}` (all required) with `minItems` 1 and `maxItems` = the step's item cap. JSON
+  prompt steps send `{"anyOf":[{"type":"object"},{"type":"array"}]}` (an array, because a fan-out
+  may read the step's items; a bare number or string no longer fits on a local model). The judge
+  sends `evals.VerdictSchema` (verdict pass|fail, rationale, evidence ≤ 10). Plain prompts and
+  fan-out items send none. The hosts send it as `response_format: {type: "json_schema",
+  json_schema: {name, schema}}` (never `json_object`: LM Studio refuses it) to local models only
+  (`FlowHost.localModel`, "default" resolved through `engines.default_model`; the judge already
+  had `EvalHost.localModel`). Cloud models get no `response_format`: OpenAI's strict mode wants an
+  object at the top and other APIs refuse the field, so they keep the prompt instructions.
+  `extractJSON`, `planItems`, `ParseVerdict` and the one parse retry stay as the fallback, and the
+  retry sends the schema too.
+- **Step model settings.** Prompt, plan and fan-out steps take `temperature` (0 to 2),
+  `max_tokens` (1 to 262144; the gateway clips it to the model's cap) and `thinking` (`on`, `off`
+  or empty). Unset means the model's defaults; the bodies of steps without them are as before.
+  Temperature and max_tokens go to every model. Thinking goes to local models only, mapped like the
+  judge: off = `reasoning_effort: "none"` and `chat_template_kwargs.enable_thinking: false`, on =
+  `enable_thinking: true`. A fan-out applies them to its prompt items; on a fan-out run as sessions
+  they do nothing and validation warns (the editor drops them). Out-of-range values are errors.
+  `Flow.clone` copies the temperature pointer.
+- **Editor.** Prompt, plan and fan-out (prompt items) cards show "Temperature (optional)" (a new
+  `decimal` field type: empty is unset, 0 is kept), "Answer length in tokens (optional)" and
+  "Thinking" (As the model does, On, Off; "Local models only."). `cleanStep` keeps numbers as
+  numbers and drops the three on a session fan-out. `sw.js` was rebuilt.
+- **Not built.** The session manager does not pass the window: the agent asks `/v1/models` itself,
+  and a session whose model is "default" finds no entry there, so it relies on the overflow retry.
+  Arguments of old tool calls (a large `write_file`) are not elided.
+
+## As built: judge revisions, step errors and flows over MCP
+
+- **Judge on an answer.** A judge step's `on` may name a prompt step or a fan-out run as prompts
+  (validation; a criterion's `evidence` kinds then give a warning, since they do not apply). The
+  daemon judges it with `evals.Job` in text mode: `Session` is "", `Text` is the answer and `Task`
+  the rendered prompt. `buildEvidence` gives every criterion one section,
+  `== output (the answer to judge) ==`, masked like the transcript and cut at the end with
+  `[... cut]`. `EvidenceOutput` ("output") is not a kind a criterion names. The judge prompt and the
+  feedback prompt are unchanged (their pinned hashes too). A gate that fails with iterations left
+  writes the feedback as before (persona rules), then calls `Job.Revise` instead of resuming a
+  session. The flow engine's revise call asks the same model again with [the step's messages
+  (rendered again), its answer as an assistant turn, the feedback as a user turn], with the step's
+  model settings and schema. The call is charged to the run and counts as a step toward
+  `max_steps`; a JSON prompt's revised answer must parse. The revised answer replaces the step's
+  output for the steps that follow, and the judge output carries `"revised": true` and `"output"`, so
+  a continued run reads it back. `StepRecord.revisions` lists every revise call
+  (`{item?, gate, iteration, feedback, output, model, tokens, error?}`, texts cut at 4000
+  characters). A fan-out is judged item by item, one after another. Items without output (failed
+  under `min_ok`) are skipped and left out of the verdict, and the output has `items`
+  (per item: passed, gates, failed, revised and its report). The Draft → Critique → Revise
+  template is unchanged. Backward loop jumps (finding 3c) are not built: SCOPE keeps jumps
+  forward only.
+- **Session settings.** Session steps (and fan-outs run as sessions) take `max_attempts` (1 to 5),
+  `escalate_to` (an agent profile, checked against the catalog; the same agent as `agent` is a
+  warning) and `max_minutes` (1 to 10080). `SessionRequest` carries them into
+  `TaskSpec.MaxAttempts`, `EscalateTo` and `Limits.MaxMinutes`. Non-admin owners pass
+  `confineTask`, which already checks `EscalateTo`. Attempts and escalation act only when the
+  workspace has checks (the editor says so).
+- **Retry.** Prompt, plan and fan-out steps take `retry: {max 0-3, backoff_s 0-600}`. A failure
+  that is not a limit, a cancel or the step's end runs the whole step (each fan-out item on its
+  own) again, after `backoff_s` on the engine's clock. Each retry counts as a step toward
+  `max_steps`. The record keeps `attempts`, the first error in `retry_error` and every try's usage;
+  the graph's detail counts these retries with the transient ones. The one transient retry
+  inside a call stays as it was. The verifier asked for a 0 to 2 cap; the step plan said 0 to 3,
+  so 0 to 3 is what was built.
+- **on_error.** Every step but `if` and `approve` takes `on_error`: `fail` (the default),
+  `continue`, a later step id, or `end`. A plain failure (never a limit, a cancel, the timeout or
+  a restart) then leaves the record `failed` with `on_error` set ("next" or the target) and `jump`
+  "on error → …", the output `{"error": "..."}`, and the run goes on. A continued run reads that
+  output back. The graph draws an "on error" edge (kind `else`) to a jump target. The verifier
+  advised dropping the step-id form, since an `if` step can do the same. The step plan asked for
+  it, and it is a forward jump checked like an `if` branch, so it was built.
+- **min_ok.** A fan-out's `min_ok` (1 to 50) is how many items must pass. With it, a failed item does
+  not stop its siblings (only a limit does). Its result is `null`, and the step passes when enough
+  passed (the input notes how many failed). Otherwise the step fails with "N of M items failed, K
+  had to pass".
+- **Continued runs.** Fan-out steps now check `max_steps` from the continued base like the loop
+  does (before, a continued fan-out counted from the first attempt).
+- **Flows over MCP.** For MCP clients only (`cerberus mcp --client`), there are three tools:
+  - `cerberus_flows` lists the enabled flows of the client's user;
+  - `cerberus_run_flow {flow, input}` starts a run;
+  - `cerberus_flow_run {run, wait_s ≤ 300}` gives the state, the current step and, when the run
+    is done, the last step's output (16 KiB at most; an output step's text) and the files output
+    steps wrote.
+
+  These tools call `GET /api/agent/flows`, `POST /api/agent/flows/{id}/run` and
+  `GET /api/agent/flows/runs/{run}?wait=S` (class AGENT in the route table and the matrix;
+  writes audited as `client:<name>`). A session's agent gets 403, and its `cerberus mcp`
+  does not list them: a flow starts sessions, so a session starting flows could loop. Runs act
+  for the flow's owner, who is the client's user (another owner's flow is 404, as are disabled
+  ones). `flows.enabled`, `flows.max_runs`, the run limits and the owner's budget apply. A client
+  has at most 2 runs going at once (429), counted by the run's actor
+  `client:<name>#<device id>`, the same identity its sessions carry. It reads only the runs it
+  started. The wait uses the engine's change signal (`Engine.Wait`), not polling.
+- **Cerberus tools for Codex and opencode.** The agent profile has a new add-only field,
+  `mcp_style`: "" (from the program name: claude, codex or opencode), `claude`, `codex`,
+  `opencode` or `none`. It has schema metadata in Settings → Agents.
+  - claude: `mcp.json` and `--mcp-config`, as before.
+  - codex: `-c mcp_servers.cerberus.command=…`, `args=["mcp"]` and
+    `env_vars=["CERBERUS_AGENT_TOKEN","CERBERUS_URL","CERBERUS_SESSION"]` go right after the
+    program. The token is in the agent's environment as `CERBERUS_AGENT_TOKEN`, never in argv
+    (Codex keeps `OPENAI_API_KEY` for its own provider and passes a server only the variables it
+    names).
+  - opencode: `opencode.json` (0600) in the session folder, with an `mcp.cerberus` local entry
+    whose environment reads the token as `{env:CERBERUS_AGENT_TOKEN}`. The token is never in the
+    file, and `OPENCODE_CONFIG` points at it.
+  - Nothing is added when spawning is off, or when the profile already wires its own MCP config:
+    `--mcp-config`, a `mcp_servers.cerberus` override, or `OPENCODE_CONFIG` in its env.
+  - `cerberus mcp` reads `CERBERUS_AGENT_TOKEN` first, then `OPENAI_API_KEY`.
+  - Aider has no MCP client, so it gets nothing.
+  - Behaviour change: codex and opencode profiles now get the tools by default when
+    `agent.spawn.enabled` is on. Set `mcp_style: none` to opt out.
+- **Editor.** Prompt, plan and fan-out cards have "When it fails, try again" (tries and seconds
+  between). Every card but if and approve has "If it fails": stop, go on, jump to a later step,
+  or end. Session cards and session fan-outs have attempts, "Then hand over to" (an agent, or
+  None) and a time limit. Fan-outs have "Parts that must pass". The judge's "Judge the work of"
+  offers sessions, prompts and fan-outs of prompts. `cleanStep` keeps numbers as numbers, nests
+  `retry` and drops `on_error: fail`. Renaming a step follows `on_error`. `sw.js` was rebuilt.
+- **Tests.**
+  - `internal/flows/onerror_test.go`: session settings, step and item retries, `max_steps`,
+    limits, on_error continue and jump, `min_ok`, validation, judge on a prompt and on fan-out
+    items, revision counting.
+  - `internal/evals/textmode_test.go`.
+  - `internal/api/agentflows_test.go`: scope, owners, the 2-run cap and waits.
+  - `internal/api/evaljudge_test.go`: host text mode. `flowhost_test.go`: the TaskSpec fields.
+  - `internal/session/mcpstyle_test.go`: argv and env per style; the token is never in argv or
+    `opencode.json`.
+  - `internal/agent/flowtools_test.go`, `cmd/cerberus/mcp_flows_test.go`, and
+    `web/test/flows.test.mjs` / `judge.test.mjs`.
+- **Deferred.**
+  - Windows ConPTY (agents-flows-evals-12): sessions still cannot start on the Windows build.
+  - Judging fan-out items in parallel.
+  - A run's files over the agent scope (the client sees their paths only).
+
+## As built: review fixes (step review, 2026-11-15)
+
+- **Chained step workspaces** (flows-agent-1). `sameAsWorkspace` takes a folder session whose
+  folder is a scratch folder it borrowed (under the sessions folder) like the scratch case, so
+  A → B → C with `workspace: step` runs.
+- **Codex MCP flags** (flows-agent-3) go right after the argv element that is the codex program
+  (`codex`, `codex.exe`, `@openai/codex`), not after a wrapper such as npx or bash. With no
+  such element nothing is added and a warning is logged.
+- **Failed fan-out items in templates** (flows-agent-4): a null in a fan-out's output renders as
+  a section "(this item failed)", so a `min_ok` merge still gets titled sections.
+- **Judge** (flows-agent-5, -6, -10). A judge on a step that failed under `on_error` fails with
+  "step X failed; nothing to judge". A judge that stops part-way through a fan-out keeps
+  `{"partial": true, "revised", "output", "items"}` in its record; the run's later attempts read
+  the revised output, and Continue reuses the verdicts of answers that are unchanged (by a
+  hash), so revisions are not paid twice. Each judged answer has its own transient retry, and
+  the retries are added to the record.
+- **The session token** (flows-agent-7): every session's environment sets
+  `CERBERUS_AGENT_TOKEN` to its own token, so an inherited one never reaches `cerberus mcp`.
+- **Validation** (flows-agent-11): `workspace: step` from a single repo session is an error, and
+  `continue` and `fail` are reserved step ids, like `end` (the editor's `uniqueId` avoids them).
+- **Web and API** (web-api-1 to -5, -9).
+  - A guard hold's inbox item is stored under the session's owner (`notify.Message.Owner`; serve
+    resolves it), so a non-admin owner sees and answers it.
+  - Its answered state is `inbox.Item.Answered` (`Store.MarkAnswered`), apart from Read:
+    opening the item or "Mark all read" keeps "Approve once". A second approve is 409.
+  - `GET /api/models` and `GET /api/chats/models` mask `Prefill.Session` as `/api/status` does
+    (`server.modelsFor`).
+  - The Models view clears a cloud model's live fields when it leaves the models event, and a
+    refresh that raced a models event applies that event again.
+  - `sw.js` was rebuilt.
+- **Gate fixes.** `gateway/guard_test.go`'s watch-mode test no longer races the classifier (it
+  also failed about 1 run in 8 on HEAD). The new session tests that start agents carry
+  `//go:build !windows`, like the other session tests, so `GOOS=windows go vet` passes.
+- **Tests.** `session/flowspace_test.go` (A → B → C), `session/mcpstyle_test.go`
+  (`TestCodexFlagsAfterTheCodexProgram`, an inherited token), `flows/template_test.go` (a null
+  item), `flows/judge_review_test.go`, `flows/validate_test.go`, `api/guardapprove_test.go`
+  (`TestGuardApproveByOwnerAfterReading`), `api/modelsfeed_test.go`
+  (`TestPrefillSessionMaskedOnModelRoutes`), `notify/notify_test.go` (Owner),
+  `web/test/models-busy.test.mjs` and `web/test/flows.test.mjs`.

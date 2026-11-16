@@ -182,6 +182,12 @@ func (g *Gateway) inspect(line []byte, c *call) (usageOnly, progressOnly bool) {
 	if json.Unmarshal(payload, &ch) != nil {
 		return false, false
 	}
+	if len(ch.PromptProgress) > 0 && string(ch.PromptProgress) != "null" {
+		g.noteProgress(c.flight, ch.PromptProgress)
+	}
+	if c.flight != nil && (ch.hasContent() || ch.nativeContent()) {
+		g.endPrefill(c.flight) // the first output: reading is over
+	}
 	if c.dropProgress && len(ch.PromptProgress) > 0 && string(ch.PromptProgress) != "null" &&
 		!ch.hasContent() && ch.Usage == nil && len(ch.Error) == 0 {
 		return false, true
@@ -223,7 +229,7 @@ func (g *Gateway) inspect(line []byte, c *call) (usageOnly, progressOnly bool) {
 		}
 		if len(d.ToolCalls) > 0 && string(d.ToolCalls) != "null" {
 			c.toolN++
-			if c.shape != nil {
+			if c.recording {
 				c.noteCalls(d.ToolCalls)
 			}
 		}

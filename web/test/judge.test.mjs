@@ -11,7 +11,7 @@ import { iterationsText, cellHistory, feedbackLabel } from '../dist/assets/js/ev
 test('judge is a step kind after session, with its fields', () => {
   const kinds = STEP_KINDS.map((k) => k.kind);
   assert.equal(kinds.indexOf('judge'), kinds.indexOf('session') + 1);
-  assert.deepEqual(KIND_FIELDS.judge, ['on', 'criteria', 'gates', 'persona', 'model']);
+  assert.deepEqual(KIND_FIELDS.judge, ['on', 'criteria', 'gates', 'persona', 'model', 'on_error']);
 });
 
 test('a new judge step judges the last session step', () => {
@@ -22,10 +22,10 @@ test('a new judge step judges the last session step', () => {
   assert.equal(j.id, 'judge');
   assert.equal(j.on, work.id);
   assert.deepEqual(j.criteria, JSON.parse(JUDGE_CRITERIA_EXAMPLE));
-  // its "on" choices are the earlier session steps only
+  // its "on" choices are the earlier session, prompt and fan-out-as-prompt steps
   const on = stepFields(j, [work, p, j]).find((f) => f.key === 'on');
-  assert.deepEqual(on.options.map(([v]) => v), [work.id]);
-  assert.equal(stepFields(j, [j]).find((f) => f.key === 'on').hint, 'Add an Agent session step before this one.');
+  assert.deepEqual(on.options.map(([v]) => v), [work.id, p.id]);
+  assert.equal(stepFields(j, [j]).find((f) => f.key === 'on').hint, 'Add an Agent session, a Prompt or a Fan out of prompts before this one.');
   // an if after a judge branches on its verdict
   const iff = newStep('if', [work, j]);
   assert.equal(iff.on, j.id);

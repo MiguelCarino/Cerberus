@@ -64,6 +64,8 @@ type inboxService interface {
 	MarkReadWhere(ids []string, all bool, keep func(inbox.Item) bool) (int, error)
 	DeleteWhere(id string, keep func(inbox.Item) bool) (bool, error)
 	Add(it inbox.Item) inbox.Item
+	// MarkAnswered answers a guard hold (guardapprove.go).
+	MarkAnswered(id string, keep func(inbox.Item) bool) (bool, error)
 }
 
 // downloadService is what the download routes use (*downloads.Manager).
@@ -538,12 +540,19 @@ func (s *server) handlePWA(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", f.ctype)
 	h.Set("Cache-Control", "no-cache")
-	h.Set("ETag", f.etag)
+	h.Set("Vary", "Accept-Encoding")
 	if name == "sw.js" {
 		// Only the root scope: the worker controls the whole app and no
 		// narrower or wider path is ever granted.
 		h.Set("Service-Worker-Allowed", "/")
 	}
+	if acceptsGzip(r) && r.Header.Get("Range") == "" {
+		if gz := gzipped(s.ui, name, f.etag); gz != nil {
+			serveGzip(w, r, gz, f.ctype, f.etag)
+			return
+		}
+	}
+	h.Set("ETag", f.etag)
 	if match := r.Header.Get("If-None-Match"); match != "" && match == f.etag {
 		w.WriteHeader(http.StatusNotModified)
 		return

@@ -49,6 +49,13 @@ Environment=CERBERUS_OLLAMA_URL=http://cerberus-ollama:11434
 SecurityLabelDisable=true
 Unmask=/proc/*
 
+# RunInit puts a small init in as PID 1: it passes signals on to Cerberus
+# and reaps processes left by agents' commands. StopTimeout gives the
+# daemon 60 s to finish runs, stop sessions and unload models (podman's
+# default is 10 s, then SIGKILL).
+RunInit=true
+StopTimeout=60
+
 HealthCmd=curl -fsS -o /dev/null http://127.0.0.1:7340/healthz
 HealthInterval=30s
 HealthStartPeriod=60s
@@ -57,6 +64,9 @@ AutoUpdate=local
 [Service]
 Restart=on-failure
 TimeoutStartSec=120
+# Longer than StopTimeout, so podman stops the container before systemd
+# gives up on the unit.
+TimeoutStopSec=90
 
 [Install]
 WantedBy=default.target

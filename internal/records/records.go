@@ -48,7 +48,7 @@ type Call struct {
 // Text holds a line's text, at the configured level.
 type Text struct {
 	System    string `json:"system,omitempty"`    // level all
-	Messages  string `json:"messages,omitempty"`  // the conversation as role: text lines
+	Messages  string `json:"messages,omitempty"`  // the new turn (see Line.Prefix) as role: text lines
 	Reply     string `json:"reply,omitempty"`     // the answer
 	Reasoning string `json:"reasoning,omitempty"` // level all
 }
@@ -101,6 +101,12 @@ type Line struct {
 
 	Guard *Guard `json:"guard,omitempty"`
 	Text  *Text  `json:"text,omitempty"`
+	// Prefix is how many of the request's messages come before
+	// Text.Messages: the text keeps only the new turn (what follows the last
+	// assistant message), so a conversation is written once, not again on
+	// every turn. 0 = the text holds the whole conversation (a first turn,
+	// or a line written before this field existed).
+	Prefix int `json:"prefix,omitempty"`
 
 	// Ref locates the line for GET /api/records/{day}/{file}/{offset}; set
 	// when listing, never written.
@@ -128,6 +134,8 @@ type Store struct {
 	written int64
 	dropped int64
 	swept   string // the day retention last ran
+	name    string // the open file's path
+	since   int64  // bytes written since the last sweep
 }
 
 // Open returns a store for cfg; nil (recording off) when cfg.Enabled is false.
@@ -226,7 +234,7 @@ func (s *Store) shape(t *Text) *Text {
 	}
 	var secrets []string
 	if s.secrets != nil {
-		secrets = s.secrets()
+		secrets = longestFirst(s.secrets())
 	}
 	for _, f := range []*string{&out.System, &out.Messages, &out.Reply, &out.Reasoning} {
 		*f = clip(redact(*f, secrets))
@@ -253,13 +261,26 @@ func MaskTokens(s, repl string) string {
 	return tokenShapes.ReplaceAllString(s, repl)
 }
 
+// longestFirst is the secrets worth masking (6 bytes or more), longest
+// first so a secret that contains another is masked whole. Sorted once per
+// line, not once per field.
+func longestFirst(secrets []string) []string {
+	vals := make([]string, 0, len(secrets))
+	for _, v := range secrets {
+		if len(v) >= 6 {
+			vals = append(vals, v)
+		}
+	}
+	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	return vals
+}
+
+// redact masks secrets (as longestFirst returns them) and token shapes in s.
 func redact(s string, secrets []string) string {
 	if s == "" {
 		return s
 	}
-	vals := slices.Clone(secrets)
-	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
-	for _, v := range vals {
+	for _, v := range secrets {
 		if len(v) >= 6 {
 			s = strings.ReplaceAll(s, v, mask)
 		}
@@ -296,16 +317,23 @@ func (s *Store) write(t time.Time, b []byte) error {
 		if err != nil {
 			return err
 		}
-		s.f, s.day, s.size = f, day, 0
-		if s.swept != day {
-			s.swept = day
-			s.sweepLocked(t)
-		}
+		s.f, s.day, s.size, s.name = f, day, 0, name
+		// Sweep on every new file: a new day, and every rotation within a
+		// day, so one busy day cannot grow far past the size cap.
+		s.swept = day
+		s.sweepLocked(t)
 	}
 	n, err := s.f.Write(b)
 	s.size += int64(n)
+	s.since += int64(n)
+	if s.since > s.limit()/8 {
+		s.sweepLocked(t)
+	}
 	return err
 }
+
+// limit is the size cap in bytes.
+func (s *Store) limit() int64 { return int64(s.cfg.MaxMiB) << 20 }
 
 // Sweep applies retention and the size cap now.
 func (s *Store) Sweep() {
@@ -318,6 +346,7 @@ func (s *Store) Sweep() {
 }
 
 func (s *Store) sweepLocked(now time.Time) {
+	s.since = 0
 	days := listDays(s.cfg.Dir)
 	cutoff := now.AddDate(0, 0, -s.cfg.RetainDays).Format(time.DateOnly)
 	var kept []string
@@ -328,7 +357,7 @@ func (s *Store) sweepLocked(now time.Time) {
 		}
 		kept = append(kept, d)
 	}
-	limit := int64(s.cfg.MaxMiB) << 20
+	limit := s.limit()
 	total := int64(0)
 	sizes := map[string]int64{}
 	for _, d := range kept {
@@ -342,6 +371,50 @@ func (s *Store) sweepLocked(now time.Time) {
 		_ = os.RemoveAll(filepath.Join(s.cfg.Dir, "turns", d))
 		total -= sizes[d]
 	}
+	if total > limit && s.day != "" {
+		// The current day alone passes the cap: its oldest closed files go,
+		// never the open one.
+		total -= s.trimDayLocked(s.day, total-limit)
+	}
+}
+
+// trimDayLocked removes day's oldest closed files until need bytes are
+// freed (or only the open file is left) and reports the bytes freed.
+func (s *Store) trimDayLocked(day string, need int64) int64 {
+	dir := filepath.Join(s.cfg.Dir, "turns", day)
+	ents, _ := os.ReadDir(dir)
+	type file struct {
+		path string
+		ms   int64
+		size int64
+	}
+	var files []file
+	for _, e := range ents {
+		if !reFile.MatchString(e.Name()) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if p == s.name && s.f != nil {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		ms, _ := strconv.ParseInt(strings.TrimSuffix(e.Name()[strings.IndexByte(e.Name(), '-')+1:], ".jsonl"), 10, 64)
+		files = append(files, file{p, ms, fi.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].ms < files[j].ms })
+	var freed int64
+	for _, f := range files {
+		if freed >= need {
+			break
+		}
+		if os.Remove(f.path) == nil {
+			freed += f.size
+		}
+	}
+	return freed
 }
 
 var reDay = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)

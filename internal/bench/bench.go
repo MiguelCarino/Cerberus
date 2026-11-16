@@ -11,7 +11,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,9 +84,13 @@ type Sample struct {
 	DurationMs       float64 `json:"duration_ms"`
 	DecodeTPS        float64 `json:"decode_tps"`
 	PrefillTPS       float64 `json:"prefill_tps"`
-	EnergyJ          float64 `json:"energy_j,omitempty"`
-	TokPerJ          float64 `json:"tok_per_j,omitempty"`
-	Error            string  `json:"error,omitempty"`
+	// CachedTokens is how many prompt tokens the engine reused from its
+	// prompt cache (usage.prompt_tokens_details.cached_tokens); prefill
+	// speed counts only the others.
+	CachedTokens int     `json:"cached_tokens,omitempty"`
+	EnergyJ      float64 `json:"energy_j,omitempty"`
+	TokPerJ      float64 `json:"tok_per_j,omitempty"`
+	Error        string  `json:"error,omitempty"`
 }
 
 // Stats are a kind's medians and spread.
@@ -130,7 +136,17 @@ type Run struct {
 	Kinds    []KindResult `json:"kinds"`
 	Error    string       `json:"error,omitempty"`
 	Progress string       `json:"progress,omitempty"`
+	// Measure is how the run measured (MeasureVersion); 0 is a run from
+	// before measure 2, whose prefill and TTFT figures include the
+	// engine's prompt cache.
+	Measure int `json:"measure,omitempty"`
 }
+
+// MeasureVersion is how runs measure now. 2: each sample starts with its
+// own nonce line and asks local engines not to reuse their prompt cache,
+// so prefill is a real prefill; cached tokens are left out of prefill
+// speed.
+const MeasureVersion = 2
 
 // Client is how a run reaches the gateway and the usage records.
 type Client struct {
@@ -253,8 +269,10 @@ func Execute(ctx context.Context, c Client, set Set, o Options, r *Run, progress
 			progress(s)
 		}
 	}
+	r.Measure = MeasureVersion
+	local := c.isLocal(ctx, o.Model)
 	say("warming up " + o.Model)
-	if _, err := c.one(ctx, o, job{kind: "warmup", name: "warmup", prompt: "Say OK.", maxTokens: 4}, r.ID+"-warmup"); err != nil {
+	if _, err := c.one(ctx, o, job{kind: "warmup", name: "warmup", prompt: "Say OK.", maxTokens: 4}, r.ID+"-warmup", local); err != nil {
 		return fmt.Errorf("warm-up: %w", err)
 	}
 	byKind := map[string]*KindResult{}
@@ -267,7 +285,7 @@ func Execute(ctx context.Context, c Client, set Set, o Options, r *Run, progress
 			}
 			n++
 			say(fmt.Sprintf("%d/%d %s", n, o.Repeat*len(jobs), j.name))
-			s, err := c.one(ctx, o, j, fmt.Sprintf("%s-%d", r.ID, n))
+			s, err := c.one(ctx, o, j, fmt.Sprintf("%s-%d", r.ID, n), local)
 			if err != nil {
 				s.Error = err.Error()
 			}
@@ -288,12 +306,51 @@ func Execute(ctx context.Context, c Client, set Set, o Options, r *Run, progress
 	return nil
 }
 
-// one sends one streamed request and measures it.
-func (c Client) one(ctx context.Context, o Options, j job, tag string) (Sample, error) {
+// isLocal reports whether the gateway lists model as a local one (GET
+// /v1/models). Unknown counts as not local.
+func (c Client) isLocal(ctx context.Context, model string) bool {
+	var ms struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Local bool   `json:"local"`
+		} `json:"data"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/models", nil, &ms, nil); err != nil {
+		return false
+	}
+	for _, m := range ms.Data {
+		if m.ID == model {
+			return m.Local
+		}
+	}
+	return false
+}
+
+// nonce is a short random hex string.
+func nonce() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// one sends one streamed request and measures it. A measured sample's
+// prompt starts with its own line ("Run <nonce> (<tag>)."), so no two
+// samples share a prefix the engine could reuse: llama-server, LM Studio
+// and Ollama all keep the longest common prefix of the last prompt.
+// Local engines are also asked not to (cache_prompt false; cloud APIs may
+// reject the field). The prompt set itself is unchanged.
+func (c Client) one(ctx context.Context, o Options, j job, tag string, local bool) (Sample, error) {
 	s := Sample{Prompt: j.name}
+	prompt := j.prompt
+	if j.kind != "warmup" {
+		prompt = "Run " + nonce() + " (" + tag + ").\n" + prompt
+	}
 	body := map[string]any{"model": o.Model, "stream": true, "temperature": 0, "max_tokens": j.maxTokens,
 		"stream_options": map[string]bool{"include_usage": true},
-		"messages":       []map[string]string{{"role": "user", "content": j.prompt}}}
+		"messages":       []map[string]string{{"role": "user", "content": prompt}}}
+	if local {
+		body["cache_prompt"] = false
+	}
 	if !o.Thinking {
 		body["reasoning_effort"] = "none"
 		body["chat_template_kwargs"] = map[string]bool{"enable_thinking": false}
@@ -329,8 +386,11 @@ func (c Client) one(ctx context.Context, o Options, j job, tag string) (Sample, 
 				} `json:"delta"`
 			} `json:"choices"`
 			Usage *struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
+				PromptTokens        int `json:"prompt_tokens"`
+				CompletionTokens    int `json:"completion_tokens"`
+				PromptTokensDetails struct {
+					CachedTokens int `json:"cached_tokens"`
+				} `json:"prompt_tokens_details"`
 			} `json:"usage"`
 			Error json.RawMessage `json:"error"`
 		}
@@ -350,6 +410,7 @@ func (c Client) one(ctx context.Context, o Options, j job, tag string) (Sample, 
 		}
 		if ch.Usage != nil {
 			s.PromptTokens, s.CompletionTokens = ch.Usage.PromptTokens, ch.Usage.CompletionTokens
+			s.CachedTokens = ch.Usage.PromptTokensDetails.CachedTokens
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -365,8 +426,8 @@ func (c Client) one(ctx context.Context, o Options, j job, tag string) (Sample, 
 		if dec := end.Sub(first).Seconds(); dec > 0.05 && s.CompletionTokens > 1 {
 			s.DecodeTPS = float64(s.CompletionTokens-1) / dec
 		}
-		if t := first.Sub(start).Seconds(); t > 0 && s.PromptTokens > 0 {
-			s.PrefillTPS = float64(s.PromptTokens) / t
+		if t, n := first.Sub(start).Seconds(), s.PromptTokens-s.CachedTokens; t > 0 && n > 0 {
+			s.PrefillTPS = float64(n) / t // the tokens the engine really read
 		}
 	}
 	s.EnergyJ = c.energyOf(ctx, tag)
@@ -441,7 +502,7 @@ func summarize(kr *KindResult) {
 // NewRun starts a run record with the model's configuration.
 func NewRun(cfg *config.Config, o Options, ver string) *Run {
 	now := time.Now()
-	r := &Run{ID: NewID(now, o.Model), Time: now, State: "running", Options: o}
+	r := &Run{ID: NewID(now, o.Model), Time: now, State: "running", Options: o, Measure: MeasureVersion}
 	r.Config.Version = ver
 	for _, m := range cfg.Models {
 		if m.ID == o.Model {
@@ -615,6 +676,9 @@ func Summary(a, b *Run, rows []Row) string {
 	}
 	if a.Options.Model != b.Options.Model {
 		s += fmt.Sprintf(" (different models: %s, %s)", a.Options.Model, b.Options.Model)
+	}
+	if a.Measure != b.Measure {
+		s += " (the runs measured differently: a run from before measure 2 counted the engine's prompt cache as prefill, so compare prefill and TTFT with care)"
 	}
 	return s
 }

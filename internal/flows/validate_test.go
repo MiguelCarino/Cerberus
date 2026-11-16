@@ -62,6 +62,9 @@ func TestValidateProblems(t *testing.T) {
 			{ID: "e", Kind: KindSession, Agent: "claude", Workspace: WorkspaceFolder, Folder: "rel/path", Task: "t"},
 			{ID: "f", Kind: KindOutput, To: "printer", Template: ""},
 			{ID: "end", Kind: KindApprove},
+			{ID: "continue", Kind: KindApprove},
+			{ID: "rs", Kind: KindSession, Agent: "cerberus", Workspace: WorkspaceRepo, Repo: "/r", Task: "t"},
+			{ID: "rs2", Kind: KindSession, Agent: "cerberus", Workspace: WorkspaceStep, From: "rs", Task: "t"},
 		}}
 	ps := Validate(f, fakeCatalog{})
 	for _, want := range []struct{ step, field, sev, msg string }{
@@ -89,6 +92,8 @@ func TestValidateProblems(t *testing.T) {
 		{"f", "to", SevError, "notify, inbox or file"},
 		{"f", "template", SevError, "write the template"},
 		{"end", "id", SevError, "slug"},
+		{"continue", "id", SevError, "slug"},
+		{"rs2", "from", SevError, "accept it, then use workspace repo"},
 	} {
 		if !hasProblem(ps, want.step, want.field, want.sev, want.msg) {
 			t.Errorf("missing problem %+v in\n%+v", want, ps)
@@ -139,7 +144,7 @@ func TestSlugAndIDs(t *testing.T) {
 	if ValidID("fl-../x") || ValidID("fl-") || !ValidID("fl-a-2") {
 		t.Error("ValidID")
 	}
-	if ValidStepID("end") || ValidStepID("1a") || !ValidStepID("a_b-2") {
+	if ValidStepID("end") || ValidStepID("continue") || ValidStepID("fail") || ValidStepID("1a") || !ValidStepID("a_b-2") {
 		t.Error("ValidStepID")
 	}
 	if sanitizeFile("../../etc/passwd") != "passwd" || sanitizeFile("..") != "" || sanitizeFile("a b.html") != "a_b.html" || sanitizeFile(".hidden") != "hidden" {

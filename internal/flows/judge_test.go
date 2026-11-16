@@ -71,14 +71,22 @@ func TestJudgeStepValidation(t *testing.T) {
 			t.Fatalf("missing %s in %v", want, fields)
 		}
 	}
-	// on must be a session step
+	// on must be a session, prompt or fan-out-as-prompt step
 	notSession := Flow{Name: "J", Steps: []Step{
-		{ID: "p", Kind: KindPrompt, Model: "small", Template: "x"},
+		{ID: "p", Kind: KindPlan, Model: "small", Template: "x"},
 		{ID: "check", Kind: KindJudge, On: "p", Criteria: []evals.Criterion{{ID: "a", Prompt: "b"}}},
 	}}
 	ps := Validate(notSession, fakeCatalog{})
 	if !HasErrors(ps) || !strings.Contains(ps[0].Message, "session step") {
 		t.Fatalf("%+v", ps)
+	}
+	onPrompt := Flow{Name: "J", Steps: []Step{
+		{ID: "p", Kind: KindPrompt, Model: "small", Template: "x"},
+		{ID: "check", Kind: KindJudge, On: "p", Criteria: []evals.Criterion{{ID: "a", Prompt: "b", Evidence: []string{"files"}}}},
+	}}
+	ps = Validate(onPrompt, fakeCatalog{})
+	if HasErrors(ps) || len(ps) != 1 || ps[0].Field != "criteria[0].evidence" {
+		t.Fatalf("judge on a prompt step: %+v", ps)
 	}
 	// an unknown persona is a warning when the catalog knows personas
 	ps = Validate(f, personaCatalog{})

@@ -37,6 +37,9 @@ type evidenceInput struct {
 	Transcript string
 	Diff       string
 	Mask       func(string) string
+	// TextMode: Output (an answer, not a session) is the only evidence.
+	TextMode bool
+	Output   string
 }
 
 type walked struct {
@@ -273,6 +276,9 @@ func buildEvidence(in evidenceInput, c Criterion, max int) string {
 	if mask == nil {
 		mask = func(s string) string { return s }
 	}
+	if in.TextMode {
+		kinds = []string{EvidenceOutput}
+	}
 	var b strings.Builder
 	left := max
 	for i, k := range kinds {
@@ -305,6 +311,16 @@ func buildEvidence(in evidenceInput, c Criterion, max int) string {
 				body = "(no changes against the base commit)"
 			}
 			body = clipBytes(body, max0(share-len(head)-2))
+		case EvidenceOutput:
+			head = "== output (the answer to judge) =="
+			body = strings.TrimSpace(mask(in.Output))
+			if body == "" {
+				body = "(the answer is empty)"
+			}
+			if room := max0(share - len(head) - 2); len(body) > room {
+				const cut = "\n[... cut]"
+				body = clipBytes(body, max0(room-len(cut))) + cut
+			}
 		}
 		part := head + "\n" + body + "\n"
 		if i > 0 {

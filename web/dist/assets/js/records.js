@@ -23,6 +23,26 @@ export function recordURL(ref) {
   return m ? `/api/records/${m[1]}/${m[2]}/${m[3]}` : null;
 }
 
+// threadURL is a line's detail URL with its earlier turns stitched in.
+export function threadURL(ref) {
+  const u = recordURL(ref);
+  return u ? `${u}?thread=1` : null;
+}
+
+// turnText heads a line's conversation text. A line keeps only its new turn
+// (what follows the last assistant message); prefix counts the messages
+// before it. A stitched line says how much was joined.
+export function turnText(l = {}) {
+  if (l.earlier != null) {
+    const n = l.earlier;
+    const joined = n ? `joined from ${n} earlier request${n === 1 ? '' : 's'}` : 'no earlier requests found';
+    return `Conversation (${joined}${l.missing ? '; the start is not in the records' : ''})`;
+  }
+  const p = l.prefix || 0;
+  if (!p) return 'Conversation';
+  return `Conversation (this turn; ${p} earlier message${p === 1 ? '' : 's'} not shown)`;
+}
+
 const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : null);
 
 // cacheShare is the percentage of a line's prompt the engine's cache covered.

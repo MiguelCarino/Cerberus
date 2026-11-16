@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,8 +28,12 @@ type ggufFile struct {
 
 // scanGGUF lists *.gguf models under dirs. Projector (mmproj) files are not
 // models; a folder with exactly one projector marks its models as vision.
-// Only the first shard of a split model is listed, with the total size.
-func scanGGUF(dirs []string) []ggufFile {
+// Only the first shard of a split model is listed, with the set's total
+// size, and only when every shard is there: llama-server cannot open a
+// set with one missing (a download in progress, a copy cut short). A set
+// left out is logged at debug level with the files it lacks (log may be
+// nil).
+func scanGGUF(dirs []string, log *slog.Logger) []ggufFile {
 	var out []ggufFile
 	seen := map[string]bool{}
 	projectors := map[string]string{}
@@ -54,7 +60,10 @@ func scanGGUF(dirs []string) []ggufFile {
 				}
 				return nil
 			}
-			f, ok := ggufEntry(p, d, mmproj)
+			f, missing, ok := ggufEntry(p, d, mmproj)
+			if len(missing) > 0 && log != nil {
+				log.Debug("split model left out: files missing", "model", p, "missing", strings.Join(missing, ", "))
+			}
 			if ok && !seen[f.ID] {
 				seen[f.ID] = true
 				out = append(out, f)
@@ -73,27 +82,42 @@ func depth(root, p string) int {
 	return strings.Count(rel, string(filepath.Separator)) + 1
 }
 
-// ggufEntry turns one directory entry into a model, if it is one.
-func ggufEntry(p string, d fs.DirEntry, mmproj func(dir string) string) (ggufFile, bool) {
+// ggufEntry turns one directory entry into a model, if it is one. For
+// the first shard of a split set it sums the set's sizes; missing names
+// the shards not on disk (then ok is false).
+func ggufEntry(p string, d fs.DirEntry, mmproj func(dir string) string) (f ggufFile, missing []string, ok bool) {
 	name := d.Name()
 	if !strings.EqualFold(filepath.Ext(name), ".gguf") || isMMProj(name) {
-		return ggufFile{}, false
+		return ggufFile{}, nil, false
 	}
 	info, err := d.Info()
 	if err != nil {
-		return ggufFile{}, false
+		return ggufFile{}, nil, false
 	}
-	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
 	size := info.Size()
 	if m := shardRe.FindStringSubmatch(stem); m != nil {
 		if m[1] != "00001" {
-			return ggufFile{}, false
+			return ggufFile{}, nil, false
 		}
-		n, _ := strconv.Atoi(m[2])
-		size *= int64(max(n, 1))
 		stem = strings.TrimSuffix(stem, m[0])
+		n, _ := strconv.Atoi(m[2])
+		dir := filepath.Dir(p)
+		for k := 2; k <= n; k++ {
+			sib := fmt.Sprintf("%s-%05d-of-%s%s", stem, k, m[2], ext)
+			st, err := os.Stat(filepath.Join(dir, sib))
+			if err != nil || !st.Mode().IsRegular() {
+				missing = append(missing, sib)
+				continue
+			}
+			size += st.Size()
+		}
+		if len(missing) > 0 {
+			return ggufFile{}, missing, false
+		}
 	}
-	return ggufFile{ID: stem, Path: p, MMProj: mmproj(filepath.Dir(p)), SizeMiB: mib(size)}, true
+	return ggufFile{ID: stem, Path: p, MMProj: mmproj(filepath.Dir(p)), SizeMiB: mib(size)}, nil, true
 }
 
 func isMMProj(name string) bool { return strings.Contains(strings.ToLower(name), "mmproj") }

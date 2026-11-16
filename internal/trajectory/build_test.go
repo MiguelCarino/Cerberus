@@ -210,3 +210,52 @@ func TestSegments(t *testing.T) {
 		t.Fatalf("leading text %+v", s)
 	}
 }
+
+// Records keep only each request's new turn (Line.Prefix counts the
+// messages before it): Build stitches the same threads and steps as from
+// whole-conversation lines.
+func TestBuildNewTurnLines(t *testing.T) {
+	sys := "You are a coding agent."
+	lines := []records.Line{
+		{Time: at(1), API: "chat", Model: "qwen", Session: "s1", Client: "opencode", Messages: 2, Tools: 3,
+			Finish: "tool_calls", Status: 200, Calls: []records.Call{{ID: "c1", Name: "read"}},
+			Text: &records.Text{System: sys, Messages: "user: Fix the bug", Reply: "Looking"}},
+		{Time: at(5), API: "chat", Model: "small", Session: "s1", Client: "opencode", Messages: 2, Finish: "stop", Status: 200,
+			Text: &records.Text{System: "Write a title.", Messages: "user: Fix the bug", Reply: "Bug fix"}},
+		{Time: at(20), API: "chat", Model: "qwen", Session: "s1", Client: "opencode", Messages: 4, Prefix: 3, Tools: 3, Results: 1,
+			Finish: "tool_calls", Status: 200, Calls: []records.Call{{ID: "c2", Name: "bash"}, {ID: "c3", Name: "edit"}},
+			Text: &records.Text{System: sys, Messages: "tool: package main\nfunc main() {}"}},
+		{Time: at(40), API: "chat", Model: "qwen", Session: "s1", Client: "opencode", Messages: 8, Prefix: 5, Tools: 3, Results: 3,
+			Finish: "stop", Status: 200,
+			Text: &records.Text{System: sys, Messages: "tool: ok\ntool: edited\nuser: also add a test", Reply: "Done."}},
+	}
+	info := session.Info{ID: "s1", Agent: "opencode", Model: "default", Workspace: "scratch", State: "done", Created: at(0)}
+	tr, _ := mustBuild(t, Input{Session: info, Lines: lines, TextLevel: records.TextAll, Now: at(60)})
+	if got := sources(tr); got != "system,user,agent,system,user,agent,agent,user,agent" {
+		t.Fatalf("sources %s", got)
+	}
+	s := tr.Steps
+	if s[1].Message != "Fix the bug" || s[2].Message != "Looking" || cx(s[6])["thread"] != 1 || cx(s[8])["thread"] != 1 {
+		t.Fatalf("steps %+v", s)
+	}
+	if o := s[2].Observation; o == nil || len(o.Results) != 1 || o.Results[0].Content != "package main\nfunc main() {}" {
+		t.Fatalf("observation of c1: %+v", s[2].Observation)
+	}
+	if o := s[6].Observation; o == nil || len(o.Results) != 2 || o.Results[1].Content != "edited" {
+		t.Fatalf("observation of c2/c3: %+v", s[6].Observation)
+	}
+	if s[7].Message != "also add a test" || s[8].Message != "Done." {
+		t.Fatalf("last turn %+v %+v", s[7], s[8])
+	}
+	if th := tr.Extra["cerberus"].(map[string]any)["records"].(map[string]any)["threads"]; th != 2 {
+		t.Errorf("threads %v", th)
+	}
+
+	// A new-turn line whose earlier turns are not in the records starts a
+	// thread and says how many messages are missing.
+	tr, _ = mustBuild(t, Input{Session: info, Lines: lines[3:], TextLevel: records.TextAll, Now: at(60)})
+	if s := tr.Steps; len(s) < 2 || s[1].Source != SourceUser || cx(s[1])["earlier_messages"] != 5 ||
+		s[1].Message != "tool: ok\ntool: edited\nuser: also add a test" && !strings.Contains(s[1].Message, "also add a test") {
+		t.Fatalf("lone line %+v", tr.Steps)
+	}
+}

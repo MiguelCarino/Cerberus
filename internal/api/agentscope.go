@@ -50,6 +50,7 @@ func (s *server) agentRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/agent/sessions/{id}/wait", s.handleAgentWait)
 	mux.HandleFunc("POST /api/agent/sessions/{id}/stop", s.handleAgentStop)
 	s.agentFileRoutes(mux)
+	s.agentFlowRoutes(mux)
 	mux.HandleFunc("/api/agent/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown agent endpoint "+r.Method+" "+r.URL.Path)
 	})

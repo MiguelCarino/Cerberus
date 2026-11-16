@@ -45,6 +45,7 @@ type Reloader interface {
 // because the component reading it has no hook yet.
 var livePrefixes = []string{
 	"engines.default_model", "engines.idle_ttl_sec", "engines.allow_overcommit", // engine
+	"engines.vram_reserve_mib",
 	"prices", "budgets", // gateway
 	"agents", "default_agent", "agent.approve", "agent.max_steps", "agent.command_timeout_s",
 	"agent.spawn.", "agent.policy.", "context.", "repos", "repo_roots", "sessions.", "guard.",

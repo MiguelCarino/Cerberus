@@ -173,7 +173,7 @@ export const STEP_KINDS = [
   { kind: 'plan', label: 'Plan', blurb: 'Ask a model for a list of parts to hand out.' },
   { kind: 'fan_out', label: 'Fan out', blurb: "Run each part of a plan on a model or an agent." },
   { kind: 'session', label: 'Agent session', blurb: 'Start an agent session and wait until it ends.' },
-  { kind: 'judge', label: 'Judge', blurb: "Judge a session's work against criteria; failed gates send it feedback to try again." },
+  { kind: 'judge', label: 'Judge', blurb: "Judge a session's work or a prompt's answer against criteria; a failed gate sends feedback to try again." },
   { kind: 'if', label: 'If', blurb: 'Jump ahead depending on an earlier output.' },
   { kind: 'approve', label: 'Approve', blurb: 'Wait until you approve or reject.' },
   { kind: 'output', label: 'Output', blurb: 'Send a notification, an inbox entry or a file.' },
@@ -183,14 +183,15 @@ export const kindLabel = (k) => (STEP_KINDS.find((x) => x.kind === k) || { label
 
 // The fields each kind keeps (besides id, kind and name), as the contract lists them.
 export const KIND_FIELDS = {
-  prompt: ['model', 'system', 'template', 'json'],
-  plan: ['model', 'template', 'max_items'],
-  fan_out: ['from', 'routes', 'default_model', 'as', 'template', 'agent', 'workspace', 'repo', 'folder', 'max_parallel'],
-  session: ['agent', 'workspace', 'repo', 'folder', 'task'],
-  judge: ['on', 'criteria', 'gates', 'persona', 'model'],
+  prompt: ['model', 'system', 'template', 'json', 'temperature', 'max_tokens', 'thinking', 'retry', 'on_error'],
+  plan: ['model', 'template', 'max_items', 'temperature', 'max_tokens', 'thinking', 'retry', 'on_error'],
+  fan_out: ['from', 'routes', 'default_model', 'as', 'template', 'agent', 'workspace', 'repo', 'folder', 'max_parallel',
+    'min_ok', 'temperature', 'max_tokens', 'thinking', 'max_attempts', 'escalate_to', 'max_minutes', 'retry', 'on_error'],
+  session: ['agent', 'workspace', 'repo', 'folder', 'from', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error'],
+  judge: ['on', 'criteria', 'gates', 'persona', 'model', 'on_error'],
   if: ['test', 'on', 'value', 'path', 'then', 'else'],
   approve: ['message'],
-  output: ['to', 'template', 'file'],
+  output: ['to', 'template', 'file', 'on_error'],
 };
 
 export const IF_TESTS = [
@@ -198,12 +199,37 @@ export const IF_TESTS = [
   ['json', 'JSON field equals'], ['state', 'session state is'],
 ];
 export const SESSION_STATES = ['passed', 'failed', 'stopped', 'error'];
+// A prompt, plan or fan-out step's thinking switch (local models only).
+export const THINKING = [['', 'As the model does'], ['on', 'On'], ['off', 'Off']];
+// The model settings of a prompt, plan or fan-out (prompt items) step.
+// Empty means the model's own defaults.
+const MODEL_SETTINGS = [
+  { key: 'temperature', label: 'Temperature (optional)', type: 'decimal', placeholder: 'model default', min: 0, max: 2, step: 0.1, hint: '0 gives the same answer each time; higher varies more.' },
+  { key: 'max_tokens', label: 'Answer length in tokens (optional)', type: 'number', placeholder: 'model default', min: 1, max: 262144 },
+  { key: 'thinking', label: 'Thinking', type: 'select', options: THINKING, hint: 'Local models only.' },
+];
+// What a failed step does (on_error), given the steps after it.
+export function onErrorOptions(after = []) {
+  return [['', 'Stop the run'], ['continue', 'Go on to the next step'],
+    ...after.map((s) => [s.id, `Jump to ${s.id}`]), ['end', 'End the run (as passed)']];
+}
+// The session settings of a session step (and a fan-out run as sessions).
+const SESSION_SETTINGS = [
+  { key: 'max_attempts', label: 'Attempts before escalating (optional)', type: 'number', placeholder: 'sessions default', min: 1, max: 5,
+    hint: 'Attempts and escalation act only when the workspace has checks.' },
+  { key: 'escalate_to', label: 'Then hand over to (optional)', type: 'agent', optional: true },
+  { key: 'max_minutes', label: 'Time limit per run in minutes (optional)', type: 'number', placeholder: 'no limit', min: 1, max: 10080 },
+];
+const RETRY_FIELD = { key: 'retry', label: 'When it fails, try again', type: 'retry',
+  hint: 'Not after a limit or a cancel. Each try counts as a step.' };
 export const OUTPUT_TO = [['inbox', 'Inbox'], ['notify', 'Notification'], ['file', 'File in the run folder']];
 export const WORKSPACES = [['scratch', 'Scratch folder'], ['repo', 'Repository'], ['folder', 'Folder']];
+// A session step can also work where an earlier step's session(s) worked.
+export const SESSION_WORKSPACES = [...WORKSPACES, ['step', "An earlier step's workspace"]];
 
 // stepFields is the short form a card shows for a step, given the steps
 // before it: [{key, label, type, options?, hint?, placeholder?, show}]. type
-// is text | textarea | template | number | bool | select | model | agent |
+// is text | textarea | template | number | decimal | bool | select | model | agent |
 // step | routes. show is false for a field the step's other values hide.
 export function stepFields(step, steps = []) {
   const i = steps.findIndex((s) => s === step);
@@ -212,17 +238,25 @@ export function stepFields(step, steps = []) {
   const earlier = before.map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
   const jumps = [['', 'the next step'], ...after.map((s) => [s.id, s.id]), ['end', 'end (stop)']];
   const ws = (s) => s.workspace || 'scratch';
+  const onError = { key: 'on_error', label: 'If it fails', type: 'select', options: onErrorOptions(after),
+    hint: 'Its output is then {"error": "..."}.' };
   switch (step && step.kind) {
     case 'prompt': return [
       { key: 'model', label: 'Model', type: 'model' },
       { key: 'template', label: 'Prompt', type: 'template', placeholder: 'Answer this: {input}' },
       { key: 'system', label: 'System prompt (optional)', type: 'template' },
       { key: 'json', label: 'The reply is JSON (parse it)', type: 'bool' },
+      ...MODEL_SETTINGS,
+      RETRY_FIELD,
+      onError,
     ];
     case 'plan': return [
       { key: 'model', label: 'Model', type: 'model', hint: 'A bigger model plans better.' },
       { key: 'template', label: 'What to plan', type: 'template', placeholder: 'Split this job into parts: {input}' },
       { key: 'max_items', label: 'At most this many parts', type: 'number', placeholder: '8', min: 1, max: 50 },
+      ...MODEL_SETTINGS,
+      RETRY_FIELD,
+      onError,
     ];
     case 'fan_out': {
       const asSession = step.as === 'session';
@@ -238,15 +272,28 @@ export function stepFields(step, steps = []) {
         { key: 'repo', label: 'Repository', type: 'repo', show: asSession && ws(step) === 'repo' },
         { key: 'folder', label: 'Folder', type: 'text', placeholder: '/home/me/projects/site', show: asSession && ws(step) === 'folder' },
         { key: 'max_parallel', label: 'At most this many at once', type: 'number', placeholder: '2', min: 1, max: 16 },
+        { key: 'min_ok', label: 'Parts that must pass (optional)', type: 'number', placeholder: 'all', min: 1, max: 50,
+          hint: 'With a number, a failed part gives null and the others go on.' },
+        ...MODEL_SETTINGS.map((f) => ({ ...f, show: !asSession })),
+        ...SESSION_SETTINGS.map((f) => ({ ...f, show: asSession })),
+        RETRY_FIELD,
+        onError,
       ];
     }
-    case 'session': return [
-      { key: 'agent', label: 'Agent', type: 'agent' },
-      { key: 'workspace', label: 'Workspace', type: 'select', options: WORKSPACES },
-      { key: 'repo', label: 'Repository', type: 'repo', show: ws(step) === 'repo' },
-      { key: 'folder', label: 'Folder', type: 'text', placeholder: '/home/me/projects/site', show: ws(step) === 'folder' },
-      { key: 'task', label: 'Task', type: 'template', placeholder: 'Build it: {steps.plan.output}' },
-    ];
+    case 'session': {
+      const sources = before.filter((s) => s.kind === 'session' || (s.kind === 'fan_out' && s.as === 'session')).map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
+      return [
+        { key: 'agent', label: 'Agent', type: 'agent' },
+        { key: 'workspace', label: 'Workspace', type: 'select', options: SESSION_WORKSPACES },
+        { key: 'repo', label: 'Repository', type: 'repo', show: ws(step) === 'repo' },
+        { key: 'folder', label: 'Folder', type: 'text', placeholder: '/home/me/projects/site', show: ws(step) === 'folder' },
+        { key: 'from', label: 'Work where this step worked', type: 'step', options: sources, show: ws(step) === 'step',
+          hint: sources.length ? "A session step: its folder, in place. A fan-out of sessions: each part's files, copied under parts/." : 'Add an Agent session step (or a fan-out run as sessions) before this one.' },
+        { key: 'task', label: 'Task', type: 'template', placeholder: 'Build it: {steps.plan.output}' },
+        ...SESSION_SETTINGS,
+        onError,
+      ];
+    }
     case 'if': {
       const t = step.test || 'contains';
       return [
@@ -261,15 +308,20 @@ export function stepFields(step, steps = []) {
       ];
     }
     case 'judge': {
-      const sessions = before.filter((s) => s.kind === 'session').map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
+      const judged = before.filter(judgeable).map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
+      const target = before.find((s) => s.id === step.on);
+      const onAnswer = target && target.kind !== 'session';
       return [
-        { key: 'on', label: 'Judge the work of', type: 'step', options: sessions, hint: sessions.length ? '' : 'Add an Agent session step before this one.' },
+        { key: 'on', label: 'Judge the work of', type: 'step', options: judged,
+          hint: !judged.length ? 'Add an Agent session, a Prompt or a Fan out of prompts before this one.'
+            : onAnswer ? 'The answer is judged as text. A failed gate asks the same model again with the feedback.' : '' },
         { key: 'criteria', label: 'Criteria (JSON)', type: 'json', rows: 6, placeholder: JUDGE_CRITERIA_EXAMPLE,
           hint: 'A list of {id, prompt, gate?, depends_on?, evidence?}. Ids are lower case: a-z, 0-9 and _.' },
         { key: 'gates', label: 'Gates (JSON, optional)', type: 'json', rows: 3, placeholder: JUDGE_GATES_EXAMPLE,
           hint: 'In order, each {id, name?, max_iterations}. With more than 1 iteration, a failed gate sends feedback and the session tries again.' },
         { key: 'persona', label: 'Feedback persona (optional)', type: 'text', placeholder: 'reviewer', hint: 'A name from evals.personas; empty is the built-in reviewer.' },
         { key: 'model', label: 'Judge model (optional)', type: 'model', hint: 'Empty uses evals.judge_model, then the default model.' },
+        onError,
       ];
     }
     case 'approve': return [
@@ -279,12 +331,17 @@ export function stepFields(step, steps = []) {
       { key: 'to', label: 'Send to', type: 'select', options: OUTPUT_TO },
       { key: 'file', label: 'File name', type: 'text', placeholder: 'result-{date}.md', show: step.to === 'file' },
       { key: 'template', label: 'Text', type: 'template', placeholder: '{steps.answer.output}' },
+      onError,
     ];
     default: return [];
   }
 }
 
 const BASE_ID = { prompt: 'prompt', plan: 'plan', fan_out: 'fan', session: 'session', judge: 'judge', if: 'check', approve: 'approve', output: 'output' };
+
+// judgeable: a step a judge step can judge (a session's work, a prompt's
+// answer, or each answer of a fan-out run as prompts).
+export const judgeable = (s) => !!s && (s.kind === 'session' || s.kind === 'prompt' || (s.kind === 'fan_out' && s.as !== 'session'));
 
 export const JUDGE_CRITERIA_EXAMPLE = '[{"id": "done", "prompt": "The task is done as asked"}]';
 export const JUDGE_GATES_EXAMPLE = '[{"id": "main", "max_iterations": 2}]';
@@ -304,17 +361,21 @@ export function parseListField(text) {
 // listFieldText is the text a criteria or gates box shows for a value.
 export const listFieldText = (v) => (Array.isArray(v) && v.length ? JSON.stringify(v, null, 2) : '');
 
-// uniqueId is base, else base-2, base-3, ... (never "end"), as a valid
+// uniqueId is base, else base-2, base-3, ... (never "end", "continue" or
+// "fail", which a jump would read as a keyword), as a valid
 // step id (a-z, 0-9, - and _, starting with a letter, at most 32).
 export function uniqueId(base, ids) {
   let b = String(base || 'step').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z]+/, '').replace(/-+$/, '').slice(0, 28) || 'step';
-  if (b === 'end') b = 'end-step';
+  if (b === 'end' || b === 'continue' || b === 'fail') b += '-step';
   const taken = new Set(ids);
   if (!taken.has(b)) return b;
   for (let n = 2; ; n++) if (!taken.has(`${b}-${n}`)) return `${b}-${n}`;
 }
 
 const out = (id) => `{steps.${id}.output}`;
+
+// Field chips worth offering for a step's output ({steps.<id>.output.<field>}).
+const OUTPUT_FIELDS = { session: ['final', 'workspace', 'files'], judge: ['passed', 'failed'] };
 
 // newStep builds a step of kind with defaults that make sense after steps
 // (it reads the last step's output; a fan-out takes the last plan).
@@ -331,7 +392,7 @@ export function newStep(kind, steps = [], opts = {}) {
     case 'fan_out': return { ...s, from: from ? from.id : '', as: 'prompt', routes: [], default_model: model, template: '{item.task}' };
     case 'session': return { ...s, agent: opts.agent || '', workspace: 'scratch', task: prev ? out(prev) : '{input}' };
     case 'judge': {
-      const sess = [...steps].reverse().find((x) => x.kind === 'session');
+      const sess = [...steps].reverse().find((x) => x.kind === 'session') || [...steps].reverse().find(judgeable);
       return { ...s, on: sess ? sess.id : '', criteria: JSON.parse(JUDGE_CRITERIA_EXAMPLE), gates: [] };
     }
     case 'if': {
@@ -394,28 +455,34 @@ export function removeStep(steps, i) {
 }
 
 const TEXT_FIELDS = ['template', 'system', 'task', 'message', 'file'];
-const REF_FIELDS = ['from', 'on', 'then', 'else'];
+const REF_FIELDS = ['from', 'on', 'then', 'else', 'on_error'];
 
 // renameStepRefs renames step id from → to in the steps that point at it:
-// from / on / then / else and {steps.<id>.output} in their texts.
+// from / on / then / else and {steps.<id>.output} (with any .field path)
+// in their texts.
 export function renameStepRefs(steps, from, to) {
   if (!from || !to || from === to) return steps;
-  const re = new RegExp(`\\{steps\\.${from.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}\\.output\\}`, 'g');
+  const re = new RegExp(`\\{steps\\.${from.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&')}\\.output((?:\\.[A-Za-z0-9_-]+)*)\\}`, 'g');
   return steps.map((s) => {
     const n = { ...s };
     if (n.id === from) n.id = to;
     for (const k of REF_FIELDS) if (n[k] === from) n[k] = to;
-    for (const k of TEXT_FIELDS) if (typeof n[k] === 'string') n[k] = n[k].replace(re, out(to));
+    for (const k of TEXT_FIELDS) if (typeof n[k] === 'string') n[k] = n[k].replace(re, (_, path) => `{steps.${to}.output${path}}`);
     return n;
   });
 }
 
 // placeholdersFor lists what step i's templates can use, for the chips
-// under a text field: {input}, earlier steps' outputs, {item.*} inside a
-// fan-out, then {date}, {time} and {flow.name}.
+// under a text field: {input}, earlier steps' outputs (and the useful
+// fields of session and judge outputs), {item.*} inside a fan-out, then
+// {date}, {time} and {flow.name}.
 export function placeholdersFor(steps, i, inItem = false) {
   const list = ['{input}'];
-  for (const s of steps.slice(0, Math.max(0, i))) if (s && s.id) list.push(out(s.id));
+  for (const s of steps.slice(0, Math.max(0, i))) {
+    if (!s || !s.id) continue;
+    list.push(out(s.id));
+    for (const f of OUTPUT_FIELDS[s.kind] || []) list.push(`{steps.${s.id}.output.${f}}`);
+  }
   if (inItem) list.push('{item.task}', '{item.title}', '{item.kind}');
   list.push('{date}', '{time}', '{flow.name}');
   return list;
@@ -430,10 +497,22 @@ export function cleanStep(step) {
   if (keep(step.name) && String(step.name).trim()) o.name = String(step.name).trim();
   for (const k of KIND_FIELDS[step.kind] || []) {
     let v = step[k];
-    if (k === 'max_items' || k === 'max_parallel') v = Math.max(0, Math.floor(Number(v) || 0)) || undefined;
+    if (['max_items', 'max_parallel', 'max_tokens', 'min_ok', 'max_attempts', 'max_minutes'].includes(k)) v = Math.max(0, Math.floor(Number(v) || 0)) || undefined;
+    // Session settings belong to a session fan-out only.
+    if (['max_attempts', 'escalate_to', 'max_minutes'].includes(k) && step.kind === 'fan_out' && step.as !== 'session') v = undefined;
+    if (k === 'on_error' && v === 'fail') v = undefined;
+    if (k === 'retry') {
+      const max = Math.max(0, Math.floor(Number(v && v.max) || 0));
+      const back = Math.max(0, Math.floor(Number(v && v.backoff_s) || 0));
+      v = max ? (back ? { max, backoff_s: back } : { max }) : undefined;
+    }
+    if (k === 'temperature') v = v === '' || v === null || v === undefined || !Number.isFinite(Number(v)) ? undefined : Number(v);
+    // Sessions use their agent's settings: a session fan-out keeps none.
+    if (['temperature', 'max_tokens', 'thinking'].includes(k) && step.kind === 'fan_out' && step.as === 'session') v = undefined;
     if (k === 'routes') v = (v || []).filter((r) => r && (String(r.kind || '').trim() || r.model)).map((r) => ({ kind: String(r.kind || '').trim(), model: r.model || '' }));
     if ((k === 'criteria' || k === 'gates') && !Array.isArray(v)) v = undefined;
     if (k === 'path' && step.kind === 'if' && !['json', 'equals'].includes(step.test)) v = undefined;
+    if (k === 'from' && step.kind === 'session' && step.workspace !== 'step') v = undefined;
     if (keep(v)) o[k] = v;
   }
   return o;
@@ -625,6 +704,7 @@ export function stepUsage(rec) {
   if (rec.duration_ms > 0) parts.push(fmtDuration(rec.duration_ms));
   const rt = retriedText(rec.retries);
   if (rt) parts.push(rt);
+  if (rec.reused) parts.push('kept from the last attempt');
   return parts.join(' · ');
 }
 
@@ -826,7 +906,7 @@ function stepSub(s) {
   switch (s.kind) {
     case 'prompt': case 'plan': parts.push(s.model); break;
     case 'fan_out': parts.push(s.from ? `from ${s.from}` : '', `as ${s.as || 'prompt'}`); break;
-    case 'session': parts.push(s.agent, s.workspace || 'scratch'); break;
+    case 'session': parts.push(s.agent, s.workspace || 'scratch', s.workspace === 'step' && s.from ? `of ${s.from}` : ''); break;
     case 'judge': {
       const n = Array.isArray(s.criteria) ? s.criteria.length : 0;
       parts.push(s.on ? `on ${s.on}` : '', n === 1 ? '1 criterion' : `${n} criteria`);

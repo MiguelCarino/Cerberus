@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -37,6 +38,14 @@ func JudgePromptHash() string {
 
 // judgeRetryPrompt asks again after an answer that was not the JSON.
 const judgeRetryPrompt = `That was not a valid answer. Reply with only the JSON object: {"verdict": "pass" or "fail", "rationale": "...", "evidence": ["..."]}`
+
+// VerdictSchema is the JSON schema of a judge answer, sent where the
+// engine enforces one (ModelRequest.Schema).
+var VerdictSchema = json.RawMessage(`{"type":"object","properties":{` +
+	`"verdict":{"type":"string","enum":["pass","fail"]},` +
+	`"rationale":{"type":"string"},` +
+	`"evidence":{"type":"array","items":{"type":"string"},"maxItems":10}},` +
+	`"required":["verdict","rationale","evidence"]}`)
 
 // Verdict is a parsed judge answer.
 type Verdict struct {
@@ -165,12 +174,20 @@ func clipRunes(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
+// judgeRetryWait is the pause before the one retry of a judge call that
+// failed with a transient engine error (tests shorten it).
+var judgeRetryWait = 2 * time.Second
+
 // judgeOne asks the judge about one criterion: one retry when the answer
-// is not the JSON verdict, then the result is an error. Usage of both
-// calls is returned.
+// is not the JSON verdict, then the result is an error. A call the engine
+// failed transiently (a *ModelError the engine's rule calls temporary: a
+// reload, a crash, a dropped connection) is sent once more after
+// judgeRetryWait; a limit, a budget or a cancel never is. Usage of every
+// call is returned.
 func judgeOne(ctx context.Context, m ModelCaller, req ModelRequest) (Verdict, ModelReply, error) {
 	var total ModelReply
 	msgs := req.Messages
+	retried := false
 	for attempt := 0; attempt < 2; attempt++ {
 		req.Messages = msgs
 		rep, err := m.Complete(ctx, req)
@@ -180,6 +197,14 @@ func judgeOne(ctx context.Context, m ModelCaller, req ModelRequest) (Verdict, Mo
 		total.EnergyWh += rep.EnergyWh
 		if rep.Model != "" {
 			total.Model = rep.Model
+		}
+		if err != nil && !retried && ctx.Err() == nil && transientModelErr(err) {
+			retried = true
+			if !sleepCtx(ctx, judgeRetryWait) {
+				return Verdict{}, total, ctx.Err()
+			}
+			attempt--
+			continue
 		}
 		if err != nil {
 			return Verdict{}, total, err

@@ -259,8 +259,10 @@ once with --yes). Lists merge by name. An import that would add a
 validation error is refused. Models are never downloaded: the import lists
 the cerberus pull command for each one.`},
 	"install-service": {"install-service", `Linux only. Copy the binary to ~/.local/bin, write
-~/.config/systemd/user/cerberus.service, then daemon-reload and enable --now
-(restart when the binary changed).`},
+~/.config/systemd/user/cerberus.service and cerberus-sessions.slice (the
+slice sessions run in when guard.systemd_slice names it; its MemoryMax is
+guard.max_sessions x guard.session_memory_max), then daemon-reload and
+enable --now (restart when the binary changed).`},
 	"cerberus mcp": {"mcp [--url U] [--key K] [--session ID] | mcp --client NAME [-config PATH]", `Stdio MCP server that lets an agent start and steer its own child sessions
 with cerberus_spawn, cerberus_list, cerberus_read, cerberus_send,
 cerberus_wait and cerberus_stop, and hand jobs to local models with

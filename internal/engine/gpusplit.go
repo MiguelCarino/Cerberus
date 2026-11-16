@@ -21,7 +21,9 @@ import (
 // estimate says the model will not fit in the VRAM left after making room,
 // Cerberus tells the engine how much to offload (LM Studio --gpu <ratio>,
 // llama.cpp -ngl <layers>) instead of trusting a saved setting. When it does
-// fit, nothing is passed and the engine decides.
+// fit, nothing is passed and the engine decides. The free VRAM here is the
+// budget makeRoom left: free less the VRAM reserve (guardline.go), and the
+// need is the manager's planNeedMiB, the same number makeRoom planned with.
 
 // kvTokensPerWeight is the simple KV-cache estimate: the cache for this many
 // tokens is about as large as the model's weights. For a ~17 GiB 27B model
@@ -50,6 +52,28 @@ func gpuRatio(need, free int) (ratio float64, ok bool) {
 	return min(max(float64(free)/float64(need), 0.1), 0.95), true
 }
 
+// cpuOnlyMinMiB is the smallest GPU budget worth a split: below it, the
+// parts of a load that do not shrink with the share (the CUDA context,
+// compute buffers, the KV cache) would push the card past the reserve on
+// their own.
+const cpuOnlyMinMiB = 1536
+
+// cpuOnly reports whether a model of sizeMiB weights whose need does not
+// fit in free should load with no GPU offload at all: free is under
+// cpuOnlyMinMiB, or under what does not scale with the share (the need
+// less the weights with headroom). gpuRatio's 0.10 floor would otherwise
+// still put those parts on a card that has no room left, past railguard's
+// line, and a railguard kill's vramCut could never lower it further.
+func cpuOnly(need, sizeMiB, free int) bool {
+	if free < 0 || need <= 0 || free >= need {
+		return false
+	}
+	if free < cpuOnlyMinMiB {
+		return true
+	}
+	return sizeMiB > 0 && free < need-int(float64(sizeMiB)*headroomFactor)
+}
+
 // lmsLoadArgs builds the `lms load` command line for m (pure, for tests).
 // ttl is the idle TTL in seconds (0: none); gpu is engines.lmstudio.gpu.
 // --parallel is the manager's queue limit, so the engine never allocates KV
@@ -69,23 +93,61 @@ func lmsLoadArgs(m ModelInfo, ttl int, gpu string) []string {
 	if g := strings.TrimSpace(gpu); g != "" {
 		args = append(args, "--gpu", g)
 	} else if m.plan != nil {
-		need := estimateNeedMiB(m.SizeMiB, m.Ctx, m.MaxParallel)
-		if r, ok := gpuRatio(need, m.plan.FreeMiB); ok {
+		need := m.plan.need(m.SizeMiB, m.Ctx, m.MaxParallel)
+		if cpuOnly(need, m.SizeMiB, m.plan.FreeMiB) {
+			args = append(args, "--gpu", "off")
+		} else if r, ok := gpuRatio(need, m.plan.FreeMiB); ok {
 			args = append(args, "--gpu", fmt.Sprintf("%.2f", r))
 		}
 	}
 	return append(args, "-y", "--identifier", m.ID)
 }
 
-// llamaNGL is the -ngl for a llama.cpp model of layers layers that does not
-// fit: llama-server's -c is the total context shared by all slots, so the
-// KV estimate uses ctx once. 0 means pass nothing (it fits, VRAM or the
-// layer count is unknown, or the user's own args already set it).
-func llamaNGL(sizeMiB, ctx, layers, free int, userArgs []string) int {
-	if layers <= 0 || hasNGL(userArgs) {
+// need is the plan's need, or the estimate for ctx and slots when the
+// manager did not plan one.
+func (p *loadPlan) need(sizeMiB, ctx, slots int) int {
+	if p.NeedMiB > 0 {
+		return p.NeedMiB
+	}
+	return estimateNeedMiB(sizeMiB, ctx, slots)
+}
+
+// lmsGPUOverBudget reports whether the owner's engines.lmstudio.gpu (gpu)
+// puts more of m on the GPU than the plan's budget holds. Cerberus honours
+// the setting; Load only warns.
+func lmsGPUOverBudget(m ModelInfo, gpu string) (bool, float64) {
+	g := strings.TrimSpace(gpu)
+	if g == "" || g == "off" || m.plan == nil || m.plan.FreeMiB < 0 {
+		return false, 0
+	}
+	share := 1.0
+	if g != "max" {
+		f, err := strconv.ParseFloat(g, 64)
+		if err != nil || !(f > 0 && f <= 1) {
+			return false, 0
+		}
+		share = f
+	}
+	need := m.plan.need(m.SizeMiB, m.Ctx, m.MaxParallel)
+	return float64(need)*share > float64(m.plan.FreeMiB), share
+}
+
+// llamaNGL is the -ngl for a llama.cpp model of layers layers and sizeMiB
+// weights whose need (planNeedMiB: llama-server's -c is the total context
+// shared by all slots, so the KV counts ctx once) does not fit in free. 0
+// means pass nothing (it fits, VRAM or the layer count is unknown, or the
+// user's own args already set it); -1 means CPU only (-ngl 0, cpuOnly).
+func llamaNGL(need, sizeMiB, layers, free int, userArgs []string) int {
+	if hasNGL(userArgs) {
 		return 0
 	}
-	r, ok := gpuRatio(estimateNeedMiB(sizeMiB, ctx, 1), free)
+	if cpuOnly(need, sizeMiB, free) {
+		return -1
+	}
+	if layers <= 0 {
+		return 0
+	}
+	r, ok := gpuRatio(need, free)
 	if !ok {
 		return 0
 	}

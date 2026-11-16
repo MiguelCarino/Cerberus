@@ -348,6 +348,9 @@ test('flow-run edges and step states', () => {
   assert.equal(edgeText({ kind: 'item' }), '');
   assert.equal(edgeText({ kind: 'then' }), 'then');
   assert.equal(edgeText({ kind: 'else' }), 'else');
+  assert.equal(edgeText({ kind: 'else', label: 'else' }), 'else');
+  assert.equal(edgeText({ kind: 'else', label: 'on error' }), 'on error');
+  assert.equal(edgeTitle({ kind: 'else', label: 'on error' }, 'review', 'end'), 'review → end: the step failed');
   assert.equal(edgeText({ kind: 'ask', count: 0 }), '');
   assert.equal(edgeText({ kind: 'ask', count: 2 }), '2 jobs');
   assert.match(edgeTitle({ kind: 'else' }, 'check', 'end'), /^check → end: /);

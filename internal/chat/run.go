@@ -204,6 +204,8 @@ func (m *Manager) runNative(ctx context.Context, l *live) {
 	msgs := append([]agent.Message(nil), c.Messages...)
 	model, cwd, owner := c.Model, c.Cwd, c.Owner
 	mode, _ := agent.ParseMode(c.Mode)
+	runAt := m.now() // the run's day (system prompt) and its turn's sent time
+	notes := sentNotesLocked(l, msgs, runAt)
 	m.mu.Unlock()
 	acc := m.access(owner)
 	if acc.Cwd != "" {
@@ -236,9 +238,11 @@ func (m *Manager) runNative(ctx context.Context, l *live) {
 		// gateway uses it for attribution only; chat ids never name a
 		// session for limits, energy or the leaderboard.
 		Base: base, Key: key, Model: model, Session: l.chat.ID, Client: "cerberus-chat", Cwd: cwd, Messages: msgs, Mode: mode,
+		Progress: true, // "reading prompt P/T" in the Chat view (llama.cpp only)
 		MaxSteps: orInt(cfg.Chat.MaxSteps, 12), DenyPaths: agent.DefaultDenyPaths(cfg), ProtectData: true,
 		Protect: []string{m.store.dir}, CommandTimeout: time.Duration(min(timeout, 600)) * time.Second, ResultClip: orInt(cfg.Chat.ResultClip, 12000),
-		AskOutside: true, System: func(tools bool) string { return systemPrompt(cwd, mode, tools, m.now()) },
+		AskOutside: true, System: func(tools bool) string { return systemPrompt(cwd, mode, tools, runAt) },
+		Notes: notes,
 		Owner: owner, NoTools: acc.NoTools, Jail: acc.Jail, Wrap: acc.Wrap,
 		Refusal: denyMessage, Policy: agent.NewPolicy(cfg.Agent.Policy), Asker: &asker{m: m, l: l},
 		OnSave: func(_ string, all []agent.Message) {
@@ -265,6 +269,7 @@ func (m *Manager) runNative(ctx context.Context, l *live) {
 		// Nothing came back for it: the message is not kept (an image a
 		// model refuses would be refused again with every next one).
 		msgsOut = msgsOut[:start-1]
+		delete(l.notes, start-1) // the same text sent again is sent at its own time
 	}
 	l.chat.Messages = msgsOut
 	m.endRunLocked(l, res.Done)
@@ -658,12 +663,51 @@ func denyMessage(note string) string {
 	return "The user denied this in the chat window."
 }
 
-// systemPrompt is the chat's system prompt (Atrium's, for the web).
+// sentNote is the time line a user turn carries in the requests
+// (agent.SentNote), with the text it was made for.
+type sentNote struct {
+	content string
+	note    string
+}
+
+// sentNotesLocked is the run's RunOptions.Notes: every user turn of msgs
+// keeps the note it was first sent with, and the newest one, sent now,
+// gets SentNote(now). Kept per chat while it is in memory, so later runs
+// send the earlier turns exactly as before and the engine's prompt cache
+// holds past them; a note whose turn changed (a failed message dropped and
+// another sent in its place) is dropped. After a reload the old turns go
+// without one.
+func sentNotesLocked(l *live, msgs []agent.Message, now time.Time) map[int]string {
+	for i, n := range l.notes {
+		if i >= len(msgs) || msgs[i].Role != "user" || msgs[i].Content != n.content {
+			delete(l.notes, i)
+		}
+	}
+	if i := len(msgs) - 1; i >= 0 && msgs[i].Role == "user" {
+		if _, ok := l.notes[i]; !ok {
+			if l.notes == nil {
+				l.notes = map[int]sentNote{}
+			}
+			l.notes[i] = sentNote{content: msgs[i].Content, note: agent.SentNote(now)}
+		}
+	}
+	out := make(map[int]string, len(l.notes))
+	for i, n := range l.notes {
+		out[i] = n.note
+	}
+	return out
+}
+
+// systemPrompt is the chat's system prompt (Atrium's, for the web). It
+// names the day only: a prompt that changed every minute broke the
+// engines' prompt cache of the whole conversation and the records'
+// stitching of its turns (SCOPE "As built: a stable system prompt"). The
+// time a turn was sent goes with that turn (sentNotesLocked).
 func systemPrompt(cwd string, mode agent.Mode, tools bool, now time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are a helpful assistant in Cerberus' LLM chat, a web page the user may open from any "+
 		"device; tools run on the user's computer. Today is %s. The working directory is %s. Answer in the "+
-		"user's language; Markdown is rendered.", now.Format("Monday 2006-01-02 15:04"), cwd)
+		"user's language; Markdown is rendered.", now.Format(agent.DayLayout), cwd)
 	if tools {
 		b.WriteString(" You have tools to read files, list folders, search, run shell commands and write or edit " +
 			"files; paths are relative to the working directory. Use them when the task needs them, not " +

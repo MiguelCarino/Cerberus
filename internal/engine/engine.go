@@ -56,6 +56,13 @@ type ModelInfo struct {
 	BusyForS     float64
 	Stalls       int
 	Vision       bool
+	// LastFailure is the last time this model's engine died or was unloaded
+	// outside Cerberus, and why (killcause.go). nil when it never was.
+	LastFailure *Failure `json:",omitempty"`
+	// Prefill is the oldest request still reading its prompt (step
+	// web-api), from llama.cpp's prompt_progress frames; nil otherwise.
+	// LM Studio and Ollama send no progress.
+	Prefill *Prefill `json:",omitempty"`
 	// Path is a llama.cpp model's .gguf file ("" for other engines). It is
 	// not part of any JSON reply.
 	Path string `json:"-"`
@@ -78,6 +85,10 @@ type Endpoint struct {
 	// (Manager.MarkCrashedGen ignores a crash reported against an older
 	// load). 0 for cloud models and models Cerberus did not load.
 	Gen uint64 `json:"-"`
+	// PID is the engine process serving the model when Cerberus runs it
+	// (llama-server), 0 otherwise. The stall watchdog reads its CPU time
+	// as a sign of work while the engine is too busy to answer.
+	PID int `json:"-"`
 }
 
 // Backend is one source of models.
@@ -94,6 +105,32 @@ type Backend interface {
 // stops them. Externally managed backends do not implement it.
 type spawner interface {
 	StopAll(ctx context.Context)
+}
+
+// shutdowner is implemented by externally managed backends with work to do
+// when Cerberus stops (LM Studio: unload what Cerberus loaded).
+type shutdowner interface {
+	Shutdown(ctx context.Context)
+}
+
+// exitNotifier is implemented by backends that see their engine processes
+// end (llama.cpp). The hook hears an exit Cerberus did not ask for.
+type exitNotifier interface {
+	setOnExit(fn func(id string, e exitInfo))
+}
+
+// exitReporter tells how a model's engine process ended. exitSince returns
+// the exit of the process serving id when it ended after since, waiting up
+// to wait for a process that is still running; ok is false when it did not
+// end.
+type exitReporter interface {
+	exitSince(id string, since time.Time, wait time.Duration) (exitInfo, bool)
+}
+
+// pidReporter is a backend that knows the process serving a model
+// (llama.cpp): 0 when none runs.
+type pidReporter interface {
+	enginePID(id string) int
 }
 
 // modelName is the backend-native name of m, falling back to its ID.
@@ -133,4 +170,15 @@ func mib(b int64) int {
 		return 0
 	}
 	return int((b + (1<<20 - 1)) >> 20)
+}
+
+// Prefill is a streamed llama.cpp request reading its prompt: Processed of
+// Total prompt tokens so far (G5's prompt_progress; step web-api). Done
+// marks the end of reading (the first output, or the request ended).
+type Prefill struct {
+	Model     string `json:"model"`
+	Session   string `json:"session,omitempty"`
+	Processed int    `json:"processed"`
+	Total     int    `json:"total"`
+	Done      bool   `json:"done,omitempty"`
 }

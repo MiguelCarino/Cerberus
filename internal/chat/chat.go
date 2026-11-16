@@ -185,10 +185,15 @@ type live struct {
 	// chans holds every card's answer channel from its ask event until the
 	// run's wait takes the answer, so an answer given before the waiter
 	// looks is never lost.
-	chans    map[string]chan answer
-	runStart int       // the running message's "user" event index
-	used     time.Time // last looked up (idle eviction)
+	chans      map[string]chan answer
+	runStart   int              // the running message's "user" event index
+	used       time.Time        // last looked up (idle eviction)
+	progressAt time.Time        // the last "progress" event sent (emitAgentLocked)
+	notes      map[int]sentNote // user turns' sent times, by message index (sentNotesLocked)
 }
+
+// progressEvery spaces a chat's prompt reading events.
+const progressEvery = 500 * time.Millisecond
 
 // queued is a message waiting for the chat to be free.
 type queued struct {
@@ -688,6 +693,15 @@ func (m *Manager) emitLocked(l *live, typ string, data any) {
 
 // emitAgentLocked appends an engine event and tracks the chat's state.
 func (m *Manager) emitAgentLocked(l *live, ev agent.Event) {
+	if ev.Type == agent.EvProgress {
+		// Prompt reading: at most two a second reach the stream (and its
+		// replay buffer), plus the last one.
+		now := m.now()
+		if ev.Progress < ev.Total && now.Sub(l.progressAt) < progressEvery {
+			return
+		}
+		l.progressAt = now
+	}
 	switch ev.Type {
 	case agent.EvStart, agent.EvReasoning, agent.EvToolDone:
 		l.state = "thinking"

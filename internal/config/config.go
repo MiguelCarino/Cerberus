@@ -126,6 +126,12 @@ type EnginesConfig struct {
 	LlamaCpp LlamaCppConfig `json:"llamacpp"`
 	LMStudio LMStudioConfig `json:"lmstudio"`
 	Ollama   OllamaConfig   `json:"ollama"`
+
+	// VRAMReserveMiB is GPU memory that model loads leave free for the
+	// desktop and memory watchdogs (railguard): 0 = auto (the default),
+	// -1 = off, N = N MiB. Auto is the room below railguard's VRAM line
+	// plus 768 MiB when railguard is present, else max(1024, 4% of total).
+	VRAMReserveMiB int `json:"vram_reserve_mib"`
 }
 
 type LlamaCppConfig struct {
@@ -144,6 +150,13 @@ type LMStudioConfig struct {
 	BaseURL string `json:"base_url"` // default "http://127.0.0.1:1234/v1"
 	Ctx     int    `json:"ctx"`      // default 32768
 	GPU     string `json:"gpu"`      // "" (auto split) | "max" | "off" | "0.x": passed to lms load --gpu
+
+	// Unit is where Cerberus starts LM Studio's daemon (llmster) when it is
+	// not running: "" or "auto" (the default) uses lmstudio.service when it
+	// exists, else a systemd-run --user scope in app.slice, else the old
+	// way; "none" keeps the old way (lms starts it inside Cerberus' own
+	// service); any other value is a user unit to start. Linux only.
+	Unit string `json:"unit"`
 }
 
 type OllamaConfig struct {
@@ -214,7 +227,20 @@ type AgentProfile struct {
 	SecretEnv     map[string]string `json:"secret_env"`     // env var → vault secret name, injected into this agent's sessions
 	Sandbox       string            `json:"sandbox"`        // "" (Sandbox.Default) | "none" | "bwrap" (day phase 3)
 	SandboxRW     []string          `json:"sandbox_rw"`     // extra read-write binds for this agent under bwrap (e.g. ~/.claude)
+	// MCPStyle is how its sessions get the cerberus_* tools (`cerberus
+	// mcp`): "" = from the program's name (claude, codex, opencode; others
+	// none) | "claude" (--mcp-config) | "codex" (-c mcp_servers.cerberus.*)
+	// | "opencode" (OPENCODE_CONFIG) | "none".
+	MCPStyle string `json:"mcp_style,omitempty"`
 }
+
+// MCP styles of an agent profile (AgentProfile.MCPStyle).
+const (
+	MCPStyleClaude   = "claude"
+	MCPStyleCodex    = "codex"
+	MCPStyleOpencode = "opencode"
+	MCPStyleNone     = "none"
+)
 
 type AgentConfig struct {
 	Approve         string       `json:"approve"`   // "ask" (default) | "auto"

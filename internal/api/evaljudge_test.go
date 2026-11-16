@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -157,5 +158,44 @@ func TestEvalSessionsMaskTokenShapes(t *testing.T) {
 	out := evalSessions{host}.Mask(in)
 	if strings.Contains(out, tok) || strings.Contains(out, "sk-abcdefghijklmnop") || !strings.Contains(out, "plain text") {
 		t.Fatalf("masked %q", out)
+	}
+}
+
+// A judge step on a prompt step: no session, the answer is the evidence,
+// and the feedback goes to Revise.
+func TestEvalHostJudgeText(t *testing.T) {
+	us, err := usage.Open(filepath.Join(t.TempDir(), "usage.jsonl"), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { us.Close() })
+	sess := &resumableEvalSessions{fakeEvalSessions: &fakeEvalSessions{root: t.TempDir(), infos: map[string]session.Info{}}}
+	gw := &fakeJudgeGateway{use: us}
+	cfg := config.Defaults()
+	cfg.Evals.JudgeModel = "m-local"
+	host := NewEvalHost(EvalHostDeps{Config: func() *config.Config { return cfg }, Gateway: gw, Usage: us, Sessions: sess,
+		Models: func(context.Context) []engine.ModelInfo { return []engine.ModelInfo{{ID: "m-local", Local: true}} }})
+	var revised []string
+	res, err := host.Judge(context.Background(), flows.JudgeRequest{Text: "my first answer", Task: "Write a haiku.",
+		Run: "fr-20261115-000000-abcd", Step: "gate",
+		Gates:    []evals.Gate{{ID: "main", MaxIterations: 2}},
+		Criteria: []evals.Criterion{{ID: "nope", Prompt: "It is perfect"}},
+		Charge:   func(flows.ModelReply) error { return nil },
+		Revise: func(ctx context.Context, fb string) (string, error) {
+			revised = append(revised, fb)
+			return "my second answer", nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Passed || len(revised) != 1 || len(sess.resumes) != 0 || res.Report.Gates[0].Iterations != 2 {
+		t.Fatalf("result %+v, revised %q, resumes %q", res, revised, sess.resumes)
+	}
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	body, _ := json.Marshal(gw.seen)
+	if !strings.Contains(string(body), "my first answer") || !strings.Contains(string(body), "my second answer") ||
+		!strings.Contains(string(body), "Write a haiku.") {
+		t.Fatalf("judge calls %s", body)
 	}
 }

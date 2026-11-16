@@ -599,6 +599,7 @@ func TestDoctorEndpoint(t *testing.T) {
 		e.DiskFree = func(string) (uint64, error) { return 100 << 30, nil }
 		e.Getenv = func(string) string { return "" }
 		e.UserConfig = t.TempDir()
+		e.RailguardDir = t.TempDir() // never this machine's railguard
 		return e
 	}
 	w := env.do("GET", "/api/doctor", "", withBearer(testToken))
@@ -616,7 +617,7 @@ func TestDoctorEndpoint(t *testing.T) {
 			t.Errorf("%s: %s without a fix", c.ID, c.Status)
 		}
 	}
-	if ids["git"] != doctor.Fail || ids["config"] != doctor.OK || ids["disk"] != doctor.OK || len(ids) != 24 {
+	if ids["git"] != doctor.Fail || ids["config"] != doctor.OK || ids["disk"] != doctor.OK || len(ids) != 26 {
 		t.Fatalf("checks %v", ids)
 	}
 	if rep.Counts[doctor.Fail] == 0 {

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -126,6 +127,19 @@ func (f *fakeSessions) Attach(id string) ([]byte, <-chan []byte, func(), error) 
 	}
 	var once sync.Once
 	return f.backlog, f.out, func() { once.Do(func() { close(f.detached) }) }, nil
+}
+
+// AttachFrom resumes at "e.<n>" where n is the backlog's length.
+func (f *fakeSessions) AttachFrom(id string, from session.StreamPos) (session.Attachment, error) {
+	backlog, ch, detach, err := f.Attach(id)
+	if err != nil {
+		return session.Attachment{}, err
+	}
+	pos := "e." + strconv.Itoa(len(backlog))
+	if from == pos {
+		return session.Attachment{Pos: pos, Out: ch, Detach: detach}, nil
+	}
+	return session.Attachment{Backlog: backlog, Reset: true, Pos: pos, Out: ch, Detach: detach}, nil
 }
 func (f *fakeSessions) FollowUp(ctx context.Context, id, text string) error {
 	f.record("followup:" + text)
@@ -729,6 +743,9 @@ func TestSessionStream(t *testing.T) {
 	if ev, data := sse.next(t); ev != "backlog" || data != "aGVsbG8=" {
 		t.Fatalf("first frame %q %q", ev, data)
 	}
+	if ev, data := sse.next(t); ev != "pos" || data != `{"pos":"e.5"}` {
+		t.Fatalf("pos frame %q %q", ev, data)
+	}
 	env.sessions.out <- []byte("more")
 	for {
 		ev, data := sse.next(t)
@@ -742,6 +759,23 @@ func TestSessionStream(t *testing.T) {
 	}
 	if ev, data := sse.next(t); ev != "" || data != "ping" {
 		t.Fatalf("want ping, got %q %q", ev, data)
+	}
+	cancel()
+	waitClosed(t, env.sessions.detached, "detach")
+}
+
+// TestSessionStreamResume: a reconnect from the current position gets no
+// backlog bytes, only the position (web-api-ops-7).
+func TestSessionStreamResume(t *testing.T) {
+	env := newEnv(t, nil)
+	env.sessions.backlog = []byte("hello")
+	sse, cancel := openSSE(t, env, "/api/sessions/s1/stream?from=e.5")
+	if ev, data := sse.next(t); ev != "pos" || data != `{"pos":"e.5"}` {
+		t.Fatalf("first frame %q %q", ev, data)
+	}
+	env.sessions.out <- []byte("more")
+	if ev, data := sse.next(t); ev != "out" || data != "bW9yZQ==" {
+		t.Fatalf("frame %q %q", ev, data)
 	}
 	cancel()
 	waitClosed(t, env.sessions.detached, "detach")

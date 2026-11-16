@@ -79,6 +79,7 @@ func (s *server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	// otherwise name one.
 	spec.Parent, spec.Client = "", ""
 	spec.Owner, spec.Confined = "", false
+	spec.SameAs, spec.Seeds = "", nil // flows' workspace "step" only
 	if s.stagingRefused(w, r, spec.Staging) || s.startRefused(w, r, &spec) {
 		return
 	}
@@ -462,14 +463,27 @@ func (s *server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		unavailable(w, "sessions")
 		return
 	}
-	backlog, ch, detach, err := s.sessions.Attach(r.PathValue("id"))
+	// ?from=<pos> (step web-api): the client has the output up to pos, so
+	// it is sent only what it missed, as "out". "backlog" (the client
+	// clears its terminal first) comes only without a position or on a
+	// gap. "pos" {pos} follows either; each "out" moves it on by its
+	// decoded length.
+	a, err := s.sessions.AttachFrom(r.PathValue("id"), r.URL.Query().Get("from"))
 	if err != nil {
 		writeError(w, sessionErrStatus(err), err.Error())
 		return
 	}
-	defer detach()
+	ch := a.Out
+	defer a.Detach()
 	rc := startSSE(w)
-	if sendEvent(w, rc, "backlog", b64(backlog)) != nil {
+	first := "backlog"
+	if !a.Reset {
+		first = "out"
+	}
+	if (a.Reset || len(a.Backlog) > 0) && sendEvent(w, rc, first, b64(a.Backlog)) != nil {
+		return
+	}
+	if pos, err := json.Marshal(map[string]string{"pos": a.Pos}); err != nil || sendEvent(w, rc, "pos", pos) != nil {
 		return
 	}
 	ping := time.NewTicker(s.ping)
@@ -517,7 +531,8 @@ func underDir(p, root string) bool {
 // "session" (JSON session.Event), inbox changes as "inbox" (inbox.Event),
 // download changes as "download" (downloads.Item) and, at most about once a
 // second per session, "usage" ({session}) when a gateway request charged to
-// that session finished (a refresh hint for the Flow graph). When the stream
+// that session finished (a refresh hint for the Flow graph). "models" and
+// "prefill" (modelsfeed.go) carry model changes and prompt reading. When the stream
 // falls behind the inbox or the downloads, it sends "resync" ({what})
 // and goes on with a fresh subscription; the client refetches that list.
 // It answers 503 only when none of the sources exists.
@@ -587,6 +602,11 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		useCh = ch
 	}
 	usePending := map[string]bool{}
+	// Model changes and prompt reading (step web-api), coalesced likewise.
+	modelEv := s.startModelEvents(pr)
+	defer modelEv.stop()
+	prefillEv := s.startPrefillEvents(pr)
+	defer prefillEv.stop()
 	var useFlush <-chan time.Time
 	var useTimer *time.Timer
 	defer func() {
@@ -634,6 +654,28 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if useFlush == nil {
 				useTimer = time.NewTimer(usageCoalesce)
 				useFlush = useTimer.C
+			}
+		case _, ok := <-modelEv.ch:
+			if !ok {
+				modelEv.ch = nil
+				continue
+			}
+			modelEv.hint()
+		case <-modelEv.flush:
+			if raw := s.modelEventBody(r.Context(), modelEv); raw != nil && sendEvent(w, rc, "models", raw) != nil {
+				return
+			}
+		case p, ok := <-prefillEv.ch:
+			if !ok {
+				prefillEv.ch = nil
+				continue
+			}
+			prefillEv.add(s.prefillFor(pr, p, seeSession))
+		case <-prefillEv.flush:
+			for _, p := range prefillEv.take() {
+				if !send("prefill", p) {
+					return
+				}
 			}
 		case <-useFlush:
 			useFlush, useTimer = nil, nil

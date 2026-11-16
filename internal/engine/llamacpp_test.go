@@ -87,11 +87,15 @@ func TestScanGGUF(t *testing.T) {
 	writeFile(t, filepath.Join(root, "vis", "mmproj-gemma-f16.gguf"), 1<<20)
 	writeFile(t, filepath.Join(root, "split", "big-00001-of-00003.gguf"), 2<<20)
 	writeFile(t, filepath.Join(root, "split", "big-00002-of-00003.gguf"), 2<<20)
+	writeFile(t, filepath.Join(root, "split", "big-00003-of-00003.gguf"), 1<<20)
+	// A set with a shard missing (a download not finished) is left out.
+	writeFile(t, filepath.Join(root, "half", "huge-00001-of-00002.gguf"), 1<<20)
+	writeFile(t, filepath.Join(root, "half", "huge-00002-of-00002.gguf.part"), 1<<20)
 	writeFile(t, filepath.Join(root, "a", "b", "deep.gguf"), 10)
 	writeFile(t, filepath.Join(root, "a", "b", "c", "toodeep.gguf"), 10)
 
 	got := map[string]ggufFile{}
-	for _, f := range scanGGUF([]string{root, filepath.Join(root, "missing")}) {
+	for _, f := range scanGGUF([]string{root, filepath.Join(root, "missing")}, nil) {
 		got[f.ID] = f
 	}
 	want := []string{"big", "deep", "gemma", "plain"}
@@ -103,7 +107,7 @@ func TestScanGGUF(t *testing.T) {
 	if !slices.Equal(ids, want) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
-	if got["plain"].SizeMiB != 3 || got["big"].SizeMiB != 6 {
+	if got["plain"].SizeMiB != 3 || got["big"].SizeMiB != 5 {
 		t.Errorf("sizes: plain %d big %d", got["plain"].SizeMiB, got["big"].SizeMiB)
 	}
 	if !strings.HasSuffix(got["gemma"].MMProj, "mmproj-gemma-f16.gguf") || got["plain"].MMProj != "" {

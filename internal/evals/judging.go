@@ -33,7 +33,20 @@ type Job struct {
 	// Charge is called with the usage of every judge and feedback call;
 	// an error (a limit) stops the judging, and Judge answers it.
 	Charge func(Usage) error
+
+	// Text mode (a flow's judge step on a prompt step or a fan-out item):
+	// Session is "" and Text is the answer to judge. Every criterion gets
+	// it as its evidence (EvidenceOutput), masked and clipped like the
+	// transcript; the criteria's evidence kinds do not apply. With
+	// Feedback, a failed gate with iterations left calls Revise with the
+	// feedback text instead of resuming a session, and judges the answer
+	// it gives. Task is the prompt the answer was for.
+	Text   string
+	Revise func(ctx context.Context, feedback string) (string, error)
 }
+
+// textMode reports whether the job judges a text, not a session.
+func (job Job) textMode() bool { return job.Session == "" }
 
 // JudgeDeps are what Judge needs: Sessions (a Resumer for the feedback
 // loop) and the judge's ModelCaller.
@@ -55,7 +68,7 @@ func Judge(ctx context.Context, d JudgeDeps, s Settings, job Job) (Report, error
 	if strings.TrimSpace(job.JudgeModel) == "" {
 		return Report{}, ErrNoJudge
 	}
-	if d.Sessions == nil {
+	if d.Sessions == nil && !job.textMode() {
 		return Report{}, errors.New("agent sessions are not available")
 	}
 	if d.Models == nil {
@@ -64,9 +77,12 @@ func Judge(ctx context.Context, d JudgeDeps, s Settings, job Job) (Report, error
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	info, err := d.Sessions.Wait(ctx, job.Session)
-	if err != nil {
-		return Report{}, err
+	var info SessionInfo
+	if !job.textMode() {
+		var err error
+		if info, err = d.Sessions.Wait(ctx, job.Session); err != nil {
+			return Report{}, err
+		}
 	}
 	ev := Normalize(Eval{Task: job.Task, Gates: job.Gates, Criteria: job.Criteria, Persona: job.Persona})
 	job.Gates, job.Criteria, job.Persona = ev.Gates, ev.Criteria, ev.Persona
@@ -141,8 +157,12 @@ func (j *judging) charged() error {
 	return j.cause
 }
 
-// evidence reads what the criteria need of one attempt of the session.
+// evidence reads what the criteria need of one attempt of the session
+// (in text mode: the answer).
 func (j *judging) evidence(info SessionInfo, criteria []Criterion) evidenceInput {
+	if j.job.textMode() {
+		return evidenceInput{TextMode: true, Output: j.job.Text, Mask: j.mask}
+	}
 	in := evidenceInput{Info: info, Mask: j.sessions.Mask}
 	need := map[string]bool{}
 	for _, c := range criteria {
@@ -224,7 +244,9 @@ func (j *judging) run(ctx context.Context, rep Report, info SessionInfo, wall ti
 	}
 	defer func() {
 		rep.WallMs = wall.Milliseconds()
-		rep.SessionUsage = j.sessions.Usage(rep.Session)
+		if !j.job.textMode() {
+			rep.SessionUsage = j.sessions.Usage(rep.Session)
+		}
 		rep.SessionState = info.State
 		rep.Judged = j.now().UTC()
 		out = rep
@@ -240,6 +262,9 @@ func (j *judging) run(ctx context.Context, rep Report, info SessionInfo, wall ti
 	gates := EffectiveGates(ev)
 	order := Order(ev)
 	resumer, canResume := j.sessions.(Resumer)
+	if j.job.textMode() {
+		canResume = j.job.Revise != nil
+	}
 	stopped := ""
 	for gi, g := range gates {
 		crits := order[gi]
@@ -278,16 +303,27 @@ func (j *judging) run(ctx context.Context, rep Report, info SessionInfo, wall ti
 				rep.Feedback = append(rep.Feedback, fb)
 				return rep
 			}
-			next, took, err := j.resume(ctx, resumer, info.ID, &fb)
-			rep.Feedback = append(rep.Feedback, fb)
-			if ctx.Err() != nil {
-				return rep
+			if j.job.textMode() {
+				err := j.revise(ctx, &fb)
+				rep.Feedback = append(rep.Feedback, fb)
+				if ctx.Err() != nil {
+					return rep
+				}
+				if err != nil {
+					break // the gate fails with the results it has
+				}
+			} else {
+				next, took, err := j.resume(ctx, resumer, info.ID, &fb)
+				rep.Feedback = append(rep.Feedback, fb)
+				if ctx.Err() != nil {
+					return rep
+				}
+				if err != nil {
+					break // the gate fails with the results it has
+				}
+				info = next
+				wall += resumedWall(next, took)
 			}
-			if err != nil {
-				break // the gate fails with the results it has
-			}
-			info = next
-			wall += resumedWall(next, took)
 			in = j.evidence(info, ev.Criteria)
 			for _, c := range crits {
 				if r, ok := results[c.ID]; ok {
@@ -311,6 +347,23 @@ func (j *judging) run(ctx context.Context, rep Report, info SessionInfo, wall ti
 	}
 	rep.tally()
 	return rep
+}
+
+// revise (text mode) asks for a new answer with the feedback; the next
+// iteration judges it. fb records whether it was sent and why not.
+func (j *judging) revise(ctx context.Context, fb *Feedback) error {
+	text, err := j.job.Revise(ctx, fb.Text)
+	if err != nil {
+		msg := "not sent: " + clipRunes(strings.TrimSpace(err.Error()), 300)
+		if fb.Error != "" {
+			msg = fb.Error + "; " + msg
+		}
+		fb.Error = msg
+		return err
+	}
+	fb.Sent = true
+	j.job.Text = text
+	return nil
 }
 
 // resume sends the feedback as a new attempt of the session and waits for
@@ -429,7 +482,7 @@ func (j *judging) judgeGate(ctx context.Context, in evidenceInput, crits []Crite
 func (j *judging) judgeCriterion(ctx context.Context, in evidenceInput, c Criterion, gate string, iteration int) (Result, Usage) {
 	evidence := buildEvidence(in, c, j.settings.EvidenceKB<<10)
 	req := ModelRequest{Model: j.job.JudgeModel, Messages: JudgeMessages(j.job.Task, c, evidence),
-		MaxTokens: JudgeMaxTokens, Client: ClientName, Run: j.job.Run, Owner: j.job.Owner}
+		MaxTokens: JudgeMaxTokens, Schema: VerdictSchema, Client: ClientName, Run: j.job.Run, Owner: j.job.Owner}
 	v, reply, err := judgeOne(ctx, j.models, req)
 	use := callUsage(reply)
 	res := Result{Criterion: c.ID, Gate: gate, Iteration: iteration, Model: orStr(reply.Model, j.job.JudgeModel),

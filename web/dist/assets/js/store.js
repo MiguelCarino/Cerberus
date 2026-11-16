@@ -17,6 +17,7 @@ let asksSeq = 0;
 let me = null; // who is signed in (GET /api/me, see users.js normMe); null until loaded
 let meSig = '';
 let meSeq = 0;
+let liveModels = null; // the last "models" event's list (step web-api); null until one came
 
 export const store = {
   sessions: () => [...sessions.values()],
@@ -25,6 +26,8 @@ export const store = {
   loaded: () => loaded,
   waiting: () => countWaiting(sessions.values()),
   asks: () => asks,
+  // liveModels is the last "models" event: the live part of each model.
+  liveModels: () => liveModels,
 
   // subscribe(fn) calls fn(kind, payload) on 'sessions' | 'session' |
   // 'status', and for the day phase 6 items on the same event stream:
@@ -39,6 +42,9 @@ export const store = {
   // 'evals') and 'asks' (the open chat
   // permission requests changed: store.asks()).
   // 'me' (the signed-in person changed: role, caps, must-change).
+  // 'models' ([live model]: loads, unloads, busy, queue, deaths) and
+  // 'prefill' ({model, session, processed, total, done}: a llama.cpp
+  // request reading its prompt), both from step web-api.
   subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
 
   // ---------- who is signed in (users and roles) ----------
@@ -116,6 +122,7 @@ export const store = {
       // Every (re)connect re-reads who is signed in too: a role change or
       // a disable cuts the stream, and the page follows the new rules.
       open: () => {
+        liveModels = null; // whatever changed while away comes with the views' refetch
         store.loadMe().catch(() => {});
         if (can(me, 'sessions') || can(me, 'sessions.watch_all')) store.refreshSessions().catch(() => {});
         else { sessions.clear(); loaded = true; emit('sessions'); }
@@ -126,6 +133,8 @@ export const store = {
       inbox: (data) => { const ev = parseJSON(data); if (ev) emit('inbox', ev); },
       download: (data) => { const it = parseJSON(data); if (it) emit('download', it); },
       usage: (data) => { const u = parseJSON(data); if (u && u.session) emit('usage', u); },
+      models: (data) => { const v = parseJSON(data); if (v && Array.isArray(v.models)) { liveModels = v.models; emit('models', liveModels); } },
+      prefill: (data) => { const p = parseJSON(data); if (p && p.model) emit('prefill', p); },
       flowrun: (data) => { const f = parseJSON(data); if (f && f.run) emit('flowrun', f); },
       evalrun: (data) => { const f = parseJSON(data); if (f && f.run) emit('evalrun', f); },
       // The server dropped us behind the inbox, the downloads or the flows: refetch.

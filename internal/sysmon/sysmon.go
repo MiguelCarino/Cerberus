@@ -154,6 +154,7 @@ type Monitor struct {
 	subs   map[chan struct{}]struct{}
 
 	protected atomic.Pointer[[]string] // Reload's monitor.protected (nil: cfg.Protected)
+	slice     atomic.Pointer[string]   // guard.systemd_slice: the slice sessions run in
 
 	st sampler // touched only by the Run goroutine (and tests)
 }
@@ -187,6 +188,8 @@ func New(cfg *config.Config, g GPUSource, log *slog.Logger, opts ...Option) *Mon
 	for _, o := range opts {
 		o(m)
 	}
+	sl := cfg.Guard.SystemdSlice
+	m.slice.Store(&sl)
 	m.st = newSampler(m)
 	return m
 }

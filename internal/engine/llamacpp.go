@@ -33,7 +33,7 @@ type llamaSpec struct {
 	draft    string
 	ctx      int
 	parallel int
-	ngl      int // -ngl when Cerberus picks a GPU split (0 = leave to llama-server)
+	ngl      int // -ngl when Cerberus picks a GPU split (0 = leave to llama-server, -1 = CPU only: -ngl 0)
 	args     []string
 }
 
@@ -68,9 +68,21 @@ type llamaCpp struct {
 
 	loadMu sync.Mutex // serialises starts so two loads never race for a port
 
-	mu    sync.Mutex
-	specs map[string]llamaSpec
-	procs map[string]*llamaProc
+	mu     sync.Mutex
+	specs  map[string]llamaSpec
+	procs  map[string]*llamaProc
+	exits  map[string]exitInfo         // how each model's last process ended
+	onExit func(id string, e exitInfo) // hears exits Cerberus did not ask for (the manager)
+}
+
+// oomScoreAdj makes the kernel's OOM killer pick a llama-server before the
+// daemon that started it (Linux; a no-op elsewhere).
+const oomScoreAdj = 500
+
+func (b *llamaCpp) setOnExit(fn func(id string, e exitInfo)) {
+	b.mu.Lock()
+	b.onExit = fn
+	b.mu.Unlock()
 }
 
 // newLlamaCpp returns the llama.cpp backend for cfg.
@@ -112,6 +124,7 @@ func newLlamaCpp(cfg *config.Config, log *slog.Logger) *llamaCpp {
 		http:  defaultHTTPClient,
 		specs: map[string]llamaSpec{},
 		procs: map[string]*llamaProc{},
+		exits: map[string]exitInfo{},
 	}
 }
 
@@ -175,7 +188,7 @@ func (b *llamaCpp) buildSpecs() map[string]llamaSpec {
 		specs[mc.ID] = b.configuredSpec(mc)
 		paths[filepath.Clean(mc.Path)] = true
 	}
-	for _, f := range scanGGUF(b.cfg.ModelDirs) {
+	for _, f := range scanGGUF(b.cfg.ModelDirs, b.log) {
 		if _, dup := specs[f.ID]; dup || paths[filepath.Clean(f.Path)] {
 			continue
 		}
@@ -219,7 +232,7 @@ func (b *llamaCpp) Load(ctx context.Context, m ModelInfo) (Endpoint, error) {
 	b.mu.Lock()
 	if p := b.procs[m.ID]; p != nil && p.alive() {
 		b.mu.Unlock()
-		return b.endpoint(m, p.port), nil
+		return b.endpoint(m, p), nil
 	}
 	spec, ok := b.specs[m.ID]
 	b.mu.Unlock()
@@ -242,8 +255,13 @@ func (b *llamaCpp) Load(ctx context.Context, m ModelInfo) (Endpoint, error) {
 		// Too big for the VRAM left: offload a share of the layers (when the
 		// GGUF says how many there are) rather than let it run out of memory.
 		user := append(slices.Clone(b.cfg.Args), spec.args...)
-		if _, ok := gpuRatio(estimateNeedMiB(spec.info.SizeMiB, spec.ctx, 1), m.plan.FreeMiB); ok && !hasNGL(user) {
-			spec.ngl = llamaNGL(spec.info.SizeMiB, spec.ctx, ggufLayers(spec.path), m.plan.FreeMiB, user)
+		need := m.plan.need(spec.info.SizeMiB, spec.ctx, 1)
+		if _, ok := gpuRatio(need, m.plan.FreeMiB); ok && !hasNGL(user) {
+			layers := 0
+			if !cpuOnly(need, spec.info.SizeMiB, m.plan.FreeMiB) {
+				layers = ggufLayers(spec.path)
+			}
+			spec.ngl = llamaNGL(need, spec.info.SizeMiB, layers, m.plan.FreeMiB, user)
 		}
 	}
 
@@ -256,7 +274,7 @@ func (b *llamaCpp) Load(ctx context.Context, m ModelInfo) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("llamacpp %s: %w%s", m.ID, err, logTail(logPath))
 	}
 	b.log.Info("model loaded", "backend", BackendLlamaCpp, "model", m.ID, "port", p.port)
-	return b.endpoint(m, p.port), nil
+	return b.endpoint(m, p), nil
 }
 
 // start spawns the process in its own group with output to logs/<id>.log.
@@ -273,6 +291,10 @@ func (b *llamaCpp) start(s llamaSpec) (*llamaProc, string, error) {
 		return nil, "", err
 	}
 	logPath := filepath.Join(dir, safeFileName(s.info.ID)+".log")
+	// Keep the previous run's log (a crash's CUDA error or abort) as .log.1.
+	if _, err := os.Stat(logPath); err == nil {
+		_ = os.Rename(logPath, logPath+".1")
+	}
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, "", err
@@ -285,6 +307,7 @@ func (b *llamaCpp) start(s llamaSpec) (*llamaProc, string, error) {
 		f.Close()
 		return nil, logPath, fmt.Errorf("llamacpp: start %s: %w", b.cfg.Binary, err)
 	}
+	_ = platform.SetOOMScoreAdj(cmd.Process.Pid, oomScoreAdj) // best effort
 	p := &llamaProc{cmd: cmd, port: port, done: make(chan struct{})}
 	b.mu.Lock()
 	b.procs[s.info.ID] = p
@@ -293,17 +316,82 @@ func (b *llamaCpp) start(s llamaSpec) (*llamaProc, string, error) {
 	return p, logPath, nil
 }
 
-// reap waits for the process to exit and forgets it.
+// reap waits for the process to exit, records how it ended and forgets
+// it. Cerberus' own stop removes the process from procs before it signals
+// it, so a process still in procs here ended without Cerberus asking
+// (railguard, the OOM killer, a user, a crash): that is logged at Warn and
+// handed to the manager's hook.
 func (b *llamaCpp) reap(id string, p *llamaProc, f *os.File) {
 	err := p.cmd.Wait()
-	close(p.done)
-	f.Close()
+	e := exitInfo{Time: time.Now(), Code: -1}
+	if p.cmd.Process != nil {
+		e.PID = p.cmd.Process.Pid
+	}
+	if ps := p.cmd.ProcessState; ps != nil {
+		e.Code = ps.ExitCode()
+		e.Signal, e.SigNum = platform.ExitSignal(ps)
+	}
 	b.mu.Lock()
-	if b.procs[id] == p {
+	outside := b.procs[id] == p
+	if outside {
 		delete(b.procs, id)
 	}
+	e.ByUs = !outside
+	b.exits[id] = e
+	hook := b.onExit
 	b.mu.Unlock()
-	b.log.Debug("llama-server exited", "model", id, "err", err)
+	close(p.done)
+	f.Close()
+	if !outside {
+		b.log.Debug("llama-server exited", "model", id, "err", err)
+		return
+	}
+	how := e.Signal
+	if how == "" {
+		how = fmt.Sprintf("exit code %d", e.Code)
+	}
+	if hook == nil {
+		b.log.Warn("llama-server ended without Cerberus asking", "model", id, "pid", e.PID, "by", how)
+		return
+	}
+	// The manager names the cause and logs the one Warn line.
+	b.log.Info("llama-server ended without Cerberus asking", "model", id, "pid", e.PID, "by", how)
+	hook(id, e)
+}
+
+// enginePID is the pid of the llama-server serving id, 0 when none runs
+// (pidReporter).
+func (b *llamaCpp) enginePID(id string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if p := b.procs[id]; p != nil && p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
+// exitSince returns how id's process ended when it ended after since,
+// waiting up to wait for one that is still running (exitReporter).
+func (b *llamaCpp) exitSince(id string, since time.Time, wait time.Duration) (exitInfo, bool) {
+	b.mu.Lock()
+	p := b.procs[id]
+	b.mu.Unlock()
+	if p != nil {
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		select {
+		case <-p.done:
+		case <-t.C:
+			return exitInfo{}, false
+		}
+	}
+	b.mu.Lock()
+	e, ok := b.exits[id]
+	b.mu.Unlock()
+	if !ok || e.Time.Before(since) {
+		return exitInfo{}, false
+	}
+	return e, true
 }
 
 // args builds the llama-server command line.
@@ -319,6 +407,8 @@ func (b *llamaCpp) args(s llamaSpec, port int) []string {
 	}
 	if s.ngl > 0 {
 		a = append(a, "-ngl", strconv.Itoa(s.ngl))
+	} else if s.ngl < 0 {
+		a = append(a, "-ngl", "0") // no room on the GPU (cpuOnly)
 	}
 	a = append(a, b.cfg.Args...)
 	return append(a, s.args...)
@@ -436,17 +526,20 @@ func (b *llamaCpp) Endpoint(m ModelInfo) Endpoint {
 	b.mu.Lock()
 	p := b.procs[m.ID]
 	b.mu.Unlock()
-	port := 0
-	if p != nil && p.alive() {
-		port = p.port
+	if p != nil && !p.alive() {
+		p = nil
 	}
-	return b.endpoint(m, port)
+	return b.endpoint(m, p)
 }
 
-func (b *llamaCpp) endpoint(m ModelInfo, port int) Endpoint {
+// endpoint points at p (nil: not running, an empty BaseURL).
+func (b *llamaCpp) endpoint(m ModelInfo, p *llamaProc) Endpoint {
 	ep := Endpoint{Model: modelName(m), Local: true, Backend: BackendLlamaCpp}
-	if port > 0 {
-		ep.BaseURL = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+	if p != nil && p.port > 0 {
+		ep.BaseURL = fmt.Sprintf("http://127.0.0.1:%d/v1", p.port)
+		if p.cmd != nil && p.cmd.Process != nil {
+			ep.PID = p.cmd.Process.Pid
+		}
 	}
 	return ep
 }

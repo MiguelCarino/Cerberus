@@ -145,7 +145,27 @@ func Build(in Input) (Trajectory, error) {
 		// Find the thread this record continues.
 		var t *thread
 		var rest []seg
-		if hasText {
+		earlier := 0 // messages before a new-turn-only text no thread holds
+		if hasText && l.Prefix > 0 {
+			// The text is only the new turn (what follows the last
+			// assistant message): it continues the thread whose last
+			// record, plus its reply, makes the prefix.
+			for _, c := range threads {
+				if c.system == text.System && c.msgs < l.Prefix && (t == nil || continuesBetter(c, t, l.Prefix)) {
+					t = c
+				}
+			}
+			rest = segs
+			if t != nil {
+				full := append([]seg(nil), t.sent...)
+				if t.reply != "" {
+					full = append(full, seg{role: "assistant", text: t.reply})
+				}
+				segs = append(full, segs...)
+			} else {
+				earlier = l.Prefix
+			}
+		} else if hasText {
 			best := -1
 			for _, c := range threads {
 				if c.system != text.System || len(c.sent) > len(segs) || len(c.sent) < best {
@@ -207,6 +227,9 @@ func Build(in Input) (Trajectory, error) {
 			ex := map[string]any{"thread": t.id}
 			if newThread && i > 0 {
 				ex["conversation"] = "new"
+			}
+			if earlier > 0 {
+				ex["earlier_messages"] = earlier // not in the records
 			}
 			b.add(Step{Source: SourceUser, Timestamp: ts, Message: render(rest), Extra: map[string]any{"cerberus": ex}})
 		}
@@ -312,6 +335,20 @@ func Build(in Input) (Trajectory, error) {
 	tr.Extra = map[string]any{"cerberus": map[string]any{"version": in.Cerberus, "spec": SpecSource,
 		"exported": stamp(now), "session": sess, "records": rec}}
 	return tr, nil
+}
+
+// continuesBetter says c is a better thread than t for a record whose new
+// turn follows prefix messages: an exact count (the thread's last record
+// plus its reply) wins, then the most messages, then the newest thread.
+func continuesBetter(c, t *thread, prefix int) bool {
+	ce, te := c.msgs == prefix-1, t.msgs == prefix-1
+	if ce != te {
+		return ce
+	}
+	if c.msgs != t.msgs {
+		return c.msgs > t.msgs
+	}
+	return c.last > t.last
 }
 
 // builder numbers steps as they are added.

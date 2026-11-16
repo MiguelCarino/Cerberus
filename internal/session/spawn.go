@@ -300,30 +300,150 @@ func isClaudeProfile(p config.AgentProfile) bool {
 	return bin == "claude"
 }
 
-// mcpArgs writes DATA/sessions/<id>/mcp.json, which starts `cerberus mcp`
-// with the session's agent token, and returns the flags that point a
-// Claude Code profile at it. Nothing is written for other profiles, when
-// spawning is disabled, or when the command already names an MCP config.
-func (m *Manager) mcpArgs(p config.AgentProfile, argv []string, sessDir, id string) ([]string, error) {
-	if !m.spawnConfig().Enabled || !isClaudeProfile(p) || slices.Contains(argv, "--mcp-config") {
-		return nil, nil
+// mcpStyle is how p's sessions get the cerberus_* tools: its mcp_style,
+// else from the binary's name (claude, codex, opencode), else none. Aider
+// has no MCP client, so it is none.
+func mcpStyle(p config.AgentProfile) string {
+	switch p.MCPStyle {
+	case config.MCPStyleClaude, config.MCPStyleCodex, config.MCPStyleOpencode, config.MCPStyleNone:
+		return p.MCPStyle
 	}
-	cfg := map[string]any{"mcpServers": map[string]any{"cerberus": map[string]any{
-		"command": selfPath(),
-		"args":    []string{"mcp"},
-		"env": map[string]string{
-			"CERBERUS_URL":     serverURL(m.conf().Server.Listen),
-			"OPENAI_API_KEY":   m.agentKey(id), // the session's agent token, never the admin token
-			"CERBERUS_SESSION": id,
-		},
-	}}}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return nil, err
+	switch strings.TrimSuffix(filepath.Base(profileBinary(p)), ".exe") {
+	case "claude":
+		return config.MCPStyleClaude
+	case "codex":
+		return config.MCPStyleCodex
+	case "opencode":
+		return config.MCPStyleOpencode
 	}
-	path := filepath.Join(sessDir, mcpConfigName)
-	if err := safeWrite(path, raw, 0o600); err != nil {
-		return nil, err
+	return config.MCPStyleNone
+}
+
+// Names of the per-session MCP files and the token variable.
+const (
+	opencodeConfigName = "opencode.json"
+	// agentTokenEnv carries the session's agent token to `cerberus mcp`
+	// for agents that pass a server only the variables they are told to
+	// (Codex). It is the same token as OPENAI_API_KEY, which such agents
+	// keep for their own provider.
+	agentTokenEnv = "CERBERUS_AGENT_TOKEN"
+)
+
+// mcpWiring is what mcpArgs adds to a session's launch: argv is the whole
+// command with its flags in place, flags the flags it added (for the
+// setup record), env the variables to add.
+type mcpWiring struct {
+	argv  []string
+	flags []string
+	env   []string
+}
+
+// codexIndex is the index of the first argv element that is the codex
+// program (base name codex, or codex.exe; "@openai/codex" counts), -1 when
+// there is none.
+func codexIndex(argv []string) int {
+	return slices.IndexFunc(argv, func(a string) bool {
+		b := a
+		if i := strings.LastIndexAny(b, `/\`); i >= 0 {
+			b = b[i+1:] // both separators, whatever this OS uses
+		}
+		return strings.TrimSuffix(strings.ToLower(b), ".exe") == "codex"
+	})
+}
+
+// mcpArgs wires `cerberus mcp` (the cerberus_* tools, with the session's
+// own agent token) into the agent's command, by the profile's MCP style:
+//
+//   - claude: DATA/sessions/<id>/mcp.json and --mcp-config <it>, as
+//     before;
+//   - codex: -c mcp_servers.cerberus.{command,args,env_vars} right after
+//     the codex program (not a wrapper before it), the token in
+//     CERBERUS_AGENT_TOKEN (never in argv);
+//   - opencode: DATA/sessions/<id>/opencode.json with an "mcp" entry whose
+//     environment reads the token as {env:CERBERUS_AGENT_TOKEN} (never in
+//     the file), and OPENCODE_CONFIG pointing at it.
+//
+// Nothing is added for other styles, when spawning is disabled, or when
+// the profile already wires its own (--mcp-config, a cerberus
+// mcp_servers override, OPENCODE_CONFIG in its env).
+func (m *Manager) mcpArgs(p config.AgentProfile, argv []string, sessDir, id string) (mcpWiring, error) {
+	out := mcpWiring{argv: argv}
+	if !m.spawnConfig().Enabled || len(argv) == 0 {
+		return out, nil
 	}
-	return []string{"--mcp-config", path}, nil
+	url := serverURL(m.conf().Server.Listen)
+	switch mcpStyle(p) {
+	case config.MCPStyleClaude:
+		if slices.Contains(argv, "--mcp-config") {
+			return out, nil
+		}
+		cfg := map[string]any{"mcpServers": map[string]any{"cerberus": map[string]any{
+			"command": selfPath(),
+			"args":    []string{"mcp"},
+			"env": map[string]string{
+				"CERBERUS_URL":     url,
+				"OPENAI_API_KEY":   m.agentKey(id), // the session's agent token, never the admin token
+				"CERBERUS_SESSION": id,
+			},
+		}}}
+		raw, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return out, err
+		}
+		path := filepath.Join(sessDir, mcpConfigName)
+		if err := safeWrite(path, raw, 0o600); err != nil {
+			return out, err
+		}
+		out.flags = []string{"--mcp-config", path}
+		out.argv = append(slices.Clone(argv), out.flags...)
+	case config.MCPStyleCodex:
+		for _, a := range argv {
+			if strings.Contains(a, "mcp_servers.cerberus") {
+				return out, nil
+			}
+		}
+		// Right after the codex program itself, which is argv[0] only when
+		// the profile runs codex directly: with a wrapper (npx -y
+		// @openai/codex exec, bash -lc "codex ...") the flags after
+		// argv[0] would be the wrapper's (npx -c runs a command, bash -c a
+		// script). No codex element: nothing is added.
+		at := codexIndex(argv)
+		if at < 0 {
+			m.log.Warn("mcp_style codex: no codex program in the command; the cerberus tools are not wired",
+				"profile", p.Name, "command", argv[0])
+			return out, nil
+		}
+		self, _ := json.Marshal(selfPath())
+		out.flags = []string{
+			"-c", "mcp_servers.cerberus.command=" + string(self),
+			"-c", `mcp_servers.cerberus.args=["mcp"]`,
+			"-c", `mcp_servers.cerberus.env_vars=["` + agentTokenEnv + `","CERBERUS_URL","CERBERUS_SESSION"]`,
+		}
+		out.argv = slices.Concat(argv[:at+1], out.flags, argv[at+1:])
+	case config.MCPStyleOpencode:
+		if _, own := p.Env["OPENCODE_CONFIG"]; own {
+			return out, nil
+		}
+		cfg := map[string]any{"$schema": "https://opencode.ai/config.json", "mcp": map[string]any{"cerberus": map[string]any{
+			"type":    "local",
+			"command": []string{selfPath(), "mcp"},
+			"enabled": true,
+			"environment": map[string]string{
+				"CERBERUS_URL":     url,
+				"CERBERUS_SESSION": id,
+				agentTokenEnv:      "{env:" + agentTokenEnv + "}", // read from the agent's environment
+			},
+		}}}
+		raw, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return out, err
+		}
+		path := filepath.Join(sessDir, opencodeConfigName)
+		if err := safeWrite(path, raw, 0o600); err != nil {
+			return out, err
+		}
+		out.flags = []string{"OPENCODE_CONFIG=" + path}
+		out.env = []string{"OPENCODE_CONFIG=" + path} // the token is in every session's env (Manager.env)
+	}
+	return out, nil
 }

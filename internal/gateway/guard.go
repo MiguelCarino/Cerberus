@@ -546,8 +546,14 @@ func (g *Gateway) noteHeld(c *call, r *guardRun, held []heldCall) {
 	g.gc.held.Add(int64(len(held)))
 	g.log.Warn("agent guard: held tool calls in a flagged turn", "model", c.rec.Model, "session", c.rec.SessionID, "calls", names)
 	if g.notifier != nil {
+		// A Cerberus session's hold links to the session, and names the
+		// calls, so the bell can offer "Approve once" (api guardApprove).
+		link := ""
+		if id := c.rec.SessionID; id != "" && !strings.HasPrefix(id, "chat-") {
+			link = "#/s/" + id
+		}
 		g.notifier(notify.Message{Title: "Agent guard held a tool call", Urgency: "normal", Kind: "guard", Level: "warn",
-			SessionID: c.rec.SessionID,
+			SessionID: c.rec.SessionID, Link: link, Held: names,
 			Body: fmt.Sprintf("A tool result read like instructions aimed at the agent, so %s was not run. Tell the agent \"go ahead\" if you want it.",
 				strings.Join(names, ", "))})
 	}

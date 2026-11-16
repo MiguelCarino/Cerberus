@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -12,7 +13,9 @@ import (
 
 	"carino.systems/cerberus/internal/config"
 	"carino.systems/cerberus/internal/gpu"
+	"carino.systems/cerberus/internal/notify"
 	"carino.systems/cerberus/internal/platform"
+	"carino.systems/cerberus/internal/railguard"
 )
 
 const (
@@ -58,12 +61,28 @@ type modelState struct {
 	waiters  []*waiter
 	crashCut int    // slots taken off the limit after crashes
 	crashed  bool   // failed while serving: unload what is left before the next load
-	loadSeq  uint64 // bumped on every load Cerberus makes (Endpoint.Gen)
+	loadSeq  uint64 // bumped on every load (and explicit unload) Cerberus makes (Endpoint.Gen)
+	ours     bool   // loaded now by Cerberus (not by another client of the engine)
+	loadedAt time.Time
+
+	// Engine deaths (killcause.go). lastFail is the last one, recorded once
+	// for the load failGen; failPending means its cause may still show up
+	// in railguard's history. vramCut is MiB taken off the GPU budget after
+	// railguard VRAM kills, decaying from cutAt.
+	lastFail     *Failure
+	failGen      uint64
+	failPending  bool
+	failPID      int
+	failFrom     time.Time
+	failCrashCut bool // that failure took a slot off the limit
+	vramCut      int
+	cutAt        time.Time
 }
 
 // setLoadedLocked records a load or unload we made. Caller holds Manager.mu.
 func (st *modelState) setLoadedLocked(loaded bool) {
 	st.loaded = loaded
+	st.ours = loaded
 	st.info.Loaded = loaded
 	st.gen++
 }
@@ -80,8 +99,31 @@ type Manager struct {
 	reapEvery time.Duration
 	memAvail  func() int // MiB of free system RAM (-1 unknown); platform.MemAvailableMiB
 
-	refreshMu sync.Mutex // one listing at a time
-	roomMu    ctxMutex   // local loads (and the room made for them) one at a time
+	// VRAM planning (guardline.go, footprint.go). railguard reads the
+	// watchdog's settings (nil: none); cgroupRoom is the memory an engine's
+	// cgroup still allows (-1 unknown); footprints holds learned needs.
+	railguard  func() (railguard.Settings, bool)
+	cgroupRoom func(ModelInfo) int
+	footprints *footprints
+	loadEvents atomic.Uint64 // bumped on every load or unload seen; a footprint sample spans none
+	changes    changeFeed    // change hints for the Models view (changes.go)
+
+	// Railguard's side of the contract (killcause.go, pressure.go). All nil
+	// in tests unless a test sets them; NewManager sets the real ones.
+	history          func(from, to time.Time) []railguard.Entry // its history lines (nil: none)
+	engineUnits      func(backend string) []string              // the unit a backend's engines run in
+	pressure         func(now time.Time) (railguard.Pressure, bool)
+	notify           func(notify.Message) // engine notifications (nil: none)
+	reattributeEvery time.Duration        // tests: >0 replaces reattributeAfter
+	pressureEvery    time.Duration        // how often the pressure loop looks (pressureInterval)
+	pwake            chan struct{}        // wakes the pressure loop when a model loads
+	active           atomic.Bool          // the GPU monitor is in fast mode (updateActive)
+	hotSince         time.Time            // proactive shed: VRAM past the line since (pressure loop only)
+	askSeen          float64              // the last pressure ask logged (its act_at)
+
+	refreshMu sync.Mutex  // one listing at a time
+	bgList    atomic.Bool // a background re-list of a stale cache is running (ensureFresh)
+	roomMu    ctxMutex    // local loads (and the room made for them) one at a time
 	wake      chan struct{}
 	stopOnce  sync.Once
 
@@ -95,8 +137,9 @@ type Manager struct {
 	states       map[string]*modelState
 	order        []string // model IDs in listing order
 	listed       time.Time
-	lastLocalEnd time.Time   // when the last local request through us ended
-	tailTimer    *time.Timer // ends the fast-poll tail after lastLocalEnd
+	missAt       map[string]time.Time // ids that missed a forced listing, and when (resolve)
+	lastLocalEnd time.Time            // when the last local request through us ended
+	tailTimer    *time.Timer          // ends the fast-poll tail after lastLocalEnd
 }
 
 // Option configures NewManager.
@@ -104,6 +147,13 @@ type Option func(*managerOptions)
 
 type managerOptions struct {
 	secrets func(name string) string
+	notify  func(notify.Message)
+}
+
+// WithNotifier sends engine notifications (a model ended outside Cerberus,
+// railguard asked for VRAM) through fn, e.g. a notify.Notifier's Send.
+func WithNotifier(fn func(notify.Message)) Option {
+	return func(o *managerOptions) { o.notify = fn }
 }
 
 // WithSecrets gives providers a key look-up (the vault). A provider's key is
@@ -144,13 +194,31 @@ func NewManager(cfg *config.Config, mon *gpu.Monitor, log *slog.Logger, opts ...
 	if mon != nil {
 		v = gpuVRAM{mon}
 	}
-	return newManager(cfg, v, log, bs)
+	m := newManager(cfg, v, log, bs)
+	m.footprints = newFootprints(dataDirFootprints)
+	m.notify = o.notify
+	m.history = readHistory
+	m.engineUnits = ownEngineUnits
+	if runtime.GOOS == "linux" {
+		// Railguard runs on Linux desktops only: elsewhere the file is
+		// never looked for.
+		m.pressure = readPressure
+	}
+	return m
 }
 
 func newManager(cfg *config.Config, v vramMonitor, log *slog.Logger, bs []Backend) *Manager {
-	return &Manager{cfg: cfg, vram: v, log: log, backends: bs,
+	m := &Manager{cfg: cfg, vram: v, log: log, backends: bs,
 		now: time.Now, reapEvery: reapInterval, memAvail: platform.MemAvailableMiB,
+		railguard: readRailguard, cgroupRoom: cgroupRoom, footprints: newFootprints(nil),
+		pressureEvery: pressureInterval, pwake: make(chan struct{}, 1),
 		wake: make(chan struct{}, 1), states: map[string]*modelState{}}
+	for _, b := range bs {
+		if en, ok := b.(exitNotifier); ok {
+			en.setOnExit(m.engineExited)
+		}
+	}
+	return m
 }
 
 // Models returns every model of every available backend (cached ≤5 s).
@@ -173,6 +241,10 @@ func (m *Manager) view(st *modelState) ModelInfo {
 	info.InFlight = st.inFlight
 	info.MaxParallel = m.limitLocked(st)
 	info.Waiting = len(st.waiters)
+	if st.lastFail != nil {
+		f := *st.lastFail
+		info.LastFailure = &f
+	}
 	if len(st.waiters) > 0 && st.waiters[0] != nil && !st.waiters[0].since.IsZero() {
 		info.LongestWaitS = time.Since(st.waiters[0].since).Seconds()
 	}
@@ -203,14 +275,101 @@ func (m *Manager) resolve(ctx context.Context, id string) (*modelState, error) {
 	if st := m.match(id); st != nil {
 		return st, nil
 	}
-	m.ensureFresh(ctx, true) // maybe a model appeared since the last listing
-	if st := m.match(id); st != nil {
-		return st, nil
+	// An id that missed a forced listing a moment ago misses again: a
+	// client that keeps naming an unknown model (claude-*, gpt-*) does not
+	// re-list every backend on each request.
+	if !m.missedRecently(id) {
+		m.ensureFresh(ctx, true) // maybe a model appeared since the last listing
+		if st := m.match(id); st != nil {
+			return st, nil
+		}
+		m.noteMiss(id)
 	}
 	if id == "default" {
 		return nil, fmt.Errorf("%w: default (set engines.default_model, or pick a model)", ErrUnknownModel)
 	}
 	return nil, fmt.Errorf("%w: %s", ErrUnknownModel, id)
+}
+
+// maxMisses bounds the negative cache of unknown ids.
+const maxMisses = 256
+
+// missedRecently reports whether id missed a forced listing less than
+// listCacheTTL ago.
+func (m *Manager) missedRecently(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.missAt[id]
+	return ok && m.now().Sub(at) < listCacheTTL
+}
+
+// noteMiss records that id missed a forced listing. The cache drops its
+// expired entries when full, and starts over if they all are fresh.
+func (m *Manager) noteMiss(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	if m.missAt == nil {
+		m.missAt = map[string]time.Time{}
+	}
+	if len(m.missAt) >= maxMisses {
+		for k, at := range m.missAt {
+			if now.Sub(at) >= listCacheTTL {
+				delete(m.missAt, k)
+			}
+		}
+		if len(m.missAt) >= maxMisses {
+			clear(m.missAt)
+		}
+	}
+	m.missAt[id] = now
+}
+
+// ResolveCached is Resolve against the models already listed: it never
+// forces a listing (it waits only for the very first one). The gateway
+// tries it before model_map, so a mapped name (claude-*) costs no listing.
+func (m *Manager) ResolveCached(ctx context.Context, id string) (ModelInfo, bool) {
+	if id == "" {
+		id = "default"
+	}
+	m.ensureFresh(ctx, false)
+	st := m.match(id)
+	if st == nil {
+		return ModelInfo{}, false
+	}
+	m.primeTotal()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.view(st), true
+}
+
+// LoadedEndpoint is where a loaded local model answers, without taking a
+// request slot, counting a request or touching its idle time. Token
+// counting uses it: llama-server tokenizes on its HTTP thread, so a count
+// need not wait behind a running generation. ok is false when the model
+// is unknown, not local or not loaded. The model may unload right after;
+// the caller's request then fails like any other.
+func (m *Manager) LoadedEndpoint(ctx context.Context, id string) (Endpoint, bool) {
+	if id == "" {
+		id = "default"
+	}
+	m.ensureFresh(ctx, false)
+	st := m.match(id)
+	if st == nil {
+		return Endpoint{}, false
+	}
+	m.mu.Lock()
+	info, b, loaded, gen := st.info, st.backend, st.loaded, st.loadSeq
+	m.mu.Unlock()
+	if !info.Local || !loaded || b == nil {
+		return Endpoint{}, false
+	}
+	ep := b.Endpoint(info)
+	if ep.BaseURL == "" {
+		return Endpoint{}, false
+	}
+	ep.Gen = gen
+	return ep, true
 }
 
 func (m *Manager) match(id string) *modelState {
@@ -294,6 +453,7 @@ func (m *Manager) Acquire(ctx context.Context, id string) (Endpoint, func(), err
 	m.mu.Lock()
 	st.inFlight++ // before loading, so the reaper and make-room leave it alone
 	m.mu.Unlock()
+	m.changed()
 	m.updateActive()
 
 	ep, err := m.ensureLoaded(ctx, st)
@@ -324,6 +484,7 @@ func (m *Manager) Acquire(ctx context.Context, id string) (Endpoint, func(), err
 				m.broadcastLocked()
 			}
 			m.mu.Unlock()
+			m.changed()
 			m.updateActive()
 		})
 	}
@@ -359,6 +520,11 @@ func (m *Manager) Unload(ctx context.Context, id string) error {
 		return err
 	}
 	m.markUnloaded(st)
+	m.mu.Lock()
+	// A request of the load just ended fails now: that is our doing, not
+	// a crash (MarkCrashedGen ignores an older load).
+	st.loadSeq++
+	m.mu.Unlock()
 	m.updateActive()
 	return nil
 }
@@ -366,7 +532,8 @@ func (m *Manager) Unload(ctx context.Context, id string) error {
 // loadPlan is what the manager learned while making room, handed to the
 // backend's Load through ModelInfo.plan.
 type loadPlan struct {
-	FreeMiB int // free VRAM after evictions, -1 unknown
+	FreeMiB int // VRAM the load may use: free after evictions less the reserve (min 0), -1 unknown
+	NeedMiB int // planNeedMiB: what the model needs fully on the GPU (0: not planned)
 }
 
 // ensureLoaded returns a ready endpoint, loading the model (once, even with
@@ -406,6 +573,14 @@ func (m *Manager) ensureLoaded(ctx context.Context, st *modelState) (Endpoint, e
 		return Endpoint{}, err // gave up while queued: evict and load nothing
 	}
 	m.mu.Lock()
+	pending, failGen := st.failPending, st.failGen
+	m.mu.Unlock()
+	if pending {
+		// Railguard may have written its line since the failure: then
+		// this load already gets the smaller GPU share.
+		m.reattribute(st, failGen)
+	}
+	m.mu.Lock()
 	crashed := st.crashed
 	m.mu.Unlock()
 	if crashed {
@@ -415,33 +590,66 @@ func (m *Manager) ensureLoaded(ctx context.Context, st *modelState) (Endpoint, e
 			m.log.Debug("unload after crash", "model", info.ID, "err", err)
 		}
 	}
-	free, err := m.makeRoom(ctx, st, info)
+	// The queue limit sets the KV slots, so it comes first: makeRoom, the
+	// RAM check and the split all plan with the same need.
+	m.mu.Lock()
+	limit := m.limitLocked(st)
+	m.mu.Unlock()
+	need := m.planNeedMiB(info, limit)
+	res := m.reserve()
+	// A footprint sample spans no other load or unload, the evictions just
+	// below included: an engine may still be handing their memory back.
+	events := m.loadEvents.Load()
+	free, err := m.makeRoom(ctx, st, info, need, res.MiB)
 	if err != nil {
 		return Endpoint{}, err
 	}
 	m.mu.Lock()
-	info.MaxParallel = m.limitLocked(st)
+	cut := st.cutLocked(m.now())
 	m.mu.Unlock()
-	info.plan = &loadPlan{FreeMiB: free}
+	if cut > 0 && free >= 0 {
+		// Railguard ended this model for VRAM within the last hours: plan
+		// a smaller GPU share than the one it ended.
+		free = max(free-cut, 0)
+		m.log.Info("planning a smaller GPU share after a railguard VRAM kill", "model", info.ID, "cut_mib", cut, "budget_mib", free)
+	}
+	info.MaxParallel = limit
+	info.plan = &loadPlan{FreeMiB: free, NeedMiB: need}
+	before := -1
+	if free >= 0 {
+		before = m.rawFree(ctx)
+	}
 	ep, err := b.Load(ctx, info)
 	if err != nil {
 		m.markUnloaded(st)
 		return Endpoint{}, err
 	}
+	if before >= 0 {
+		after := m.rawFree(ctx)
+		if m.loadEvents.Load() == events {
+			m.learnFootprint(info, limit, need, free, before-after)
+		}
+		m.guardAfterLoad(ctx, st, after, res.MiB)
+	}
 	m.mu.Lock()
 	st.setLoadedLocked(true)
 	st.crashed = false
 	st.loadSeq++
+	st.loadedAt = m.now()
 	st.lastUsed = m.now() // the idle TTL counts from load until first use
 	m.mu.Unlock()
+	m.loadEvents.Add(1)
+	m.changed()
 	m.wakeReaper()
 	return ep, nil
 }
 
 // makeRoom unloads idle local models, least recently used first, until the
-// target fits in free VRAM, and returns the free VRAM it expects after that
-// (-1 unknown). Caller holds target.loadMu and m.roomMu. The GPU is queried
-// afresh: a polled reading may predate a load that just finished.
+// target's need fits in free VRAM less reserve, and returns the VRAM it
+// expects the load may use after that (free less reserve, min 0; -1
+// unknown). Caller holds target.loadMu and m.roomMu. The GPU is queried
+// afresh: a polled reading may predate a load that just finished, and again
+// after each eviction (an engine may free more than the model's size).
 //
 // When the target still does not fit and another loaded local model is busy
 // (holds request slots), it waits for that model to finish instead of
@@ -453,8 +661,8 @@ func (m *Manager) ensureLoaded(ctx context.Context, st *modelState) (Endpoint, e
 // roomMu, and a busy model's release needs only m.mu. Only when nothing
 // busy holds memory (or waiting is off, or allow_overcommit is on) does the
 // old rule apply: load if VRAM and RAM together can hold it.
-func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelInfo) (int, error) {
-	need := int(float64(info.SizeMiB)*headroomFactor) + headroomMiB
+func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelInfo, need, reserve int) (int, error) {
+	budget := func(free int) int { return max(free-max(reserve, 0), 0) }
 	wait := m.roomWait()
 	var deadline <-chan time.Time
 	reason := ""
@@ -469,17 +677,20 @@ func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelIn
 		// that model (waiting on a release that already happened, or
 		// spilling into RAM while it could have been evicted).
 		_, since := m.busyLocal(target)
-		m.vram.Refresh(ctx)
-		free := m.vram.FreeVRAMMiB()
-		if free < 0 {
+		raw := m.rawFree(ctx)
+		if raw < 0 {
 			return -1, nil
 		}
+		free := budget(raw)
 		for _, v := range m.idleLocal(target) {
 			if free >= need {
 				break
 			}
 			if size, ok := m.tryUnload(ctx, v, false); ok {
 				free += size
+				if now := m.rawFree(ctx); now >= 0 {
+					free = max(free, budget(now))
+				}
 			}
 		}
 		if free >= need {
@@ -504,7 +715,7 @@ func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelIn
 		if r := "waiting for room: " + strings.Join(busy, ", ") + " busy"; r != reason {
 			if reason == "" {
 				m.log.Info("waiting for busy models to finish before loading",
-					"model", info.ID, "busy", busy, "need_mib", need, "free_vram_mib", free)
+					"model", info.ID, "busy", busy, "need_mib", need, "free_vram_mib", free, "reserve_mib", reserve)
 			}
 			reason = r
 			waitHook(ctx)(r)
@@ -514,8 +725,8 @@ func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelIn
 		case <-ctx.Done():
 			return free, ctx.Err()
 		case <-deadline:
-			return free, fmt.Errorf("%w: %s needs about %d MiB (%d free); %s still busy after %s",
-				ErrRoomTimeout, info.ID, need, free, strings.Join(busy, ", "), wait)
+			return free, fmt.Errorf("%w: %s needs about %d MiB (%d free after a %d MiB reserve); %s still busy after %s",
+				ErrRoomTimeout, info.ID, need, free, max(reserve, 0), strings.Join(busy, ", "), wait)
 		}
 	}
 }
@@ -525,15 +736,33 @@ func (m *Manager) makeRoom(ctx context.Context, target *modelState, info ModelIn
 // slower but working; mixture-of-experts models do this well. So a VRAM
 // shortfall is only a reason to evict idle models (and wait for busy ones),
 // not to refuse: refuse only when VRAM and RAM together cannot hold it.
+// The RAM side is the smaller of the system's free RAM and what the
+// engine's cgroup limit still allows (LM Studio's lmstudio.service
+// MemoryMax): past that limit the unit's OOM killer ends the engine.
 func (m *Manager) overcommit(info ModelInfo, need, free int) error {
+	if m.conf().Engines.AllowOverCommit {
+		m.log.Info("model larger than free VRAM; over-commit is on", "model", info.ID, "need_mib", need, "free_vram_mib", free)
+		return nil
+	}
 	ram := -1
 	if m.memAvail != nil {
 		ram = m.memAvail()
 	}
-	if m.conf().Engines.AllowOverCommit || ram < 0 || free+ram-headroomMiB >= need {
+	room := -1
+	if m.cgroupRoom != nil {
+		room = m.cgroupRoom(info)
+	}
+	if room >= 0 && (ram < 0 || room < ram) {
+		ram = room
+	}
+	if ram < 0 || free+ram-headroomMiB >= need {
 		m.log.Info("model larger than free VRAM; the engine will keep part of it in RAM",
-			"model", info.ID, "need_mib", need, "free_vram_mib", free, "free_ram_mib", ram)
+			"model", info.ID, "need_mib", need, "free_vram_mib", free, "free_ram_mib", ram, "cgroup_room_mib", room)
 		return nil
+	}
+	if room >= 0 && room == ram {
+		return fmt.Errorf("%w: %s needs about %d MiB, %d MiB VRAM free and its engine's cgroup limit leaves %d MiB RAM",
+			ErrNoRoom, info.ID, need, free, room)
 	}
 	return fmt.Errorf("%w: %s needs about %d MiB, %d MiB VRAM + %d MiB RAM free", ErrNoRoom, info.ID, need, free, ram)
 }
@@ -594,6 +823,8 @@ func (m *Manager) markUnloaded(st *modelState) {
 	st.setLoadedLocked(false)
 	m.broadcastLocked() // its memory is free: a load waiting for room re-checks
 	m.mu.Unlock()
+	m.loadEvents.Add(1)
+	m.changed()
 }
 
 // Forget marks a local model as not loaded after its engine said so (it was
@@ -610,6 +841,8 @@ func (m *Manager) Forget(id string) bool {
 	if local {
 		st.setLoadedLocked(false)
 		m.broadcastLocked()
+		m.loadEvents.Add(1)
+		m.changed()
 	}
 	m.mu.Unlock()
 	return local
@@ -625,6 +858,7 @@ func (m *Manager) Run(ctx context.Context) {
 	}()
 	m.Models(ctx) // learn what is already loaded
 	m.updateActive()
+	go m.pressureLoop(ctx)
 	var tick *time.Ticker
 	var tc <-chan time.Time
 	defer func() {
@@ -705,6 +939,7 @@ func (m *Manager) updateActive() {
 		}
 	}
 	m.mu.Unlock()
+	m.active.Store(active)
 	m.vram.SetActive(active)
 }
 
@@ -722,10 +957,16 @@ func (m *Manager) wakeReaper() {
 	case m.wake <- struct{}{}:
 	default:
 	}
+	select {
+	case m.pwake <- struct{}{}:
+	default:
+	}
 }
 
-// Shutdown stops every process this manager spawned (llama.cpp). Models
-// held by LM Studio or Ollama are left to them; their TTLs apply.
+// Shutdown stops every process this manager spawned (llama.cpp) and lets
+// LM Studio unload the models Cerberus loaded there (stopping its daemon
+// only when Cerberus started it in its own cgroup). Models others loaded
+// are left to them; Ollama's TTLs apply.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.stopOnce.Do(func() {
 		var wg sync.WaitGroup
@@ -737,6 +978,13 @@ func (m *Manager) Shutdown(ctx context.Context) {
 					s.StopAll(ctx)
 				}()
 			}
+			if s, ok := b.(shutdowner); ok {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					s.Shutdown(ctx)
+				}()
+			}
 		}
 		wg.Wait()
 		m.mu.Lock()
@@ -746,6 +994,8 @@ func (m *Manager) Shutdown(ctx context.Context) {
 			}
 		}
 		m.mu.Unlock()
+		m.loadEvents.Add(1)
+		m.changed()
 		m.updateActive()
 	})
 }

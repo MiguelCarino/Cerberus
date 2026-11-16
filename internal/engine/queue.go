@@ -121,6 +121,7 @@ func (m *Manager) admit(ctx context.Context, st *modelState) error {
 	}
 	w := &waiter{ch: make(chan struct{}), since: time.Now()}
 	st.waiters = append(st.waiters, w)
+	m.changed() // queued
 	reason := fmt.Sprintf("waiting for %s: %d of %d slots busy", st.info.ID, st.active, lim)
 	m.mu.Unlock()
 
@@ -173,6 +174,7 @@ func (m *Manager) dispatchLocked(st *modelState) {
 // broadcastLocked wakes everything waiting for room (a local model became
 // idle, crashed or was unloaded). Caller holds m.mu.
 func (m *Manager) broadcastLocked() {
+	m.changed()
 	if m.relCh != nil {
 		close(m.relCh)
 	}
@@ -228,22 +230,69 @@ func (m *Manager) markCrashed(id string, gen uint64, checkGen bool) bool {
 		m.log.Debug("crash report of an earlier load ignored", "model", st.info.ID, "gen", gen)
 		return true
 	}
-	before := m.limitLocked(st)
-	first := !st.crashed
-	if first && before > 1 {
-		st.crashCut++
-	}
-	after := m.limitLocked(st)
-	st.crashed = true
-	st.setLoadedLocked(false)
-	m.broadcastLocked()
+	seq, since, b, mid := st.loadSeq, st.loadedAt, st.backend, st.info.ID
 	m.mu.Unlock()
-	if first {
-		m.log.Warn("local engine failed; the model will be reloaded",
-			"model", st.info.ID, "max_parallel_before", before, "max_parallel", after)
+
+	// Ask the engine how its process ended (llama.cpp): a stop from
+	// outside (railguard, the OOM killer, a user) is not a crash and takes
+	// no slot off the limit. The failed request may come back before the
+	// exit is reaped, so wait a moment for it.
+	now := m.now()
+	var exit *exitInfo
+	if er, ok := b.(exitReporter); ok {
+		if e, ok := er.exitSince(mid, since, exitWait); ok {
+			if e.ByUs {
+				return true // Cerberus stopped it: not a crash
+			}
+			exit, now = &e, e.Time
+		}
 	}
+	pid := 0
+	if exit != nil {
+		pid = exit.PID
+	} else if pr, ok := b.(pidReporter); ok {
+		// Still running (or not reaped yet): its pid, so railguard's line
+		// about another llama-server is never blamed on this one.
+		pid = pr.enginePID(mid)
+	}
+	ev := m.classify(st, seq, now, pid, exit,
+		Failure{Time: now, Cause: "crash", Text: "the engine failed while answering"}, true)
+	m.noteFailure(ev)
 	return true
 }
+
+// MarkStalledGen records that the gateway's stall watchdog gave up on a
+// local model served by the load gen: its engine hung (no output and no
+// progress for StallSec). The model counts as not loaded, so the next
+// Acquire unloads what is left (llama.cpp: stops the hung llama-server)
+// and loads it afresh. Unlike a crash, a hang takes no slot off the
+// limit: one request too many is not what hangs an engine. The gateway
+// sends the notification, so none goes out here. It reports whether id
+// named a local model; a report against an older load changes nothing.
+func (m *Manager) MarkStalledGen(id string, gen uint64) bool {
+	st := m.match(id)
+	if st == nil {
+		return false
+	}
+	m.mu.Lock()
+	if !st.info.Local {
+		m.mu.Unlock()
+		return false
+	}
+	if gen != st.loadSeq {
+		m.mu.Unlock()
+		return true
+	}
+	now := m.now()
+	m.recordFailureLocked(&failureEvent{st: st, gen: gen,
+		f: Failure{Time: now, Cause: "stalled", Text: "the engine stopped responding (no output and no progress)"}})
+	m.mu.Unlock()
+	return true
+}
+
+// exitWait is how long a crash report waits for the engine's process to be
+// reaped before it decides the process is still running.
+const exitWait = 750 * time.Millisecond
 
 // roomWait is how long a load waits for busy models (0: never).
 func (m *Manager) roomWait() time.Duration {

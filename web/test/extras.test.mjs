@@ -396,6 +396,18 @@ test('flowApprovalRun finds the run of a flow approval item only', async () => {
   assert.equal(flowApprovalRun(null), '');
 });
 
+test('guardHeldSession finds the session of an agent guard hold only (Approve once)', async () => {
+  const { guardHeldSession, guardHeldText } = await import('../dist/assets/js/inbox.js');
+  assert.equal(guardHeldSession({ Kind: 'guard', Link: '#/s/s-20261115-1' }), 's-20261115-1');
+  assert.equal(guardHeldSession({ Kind: 'guard', Link: '' }), '');
+  assert.equal(guardHeldSession({ Kind: 'session', Link: '#/s/s1' }), '');
+  assert.equal(guardHeldSession({ Kind: 'guard', Link: '#/chat/c1' }), '');
+  assert.equal(guardHeldSession({ Kind: 'guard', Link: 'https://evil/#/s/s1' }), '');
+  assert.equal(guardHeldSession(null), '');
+  assert.equal(guardHeldText({ Held: ['bash', 'write_file'] }), 'Run bash, write_file once');
+  assert.equal(guardHeldText({}), 'Run the held call once');
+});
+
 test('normAsks keeps well-formed open chat permission requests, keyed chat/req', () => {
   assert.deepEqual(normAsks(null), []);
   assert.deepEqual(normAsks({}), []);

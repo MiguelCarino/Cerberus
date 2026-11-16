@@ -65,6 +65,7 @@ type reqShape struct {
 	budget                  int
 	results, matched        int
 	resultErrors            int
+	prefix                  int // messages before the text's new turn
 	text                    *records.Text
 }
 
@@ -75,7 +76,11 @@ type shapeMessage struct {
 }
 
 // shapeOf reads a Chat Completions request (as sent upstream) for its record.
-// level is the records text level: the text is rendered only when kept.
+// level is the records text level: the text is rendered only when kept. The
+// conversation text holds only the new turn: the messages after the last
+// assistant message (prefix counts the ones before), so an agent loop of n
+// turns writes each message once and not n times. System prompts are kept
+// whole on every line (level all).
 func (g *Gateway) shapeOf(req *request, level string) reqShape {
 	f := req.fields
 	var sh reqShape
@@ -90,8 +95,15 @@ func (g *Gateway) shapeOf(req *request, level string) reqShape {
 	var tools []json.RawMessage
 	_ = json.Unmarshal(f["tools"], &tools)
 	sh.tools = len(tools)
+	newFrom := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "assistant" {
+			newFrom = i + 1
+			break
+		}
+	}
 	var sys, conv strings.Builder
-	for _, m := range msgs {
+	for i, m := range msgs {
 		sh.images += countImages(m.Content)
 		if m.Role == "tool" {
 			sh.results++
@@ -107,10 +119,16 @@ func (g *Gateway) shapeOf(req *request, level string) reqShape {
 			sys.WriteString(contentText(m.Content))
 			sys.WriteString("\n")
 		case "tool":
+			if i < newFrom {
+				continue
+			}
 			if level == records.TextAll {
 				conv.WriteString("tool: " + contentText(m.Content) + "\n")
 			}
 		default:
+			if i < newFrom {
+				continue
+			}
 			if t := contentText(m.Content); t != "" {
 				conv.WriteString(m.Role + ": " + t + "\n")
 			}
@@ -118,6 +136,7 @@ func (g *Gateway) shapeOf(req *request, level string) reqShape {
 	}
 	if level != "" && level != records.TextNone {
 		sh.text = &records.Text{System: strings.TrimSpace(sys.String()), Messages: strings.TrimSpace(conv.String())}
+		sh.prefix = newFrom
 	}
 	sh.resultErrors = req.resultErrors
 	if e, ok := f["reasoning_effort"]; ok {
@@ -259,9 +278,10 @@ func (c *call) addReason(s string) {
 
 // record writes c's request record.
 func (g *Gateway) record(c *call) {
-	if g.records == nil || c.shape == nil {
+	if g.records == nil || !c.recording {
 		return
 	}
+	g.shapeRecord(c) // failed before it was shaped: the request as the client sent it
 	sh := c.shape
 	l := records.Line{Time: c.start, API: c.rec.API, Stream: c.stream, Model: c.rec.Model, Backend: c.rec.Backend,
 		Provider: c.rec.Provider, Session: c.rec.SessionID, User: c.rec.User, Client: c.family,
@@ -271,6 +291,9 @@ func (g *Gateway) record(c *call) {
 		ReasoningTokens: c.rec.ReasoningTokens,
 		Finish:          c.rec.Finish, Status: c.rec.Status, Error: c.rec.Error, TTFTMs: c.rec.TTFTMs, DurationMs: c.rec.DurationMs,
 		Results: sh.results, ResultErrors: sh.resultErrors, Matched: sh.matched, Guard: c.guard}
+	if sh.text != nil {
+		l.Prefix = sh.prefix
+	}
 	switch {
 	case c.rec.Status == statusClientClosed:
 		l.Finish = "disconnect"
@@ -293,16 +316,27 @@ func (g *Gateway) record(c *call) {
 	g.records.Add(l)
 }
 
-// startRecord sets up c's request record from req (called again once the
-// request is shaped for its endpoint, so the record says what went upstream).
+// startRecord sets up c's request record: the client family, the stream
+// switch and the text levels. The request's shape is read once, by
+// shapeRecord: after the request is shaped for its endpoint (so the record
+// says what went upstream), or when the record is written after an early
+// failure.
 func (g *Gateway) startRecord(c *call, r *http.Request, req *request) {
 	if g.records == nil {
 		return
 	}
 	lvl := g.records.TextLevel()
-	sh := g.shapeOf(req, lvl)
-	c.shape, c.stream = &sh, req.stream
+	c.recording, c.recReq, c.stream = true, req, req.stream
 	c.family = records.ClientFamily(r.Header.Get("X-Cerberus-Client"), r.Header.Get("User-Agent"))
 	c.keepText = lvl == records.TextUser || lvl == records.TextAll
 	c.keepReason = lvl == records.TextAll
+}
+
+// shapeRecord reads c's request for its record, once.
+func (g *Gateway) shapeRecord(c *call) {
+	if !c.recording || c.shape != nil || c.recReq == nil {
+		return
+	}
+	sh := g.shapeOf(c.recReq, g.records.TextLevel())
+	c.shape, c.stream = &sh, c.recReq.stream
 }

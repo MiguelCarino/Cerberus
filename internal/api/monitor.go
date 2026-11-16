@@ -275,7 +275,7 @@ func (s *server) withModelCost(ms []engine.ModelInfo) []engine.ModelInfo {
 		b := s.busy()
 		for i := range ms {
 			if x, ok := b[ms[i].ID]; ok {
-				ms[i].BusyForS, ms[i].Stalls = x.BusyForS, x.Stalls
+				ms[i].BusyForS, ms[i].Stalls, ms[i].Prefill = x.BusyForS, x.Stalls, x.Prefill
 			}
 		}
 	}

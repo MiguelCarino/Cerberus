@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"carino.systems/cerberus/internal/config"
 	"carino.systems/cerberus/packaging"
 )
 
@@ -27,6 +28,9 @@ type installer struct {
 	// audit records the install (the audit log keeps every state-changing
 	// CLI action); nil records nothing (tests).
 	audit func(event, detail string, targets ...string)
+	// guard is guard.max_sessions and guard.session_memory_max, which size
+	// the sessions slice; nil means the defaults (3 x 6G).
+	guard func() (int, string)
 }
 
 func installCmd(args []string, stdout, stderr io.Writer) int {
@@ -65,6 +69,13 @@ func defaultInstaller(out io.Writer) (*installer, error) {
 		return nil, err
 	}
 	return &installer{goos: runtime.GOOS, exe: exe, home: home, configDir: cfgDir, out: out,
+		guard: func() (int, string) {
+			c, _, err := loadConfigFile("")
+			if err != nil {
+				c = config.Defaults()
+			}
+			return c.Guard.MaxSessions, c.Guard.SessionMemoryMax
+		},
 		systemctl: func(args ...string) error {
 			cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
 			cmd.Stdout, cmd.Stderr = out, out
@@ -73,8 +84,10 @@ func defaultInstaller(out io.Writer) (*installer, error) {
 }
 
 // install copies the binary to ~/.local/bin/cerberus (unless it already is
-// that file), writes the unit, reloads systemd and enables and starts the
-// service, restarting it when it was running an older binary.
+// that file), writes the unit and the sessions slice
+// (cerberus-sessions.slice, sized from the config), reloads systemd and
+// enables and starts the service, restarting it when it was running an
+// older binary. The slice is used once guard.systemd_slice names it.
 func (in *installer) install() (err error) {
 	if in.goos != "linux" {
 		return errors.New("installing a service is not supported yet on " + in.goos)
@@ -105,6 +118,15 @@ func (in *installer) install() (err error) {
 		return err
 	}
 	fmt.Fprintln(in.out, "wrote", unit)
+	n, per := 3, "6G"
+	if in.guard != nil {
+		n, per = in.guard()
+	}
+	slice := filepath.Join(filepath.Dir(unit), packaging.SessionSliceName)
+	if err := os.WriteFile(slice, []byte(packaging.SessionSliceFor(n, per)), 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintln(in.out, "wrote", slice)
 	if err := in.systemctl("daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl --user daemon-reload: %w", err)
 	}

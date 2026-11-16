@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,9 @@ type lmStudio struct {
 	http   *http.Client
 	roots  func() []string // models folders (nil: from LM Studio's settings and defaults)
 	hub    func() string   // catalogue manifests folder (nil: ~/.lmstudio/hub/models)
+
+	daemonMu sync.Mutex
+	daemon   lmsDaemon // where its daemon runs, and what Cerberus loaded (lmsdaemon.go)
 }
 
 func newLMStudio(cfg *config.Config, log *slog.Logger) *lmStudio {
@@ -56,6 +60,7 @@ func newLMStudio(cfg *config.Config, log *slog.Logger) *lmStudio {
 		binary: func() string { return findLMS(lc.Binary) },
 		run:    runCommand,
 		http:   defaultHTTPClient,
+		daemon: newLMSDaemon(),
 	}
 }
 
@@ -144,6 +149,9 @@ func (b *lmStudio) lms(ctx context.Context, timeout time.Duration, args ...strin
 	if bin == "" {
 		return nil, errors.New("lms not found")
 	}
+	if len(args) == 0 || args[0] != "daemon" {
+		b.ensureDaemon(ctx, bin) // its own deadline, before the call's starts
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return b.run(ctx, bin, args...)
@@ -230,11 +238,17 @@ func (b *lmStudio) Load(ctx context.Context, m ModelInfo) (Endpoint, error) {
 		return b.Endpoint(m), nil
 	}
 	ttl := int(b.conf().IdleTTL(modelConfig(b.conf(), m.ID)) / time.Second)
-	args := lmsLoadArgs(m, ttl, b.conf().Engines.LMStudio.GPU)
+	gpu := b.conf().Engines.LMStudio.GPU
+	if over, share := lmsGPUOverBudget(m, gpu); over {
+		b.log.Warn("engines.lmstudio.gpu puts more of the model on the GPU than fits under the VRAM reserve",
+			"model", m.ID, "gpu", gpu, "share", share, "need_mib", m.plan.NeedMiB, "budget_mib", m.plan.FreeMiB)
+	}
+	args := lmsLoadArgs(m, ttl, gpu)
 	if _, err := b.lms(ctx, b.timeout, args...); err != nil {
 		return Endpoint{}, fmt.Errorf("lms load %s: %w", m.ID, err)
 	}
 	m.Name = m.ID
+	b.noteLoaded(m.ID)
 	b.log.Info("model loaded", "backend", BackendLMStudio, "model", m.ID, "args", strings.Join(args[2:], " "))
 	return b.Endpoint(m), nil
 }
@@ -272,6 +286,8 @@ func (b *lmStudio) Unload(ctx context.Context, m ModelInfo) error {
 	if _, err := b.lms(ctx, lmsCmdTimeout, "unload", name); err != nil {
 		return fmt.Errorf("lms unload %s: %w", name, err)
 	}
+	b.noteUnloaded(name)
+	b.noteUnloaded(m.ID)
 	b.log.Info("model unloaded", "backend", BackendLMStudio, "model", m.ID)
 	return nil
 }

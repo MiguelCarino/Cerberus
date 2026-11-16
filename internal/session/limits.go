@@ -88,7 +88,44 @@ func (m *Manager) wrapScope(argv []string, info Info) ([]string, string) {
 	if mem := orDefault(info.Limits.MemoryMax, g.SessionMemoryMax); mem != "" {
 		w = append(w, "-p", "MemoryMax="+mem)
 	}
+	if m.oomPreference() {
+		// systemd-oomd picks another cgroup first when the slice is under
+		// pressure (honoured when the scope and the watched slice have one
+		// owner, as user scopes do).
+		w = append(w, "-p", "ManagedOOMPreference=avoid")
+	}
 	return append(append(w, "--"), argv...), unit
+}
+
+// minOOMPrefSystemd is the first systemd that takes ManagedOOMPreference=;
+// an older one refuses the property and the scope would not start.
+const minOOMPrefSystemd = 248
+
+// oomPreference reports whether this systemd takes ManagedOOMPreference=
+// (asked once, from `systemctl --version`).
+func (m *Manager) oomPreference() bool {
+	m.oomPrefOnce.Do(func() {
+		sc, err := exec.LookPath("systemctl")
+		if err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(m.ctx, scopeProbeTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, sc, "--version").Output()
+		m.oomPref = err == nil && systemdVersion(string(out)) >= minOOMPrefSystemd
+	})
+	return m.oomPref
+}
+
+// systemdVersion reads "systemd 255 (255.4-1.fc40)" (0 when unknown).
+func systemdVersion(out string) int {
+	first, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	f := strings.Fields(first)
+	if len(f) < 2 || f[0] != "systemd" {
+		return 0
+	}
+	n, _ := strconv.Atoi(f[1])
+	return n
 }
 
 // scopeFallback handles a run whose systemd scope could not start (its

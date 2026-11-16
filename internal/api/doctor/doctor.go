@@ -106,6 +106,11 @@ type Env struct {
 	// Models lists the model ids the engines know now (the evals check;
 	// nil: no listing, so a model only the engines know is not flagged).
 	Models func(ctx context.Context) []string
+	// VRAMTotalMiB is the total VRAM (-1 unknown; default: nvidia-smi
+	// through Output). RailguardDir is railguard's state folder (default
+	// $XDG_STATE_HOME/hypr through Getenv, else Home/.local/state/hypr).
+	VRAMTotalMiB func(ctx context.Context) int
+	RailguardDir string
 }
 
 // Defaults fills every nil field of e with the real implementation.
@@ -190,6 +195,10 @@ func Defaults(e Env) Env {
 	if e.TokenRotated == nil {
 		e.TokenRotated = func() time.Time { return time.Time{} }
 	}
+	if e.VRAMTotalMiB == nil {
+		withOutput := e
+		e.VRAMTotalMiB = func(ctx context.Context) int { return nvidiaTotalMiB(ctx, withOutput) }
+	}
 	return e
 }
 
@@ -219,9 +228,9 @@ func Run(ctx context.Context, e Env) Report {
 	if e.Cfg != nil {
 		checks = append(checks, modesCheck(e), listenCheck(e), previewPortsCheck(e), tlsCheck(e), tokenAgeCheck(e),
 			localNoAuthCheck(e), sandboxCheck(ctx, e), raplCheck(e), enginesCheck(ctx, e),
-			agentsCheck(e), systemdCheck(e), diskCheck(e), retentionCheck(e), gitCheck(ctx, e),
+			agentsCheck(e), systemdCheck(e), sessionSliceCheck(ctx, e), diskCheck(e), retentionCheck(e), gitCheck(ctx, e),
 			voiceCheck(e), serviceCheck(e), usersCheck(e), usersTLSCheck(e), lingerCheck(e), usersSandboxCheck(ctx, e),
-			recordsCheck(e), agentGuardCheck(e), evalsCheck(ctx, e))
+			recordsCheck(e), agentGuardCheck(e), evalsCheck(ctx, e), vramReserveCheck(ctx, e))
 	}
 	r := Report{Time: e.Now().UTC(), Checks: checks, Counts: map[Status]int{OK: 0, Warn: 0, Fail: 0}}
 	for _, c := range checks {
@@ -838,7 +847,7 @@ func systemdCheck(e Env) Check {
 	}
 	if e.Cfg != nil && e.Cfg.Guard.SystemdSlice == "" {
 		return warn(id, name, "guard.systemd_slice is empty: sessions run without a memory limit or slice",
-			`set guard.systemd_slice (default "agents.slice")`)
+			`set guard.systemd_slice (for example "cerberus-sessions.slice", which cerberus install-service writes)`)
 	}
 	if _, err := e.LookPath("systemd-run"); err != nil {
 		return warn(id, name, "systemd-run not found: sessions run without a memory limit or slice", "install systemd (or accept unlimited sessions)")

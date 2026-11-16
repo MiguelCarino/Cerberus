@@ -20,11 +20,22 @@ package api
 //	           (each omitted when 0 = its default: 50, 200000, 1.00, 2, 60),
 //	   steps: [Step]}
 //	Step: {id, kind, name?, ...} with only its kind's fields (others omitted):
-//	  prompt   model, system, template, json
-//	  plan     model, template, max_items
+//	  prompt   model, system, template, json, temperature, max_tokens, thinking
+//	  plan     model, template, max_items, temperature, max_tokens, thinking
 //	  fan_out  from, routes: [{kind, model}], default_model, as ("prompt"|"session"),
-//	           template, agent, workspace, repo, folder, max_parallel
-//	  session  agent, workspace ("scratch"|"repo"|"folder"), repo, folder, task
+//	           template, agent, workspace, repo, folder, max_parallel,
+//	           temperature, max_tokens, thinking (prompt items only)
+//	  (temperature 0 to 2, max_tokens 1 to 262144, thinking "on"|"off"; omitted
+//	  = the model's defaults; thinking reaches local models only)
+//	  session  agent, workspace ("scratch"|"repo"|"folder"|"step"), repo, folder, from, task,
+//	           max_attempts (1-5), escalate_to (an agent profile), max_minutes
+//	           (also on a fan_out run as sessions; they act when the workspace has checks)
+//	  judge    on (an earlier session, prompt or fan_out-as-prompt step), criteria,
+//	           gates, persona, model
+//	  fan_out also takes min_ok (items that must pass; failed items give null);
+//	  prompt, plan and fan_out take retry {max 0-3, backoff_s 0-600}; every kind
+//	  but if and approve takes on_error ("fail" | "continue" | a later step id |
+//	  "end"; a failed step's output is then {"error": "..."})
 //	  if       test ("contains"|"matches"|"equals"|"json"|"state"), on (step id),
 //	           value, path (json), then, else (a later step id, "end" or "")
 //	  approve  message
@@ -54,7 +65,11 @@ package api
 //	          {session, state, summary}, true/false for if, {ok, note, by} for
 //	          approve, {file, bytes} for a file), model, prompt_tokens,
 //	          completion_tokens, calls, cost_usd, energy_wh, started, ended,
-//	          duration_ms, error, session, jump, file, items: [ItemRecord]}
+//	          duration_ms, error, session, jump, file, items: [ItemRecord],
+//	          retries?, retry_error?, attempts? (runs of the whole step under retry),
+//	          on_error? ("next" or the step it jumped to, on a failed step the run
+//	          went on from), revisions? (judge on a prompt: [{item?, gate, iteration,
+//	          feedback, output, model, tokens, error?}])}
 //	ItemRecord: {index, title, kind, model, state, input, output, prompt_tokens,
 //	          completion_tokens, calls, cost_usd, energy_wh, session, error,
 //	          started, ended}

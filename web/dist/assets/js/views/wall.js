@@ -11,7 +11,7 @@ import { FitAddon } from '../../vendor/addon-fit/addon-fit.mjs';
 import { LiveSource } from '../api.js';
 import { h, clear, openDialog, pill } from '../dom.js';
 import { store } from '../store.js';
-import { b64ToBytes, debounce, stateTone, isLive, isClosed, fmtEnergy } from '../util.js';
+import { b64ToBytes, streamPos, parsePosEvent, debounce, stateTone, isLive, isClosed, fmtEnergy } from '../util.js';
 import {
   sessionName, gridFit, wallIds, wallStreamURL, parseWallEvent, miniTermSize, snapIndex, fmtElapsed,
   moveCursor, byListOrder, WALL_MAX,
@@ -76,7 +76,7 @@ export function mount(root, { ids: routeIds = [], embedded = false, strip = fals
 
   // ---------- tiles ----------
   function makeTile(id) {
-    const t = { id, info: store.session(id), fresh: true, term: null, fit: null, ti: null, opened: false };
+    const t = { id, info: store.session(id), pos: null, term: null, fit: null, ti: null, opened: false };
     t.name = h('span', { class: 'tile-name' });
     t.state = h('span', { class: 'tile-state' });
     t.meta = h('span', { class: 'tile-meta' });
@@ -268,18 +268,34 @@ export function mount(root, { ids: routeIds = [], embedded = false, strip = fals
   function restartStream() {
     if (stream) { stream.stop(); stream = null; }
     if (!ids.length) return;
+    // Each tile keeps its stream position: a reconnect gets only what each
+    // missed, and a backlog (which resets the tile) only on a gap.
     const write = (data) => {
       const ev = parseWallEvent(data);
       const t = ev && tiles.get(ev.id);
       if (!t) return;
-      if (t.fresh) { t.term.reset(); t.fresh = false; }
-      t.term.write(b64ToBytes(ev.b64));
+      if (!t.pos) t.pos = streamPos();
+      const b = b64ToBytes(ev.b64);
+      if (ev.backlog) { t.pos.clear(); t.term.reset(); } else t.pos.add(b.length);
+      t.term.write(b);
     };
-    // Each (re)connect replays a backlog per session: start every tile clean.
-    stream = new LiveSource(wallStreamURL(ids), {
-      open: () => { for (const t of tiles.values()) t.fresh = true; },
+    const from = () => {
+      const m = {};
+      for (const [id, t] of tiles) if (t.pos && t.pos.get()) m[id] = t.pos.get();
+      return m;
+    };
+    stream = new LiveSource(() => wallStreamURL(ids, from()), {
       out: write,
       backlog: write,
+      pos: (data) => {
+        const v = parsePosEvent(data) || {};
+        for (const [id, p] of Object.entries(v)) {
+          const t = tiles.get(id);
+          if (!t) continue;
+          if (!t.pos) t.pos = streamPos();
+          t.pos.set(p);
+        }
+      },
     }).start();
   }
 

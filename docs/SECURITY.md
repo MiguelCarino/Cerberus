@@ -145,8 +145,9 @@ Controls:
   Folder pickers and file tools refuse `Agent.DenyPaths` (for example `~/.ssh`, `~/.gnupg`) and Cerberus' own
   folders ([internal/session/workspace.go](../internal/session/workspace.go),
   [internal/agent/paths.go](../internal/agent/paths.go)).
-- **Resource limits.** Each run sits in a systemd-run scope under `agents.slice` when systemd is there
-  ([internal/session/limits.go](../internal/session/limits.go)), and the guard refuses new sessions when memory or
+- **Resource limits.** Each run sits in a systemd-run scope under `guard.systemd_slice` when systemd is there
+  (`cerberus-sessions.slice` for a config `cerberus init` made, `agents.slice` before; `cerberus install-service`
+  writes the slice file; [internal/session/limits.go](../internal/session/limits.go)), and the guard refuses new sessions when memory or
   VRAM is short ([internal/session/guard.go](../internal/session/guard.go)).
 - **Sandbox.** With `bwrap`, the agent sees `/` read-only, a fresh `/dev`, `/proc` and `/tmp`, its workspace and
   session folder writable, and each `Sandbox.HideHome` path (`~/.ssh`, `~/.gnupg`, `~/.config/cerberus`,

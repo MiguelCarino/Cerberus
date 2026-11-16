@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"carino.systems/cerberus/internal/config"
+	"carino.systems/cerberus/internal/railguard"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -21,6 +22,7 @@ type fakeBackend struct {
 	name      string
 	local     bool
 	loadDelay time.Duration
+	listDelay time.Duration
 	failLoad  error
 
 	mu       sync.Mutex
@@ -43,6 +45,9 @@ func newFake(name string, local bool, ids ...string) *fakeBackend {
 func (f *fakeBackend) Name() string    { return f.name }
 func (f *fakeBackend) Available() bool { return true }
 func (f *fakeBackend) List(context.Context) ([]ModelInfo, error) {
+	if f.listDelay > 0 {
+		time.Sleep(f.listDelay)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lists++
@@ -120,6 +125,9 @@ func testManager(cfg *config.Config, free int, bs ...Backend) (*Manager, *fakeVR
 	v.free.Store(int64(free))
 	m := newManager(cfg, v, quietLog(), bs)
 	m.memAvail = func() int { return 0 } // tests never depend on this machine's RAM
+	// ... nor on its railguard settings or LM Studio's cgroup.
+	m.railguard = func() (railguard.Settings, bool) { return railguard.Defaults(), false }
+	m.cgroupRoom = func(ModelInfo) int { return -1 }
 	return m, v
 }
 
@@ -180,13 +188,32 @@ func TestModelsCacheAndOverrides(t *testing.T) {
 		t.Errorf("override with other backend applied: %+v", ms[1])
 	}
 	m.Models(context.Background())
-	if f.lists != 1 {
-		t.Errorf("lists = %d within cache TTL, want 1", f.lists)
+	if n := f.listCount(); n != 1 {
+		t.Errorf("lists = %d within cache TTL, want 1", n)
 	}
 	now = now.Add(6 * time.Second)
-	m.Models(context.Background())
-	if f.lists != 2 {
-		t.Errorf("lists = %d after TTL, want 2", f.lists)
+	m.Models(context.Background()) // served stale; one listing starts behind it
+	waitRelist(t, m)
+	if n := f.listCount(); n != 2 {
+		t.Errorf("lists = %d after TTL, want 2", n)
+	}
+}
+
+func (f *fakeBackend) listCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lists
+}
+
+// waitRelist waits for a background listing of a stale cache to end.
+func waitRelist(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for m.bgList.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("background listing never ended")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

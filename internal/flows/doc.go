@@ -72,8 +72,9 @@
 // outputs), items run with min(step max_parallel, limits.max_parallel) at
 // once and the first failure cancels the rest, except a transient engine
 // failure (see below), which fails only its item; session → {session, state,
-// summary} (the step passes whatever the final state is: test it with an
-// `if` state test); judge → {passed, gates_passed, gates_total, failed,
+// summary, workspace, files, checks, diff_stat, final} (the step passes
+// whatever the final state is: test it with an `if` state test; workspace
+// "step" works where an earlier step's session(s) worked); judge → {passed, gates_passed, gates_total, failed,
 // session, report} (the step passes whatever the verdict: branch with an
 // `if` equals test on path "passed"); if → true/false; approve → {ok,
 // note, by}; output → the text, or {file, bytes} for a file.
@@ -87,6 +88,27 @@
 // usage through the SessionMeter, so the run's limits cover both; past a
 // limit the judging stops, the session is stopped and the run is limited.
 // An `equals` test with a path compares that field of the output.
+//
+// A judge step may also judge a prompt step's answer, or each answer of a
+// fan-out run as prompts (one after another; items with no output are
+// skipped). The answer is the only evidence (evals text mode). A gate that
+// fails with iterations left calls JudgeRequest.Revise: the step's model
+// is asked again with [the step's messages, its answer, the feedback as a
+// user turn]. The call is charged to the run and counts as a step. The
+// revised answer replaces the step's output for later steps, and the judge
+// output carries it ("revised", "output") so a continued run reads it
+// back; StepRecord.Revisions lists every revise call.
+//
+// Step errors: prompt, plan and fan-out steps (each fan-out item) may set
+// retry {max 0-3, backoff_s}: a failure other than a limit, a cancel or
+// the step's end runs the step (item) again; each retry counts as a step
+// and the record keeps Attempts and every try's usage. on_error
+// ("continue", a later step id or "end"; not on if and approve) lets the
+// run go on after such a failure: the record stays failed with OnError
+// set and the output {"error": "..."}. A fan-out's min_ok: failed items
+// give null and do not stop the others; the step passes when that many
+// passed. Session steps (and session fan-outs) pass max_attempts,
+// escalate_to and max_minutes to the session manager.
 //
 // Transient engine failures: a prompt or plan step, or a fan-out item run
 // as a prompt, whose model call fails with a temporary engine error (the

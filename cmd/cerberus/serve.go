@@ -191,6 +191,9 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		defer notes.Close()
 	}
 	mon := gpu.New(cfg.GPU, log.With("part", "gpu"))
+	// Engine deaths (railguard, the OOM killer) and railguard's VRAM asks
+	// reach the inbox and the desktop as Kind "engine".
+	engOpts = append(engOpts, engine.WithNotifier(notifier.Send))
 	eng := engine.NewManager(cfg, mon, log.With("part", "engine"), engOpts...)
 	// Energy is created before the sessions (they read their cost from it) and
 	// learns the live sessions afterwards; sess is set before anything samples.
@@ -240,7 +243,17 @@ func serve(ctx context.Context, stop func(), cfgPath string, log *slog.Logger, r
 		defer recs.Close()
 		log.Info("request records on", "dir", rc.Dir, "text", recs.TextLevel())
 	}
-	gw := gateway.New(eng, mon, store, log.With("part", "gateway"), gateway.WithConfig(cfg), gateway.WithNotifier(notifier.Send),
+	// A guard hold in a Cerberus session is the session owner's to answer
+	// ("Approve once"), so its inbox item is stored under that owner.
+	gwNotify := func(m notify.Message) {
+		if m.Kind == "guard" && m.Owner == "" && m.SessionID != "" && sess != nil {
+			if info, ok := sess.Get(m.SessionID); ok {
+				m.Owner = info.Owner
+			}
+		}
+		notifier.Send(m)
+	}
+	gw := gateway.New(eng, mon, store, log.With("part", "gateway"), gateway.WithConfig(cfg), gateway.WithNotifier(gwNotify),
 		gateway.WithRecords(recs),
 		gateway.WithExchange(func() bool { return ft != nil && chatCfg.Load().Finetune.Capture == config.CaptureCloud },
 			func(ex gateway.Exchange) { keepExchange(ft, ex, log) }))

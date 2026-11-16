@@ -1,0 +1,19 @@
+# Cerberus agent sessions. Each session runs as a scope in this slice when
+# guard.systemd_slice is "cerberus-sessions.slice" (what `cerberus init`
+# writes for a new config). `cerberus install-service` writes this file to
+# ~/.config/systemd/user/ with MemoryMax = guard.max_sessions x
+# guard.session_memory_max (3 x 6G by default) and MemoryHigh at 90% of it.
+#
+# A slice of its own, not one shared with other work: no
+# ManagedOOMMemoryPressure=kill (systemd-oomd would end a whole session,
+# the agent mid-task, under someone else's pressure) and a normal CPU
+# weight. Each session scope also asks systemd-oomd to avoid it
+# (ManagedOOMPreference=avoid). Each scope keeps its own MemoryMax
+# (guard.session_memory_max).
+[Unit]
+Description=Cerberus agent sessions
+
+[Slice]
+MemoryHigh=16588M
+MemoryMax=18432M
+CPUWeight=100

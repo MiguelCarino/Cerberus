@@ -2,6 +2,7 @@ package flows
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"carino.systems/cerberus/internal/evals"
@@ -25,11 +26,23 @@ type ModelRequest struct {
 	Model    string    // a model id, a cloud model, or "default"
 	Messages []Message // system first when there is one
 	JSON     bool      // the step wants JSON back (a hint; the runner parses)
-	Client   string    // always ClientName
-	Run      string    // run id: record usage with it as the session
-	Flow     string    // flow id
-	Step     string    // step id
-	Owner    string    // the run's owner (Phase 4a): charged for the call
+	// Schema is the JSON schema the answer should follow: an array of
+	// {title, kind, task} for a plan step, an object or array for a JSON
+	// prompt step. A host sends it as response_format where the engine
+	// enforces one (local engines) and leaves it out elsewhere; the runner
+	// parses the answer the same way either way.
+	Schema json.RawMessage
+	// Temperature, MaxTokens and Thinking are the step's model settings
+	// (nil, 0 and "" = the model's defaults). Thinking is ThinkingOn or
+	// ThinkingOff; a host sends it to local models only.
+	Temperature *float64
+	MaxTokens   int
+	Thinking    string
+	Client      string // always ClientName
+	Run         string // run id: record usage with it as the session
+	Flow        string // flow id
+	Step        string // step id
+	Owner       string // the run's owner (Phase 4a): charged for the call
 }
 
 // ModelReply is a completion with its usage. CostUSD is the money cost
@@ -66,13 +79,52 @@ type SessionRequest struct {
 	Flow      string
 	Step      string
 	Owner     string // the run's owner (Phase 4a): the session acts for them, confined unless admin
+	// Workspace "step" (a session step only) sets one of these: SameAs is
+	// the earlier session whose scratch or folder workspace this one works
+	// in, in place; Seeds are earlier sessions whose files are copied into
+	// a new scratch folder first. The runner refuses a source that is
+	// still running, belongs to someone else or is a repo worktree.
+	SameAs string
+	Seeds  []SessionSeed
+	// MaxAttempts, EscalateTo and MaxMinutes are the step's session
+	// settings (0 and "" = the session manager's defaults).
+	MaxAttempts int
+	EscalateTo  string
+	MaxMinutes  int
+}
+
+// SessionSeed copies the workspace files of Session into the folder Into
+// (relative, slash-separated) of a new scratch workspace.
+type SessionSeed struct {
+	Session string
+	Into    string
 }
 
 // SessionResult is a session's final state ("passed", "failed",
-// "stopped", "error", ...) and its last activity line.
+// "stopped", "error", ...) and its last activity line, plus what a later
+// step can build on. Runners fill what they can; the rest stays empty.
+// Text fields are masked (secrets) and clipped by the runner.
 type SessionResult struct {
 	State   string
 	Summary string
+	// Workspace is the folder the agent worked in ("" once it is gone).
+	Workspace string
+	// Files are the files the session made or changed, at most 200.
+	Files []SessionFile
+	// Checks is the tail of the checks output.
+	Checks string
+	// DiffStat is a repo session's diff summary: one line per file with
+	// lines added and removed, then the totals.
+	DiffStat string
+	// Final is the agent's last answer: the built-in agent's last reply,
+	// else the tail of the transcript.
+	Final string
+}
+
+// SessionFile is one file of a session's workspace (path relative to it).
+type SessionFile struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
 }
 
 // SessionRunner starts agent sessions and waits for them. Wait blocks
@@ -125,6 +177,14 @@ type JudgeRequest struct {
 	Step     string
 	Owner    string
 	Charge   func(ModelReply) error
+	// Text mode (a judge step on a prompt step or on one item of a
+	// fan-out run as prompts): Session is "", Text is the answer and Task
+	// the prompt it answered. On a failed gate with iterations left the
+	// runner calls Revise with the feedback (it asks the step's model
+	// again, the feedback as a user turn) and judges the new answer.
+	Text   string
+	Task   string
+	Revise func(ctx context.Context, feedback string) (string, error)
 }
 
 // JudgeResult is the outcome of a judge step: Passed when every gate

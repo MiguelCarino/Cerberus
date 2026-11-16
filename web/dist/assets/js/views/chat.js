@@ -37,7 +37,7 @@ const HIST_KEY = 'cerberus.chat.history';
 const STICK_PX = 40; // the transcript follows new output unless scrolled up this far
 
 // The stream's event types (agent events plus the chat's own).
-const EVENTS = ['start', 'text', 'reasoning', 'tool', 'tool_done', 'ask', 'no_tools', 'usage', 'note', 'done',
+const EVENTS = ['start', 'text', 'reasoning', 'tool', 'tool_done', 'ask', 'no_tools', 'usage', 'progress', 'note', 'done',
   'user', 'queued', 'dropped', 'answered', 'state', 'status', 'switched', 'error', 'rules'];
 
 function load(key, dflt) {
@@ -258,7 +258,17 @@ export function mount(root, r = {}) {
   // ---------- events ----------
   function handle(ev, replay = false) {
     const t = ev.type;
+    // The model reading a long prompt ("reading prompt 12k/48k", llama.cpp
+    // only): shown until anything else of the reply arrives.
+    if (t !== 'progress' && status.prefill && t !== 'usage' && t !== 'status') {
+      status = { ...status, prefill: null };
+      if (t !== 'state') renderStatus();
+    }
     switch (t) {
+      case 'progress':
+        status = { ...status, prefill: !replay && ev.processed < ev.total ? { processed: ev.processed, total: ev.total } : null };
+        renderStatus();
+        break;
       case 'user': {
         endCur();
         const q = queuedRows.shift();

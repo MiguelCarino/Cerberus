@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -330,5 +331,37 @@ func TestCanonAndModes(t *testing.T) {
 	raw, _ := json.Marshal(Event{Type: EvAsk, Req: &AskRequest{ID: "r", Tool: "Bash", Args: map[string]any{"secret": 1}}})
 	if strings.Contains(string(raw), "secret") || !strings.Contains(string(raw), `"req":{"id":"r"`) {
 		t.Errorf("ask wire %s", raw)
+	}
+}
+
+// TestRunProgress: with Progress the request asks for return_progress, and
+// prompt_progress frames come out as "progress" events (web-api-ops-8).
+// Without it the field is not sent.
+func TestRunProgress(t *testing.T) {
+	f, base := newFake(t, sse(`{"choices":[],"prompt_progress":{"total":48000,"cache":0,"processed":12000}}`,
+		`{"choices":[],"prompt_progress":{"total":48000,"cache":0,"processed":48000}}`, content("ok")))
+	var evs []Event
+	o := engineOptions(t, base, ModeAsk, nil)
+	o.Progress = true
+	if res := Run(context.Background(), o, collect(&evs)); res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	if f.requests()[0]["return_progress"] != true {
+		t.Fatalf("return_progress not asked: %v", f.requests()[0])
+	}
+	var got []string
+	for _, m := range wire(t, evs) {
+		if m["type"] == "progress" {
+			got = append(got, fmt.Sprintf("%v/%v", m["processed"], m["total"]))
+		}
+	}
+	if strings.Join(got, " ") != "12000/48000 48000/48000" {
+		t.Fatalf("progress events %v", got)
+	}
+
+	f2, base2 := newFake(t, sse(content("ok")))
+	Run(context.Background(), engineOptions(t, base2, ModeAsk, nil), nil)
+	if _, ok := f2.requests()[0]["return_progress"]; ok {
+		t.Fatal("return_progress sent without Progress")
 	}
 }

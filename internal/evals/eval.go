@@ -44,6 +44,9 @@ const (
 	EvidenceChecks     = "checks"
 	EvidenceTranscript = "transcript"
 	EvidenceDiff       = "diff"
+	// EvidenceOutput is the answer of a flow prompt step (judge text
+	// mode). It is not a kind a criterion names: text mode uses it alone.
+	EvidenceOutput = "output"
 )
 
 // EvidenceKinds are every evidence kind, in the order evidence is built.

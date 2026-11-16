@@ -47,6 +47,10 @@ type Status struct {
 	// request records state (G3); admins only (omitted for others).
 	AgentGuard *gateway.GuardStats `json:"agent_guard,omitempty"`
 	Records    *records.Stats      `json:"records,omitempty"`
+
+	// VRAMReserve is the VRAM a load leaves free (step web-api), for the
+	// roles that see models; omitted when unknown.
+	VRAMReserve *VRAMReserve `json:"vram_reserve,omitempty"`
 }
 
 // FilesStatus is what the web UI needs to know about file drop: the inbox
@@ -106,7 +110,8 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	work := role == "admin" || role == "user"
 	if s.models != nil && (work || role == "chat") {
-		st.Models = nonNil(s.withModelCost(s.models.Models(r.Context())))
+		st.Models = nonNil(s.modelsFor(pr, s.models.Models(r.Context())))
+		st.VRAMReserve = s.vramReserve()
 	}
 	if s.sessions != nil {
 		for _, in := range s.sessions.List() {
@@ -256,7 +261,22 @@ func (s *server) handleModels(w http.ResponseWriter, r *http.Request) {
 		unavailable(w, "engine")
 		return
 	}
-	writeJSON(w, http.StatusOK, nonNil(s.withModelCost(s.models.Models(r.Context()))))
+	writeJSON(w, http.StatusOK, nonNil(s.modelsFor(principalOf(r), s.models.Models(r.Context()))))
+}
+
+// modelsFor is withModelCost for one caller: a request's prompt reading
+// (Prefill) names its session or chat only to who may see it (prefillFor).
+// Every route that returns models goes through it.
+func (s *server) modelsFor(pr principal, ms []engine.ModelInfo) []engine.ModelInfo {
+	ms = s.withModelCost(ms)
+	seeSession := func(owner string) bool { return s.canSeeSession(pr, owner) }
+	for i, m := range ms {
+		if m.Prefill != nil {
+			p := s.prefillFor(pr, *m.Prefill, seeSession)
+			ms[i].Prefill = &p
+		}
+	}
+	return ms
 }
 
 // handleModelAction serves POST /api/models/<id>/{load,unload,delete}. The id may

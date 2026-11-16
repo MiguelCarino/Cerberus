@@ -12,10 +12,19 @@ import (
 	"carino.systems/cerberus/internal/engine"
 )
 
-// crashingSource records MarkCrashed calls.
+// crashingSource records MarkCrashed and MarkStalledGen calls.
 type crashingSource struct {
 	fakeSource
 	crashed atomic.Int32
+	stalled atomic.Int32
+}
+
+func (c *crashingSource) MarkStalledGen(id string, gen uint64) bool {
+	if !c.local {
+		return false
+	}
+	c.stalled.Add(1)
+	return true
 }
 
 func (c *crashingSource) MarkCrashed(id string) bool {
@@ -121,4 +130,35 @@ func TestStreamErrorEventMarksCrashed(t *testing.T) {
 // The real Manager is what the gateway tells (engine tests cover MarkCrashed).
 func TestManagerIsCrashMarker(t *testing.T) {
 	var _ crashMarker = (*engine.Manager)(nil)
+	var _ stallMarker = (*engine.Manager)(nil)
+	var _ cachedResolver = (*engine.Manager)(nil)
+	var _ loadedEndpointer = (*engine.Manager)(nil)
+}
+
+// causeSource is a crashingSource whose engine knows why the model ended.
+type causeSource struct {
+	crashingSource
+	why string
+}
+
+func (c *causeSource) FailureText(id string) string { return c.why }
+
+// The 503 names the cause the engine found (railguard's VRAM kill), and it
+// stays transient for the flows runner.
+func TestEngineFailedNamesCause(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		io.WriteString(w, `{"error":"terminated"}`)
+	}))
+	defer up.Close()
+	src := &causeSource{crashingSource: crashingSource{fakeSource: fakeSource{base: up.URL, local: true}},
+		why: "local engine ended by Railguard (VRAM 97% full); reloading with a smaller GPU share"}
+	gw := newGateway(src, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	rec := postChat(gw, `{"model":"qwen","messages":[]}`)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), src.why) || src.crashed.Load() != 1 {
+		t.Fatalf("status %d crashed %d body %s", rec.Code, src.crashed.Load(), rec.Body)
+	}
+	if !engine.IsTransientText(rec.Code, rec.Body.String()) || !engine.IsTransientText(0, src.why) {
+		t.Error("the cause's 503 is not transient for the flows runner")
+	}
 }

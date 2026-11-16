@@ -33,6 +33,10 @@ func (s *server) handleRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRecord returns one line with its text; a read of text is audited.
+// A line's text holds only its new turn (prefix counts the messages
+// before it); ?thread=1 answers the conversation stitched together from the
+// earlier lines of the same client and session, with "earlier" (lines
+// joined) and "missing" (its start was not found).
 func (s *server) handleRecord(w http.ResponseWriter, r *http.Request) {
 	off, err := strconv.ParseInt(r.PathValue("offset"), 10, 64)
 	if err != nil {
@@ -47,11 +51,20 @@ func (s *server) handleRecord(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	thread := r.URL.Query().Get("thread") == "1" && l.Text != nil && l.Prefix > 0
 	if l.Text != nil {
+		detail := "read the text of a request record"
+		if thread {
+			detail = "read the text of a request record and its earlier turns"
+		}
 		pr := principalOf(r)
 		s.auditLog(audit.Record{Actor: orDefault(pr.Actor, audit.ActorSystem), User: pr.Name, Remote: limitHost(r.RemoteAddr),
 			Method: r.Method, Route: r.Pattern, Targets: []string{l.Ref}, Status: http.StatusOK,
-			Detail: "read the text of a request record"})
+			Detail: detail})
+	}
+	if thread {
+		writeJSON(w, http.StatusOK, s.records.Stitch(l))
+		return
 	}
 	writeJSON(w, http.StatusOK, l)
 }

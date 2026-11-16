@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,5 +92,77 @@ func TestRecordErrorsAndMessagesAPI(t *testing.T) {
 	ls, _ := s.List(records.Filter{})
 	if ls[0].API != "messages" || ls[0].Results != 1 || ls[0].ResultErrors != 1 || ls[0].Budget != 9 {
 		t.Errorf("messages line %+v", ls[0])
+	}
+}
+
+// An agent loop sends the whole conversation every turn; the record keeps
+// only the new turn (after the last assistant message) with the count
+// before it, so each message is written once.
+func TestRecordTextKeepsNewTurn(t *testing.T) {
+	h := newHarness(t, jsonOK(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	s := withRecords(t, h, records.TextAll)
+	bodies := []string{
+		`{"model":"qwen","messages":[{"role":"system","content":"sys"},{"role":"user","content":"one"}]}`,
+		`{"model":"qwen","messages":[{"role":"system","content":"sys"},{"role":"user","content":"one"},
+			{"role":"assistant","content":"ok"},{"role":"user","content":"two"}]}`,
+		`{"model":"qwen","messages":[{"role":"system","content":"sys"},{"role":"user","content":"one"},
+			{"role":"assistant","content":"ok"},{"role":"user","content":"two"},
+			{"role":"assistant","content":"ok","tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{}"}}]},
+			{"role":"tool","tool_call_id":"c1","content":"file body"},{"role":"user","content":"three"}]}`,
+	}
+	for _, b := range bodies {
+		readAll(t, h.post(t, "/chat/completions", b).Body)
+	}
+	ls, _ := s.List(records.Filter{})
+	if len(ls) != 3 {
+		t.Fatalf("%d lines", len(ls))
+	}
+	var texts []string
+	for i := len(ls) - 1; i >= 0; i-- { // oldest first
+		p := strings.Split(ls[i].Ref, "/")
+		off, _ := strconv.ParseInt(p[2], 10, 64)
+		l, err := s.Get(p[0], p[1], off)
+		if err != nil || l.Text == nil {
+			t.Fatalf("get %v %+v", err, l)
+		}
+		if l.Text.System != "sys" {
+			t.Errorf("system %q", l.Text.System)
+		}
+		texts = append(texts, l.Text.Messages)
+		if want := []int{0, 3, 5}[len(texts)-1]; l.Prefix != want {
+			t.Errorf("line %d prefix %d, want %d", len(texts), l.Prefix, want)
+		}
+	}
+	want := []string{"user: one", "user: two", "tool: file body\nuser: three"}
+	for i := range want {
+		if texts[i] != want[i] {
+			t.Errorf("line %d text %q, want %q", i+1, texts[i], want[i])
+		}
+	}
+	all := strings.Join(texts, "\n")
+	if strings.Count(all, "one") != 1 || strings.Count(all, "two") != 1 {
+		t.Errorf("a message was written more than once:\n%s", all)
+	}
+	// Stitched back together, the last line is the whole conversation.
+	p := strings.Split(ls[0].Ref, "/")
+	off, _ := strconv.ParseInt(p[2], 10, 64)
+	last, _ := s.Get(p[0], p[1], off)
+	st := s.Stitch(last)
+	if st.Earlier != 2 || st.Missing ||
+		st.Text.Messages != "user: one\nassistant: ok\nuser: two\nassistant: ok\ntool: file body\nuser: three" {
+		t.Errorf("stitched %d %v:\n%s", st.Earlier, st.Missing, st.Text.Messages)
+	}
+}
+
+// A request that fails before it is shaped for its endpoint still gets a
+// record, read from the request as the client sent it.
+func TestRecordShapedOnEarlyFailure(t *testing.T) {
+	h := newHarness(t, jsonOK(okReply))
+	s := withRecords(t, h, records.TextUser)
+	readAll(t, h.post(t, "/chat/completions", `{"model":"nope","messages":[{"role":"user","content":"hi"},
+		{"role":"assistant","content":"yo"},{"role":"user","content":"again"}]}`).Body)
+	l := onlyLine(t, s)
+	if l.Status != 404 || l.Messages != 3 || l.Prefix != 2 || l.Finish != "error" {
+		t.Errorf("line %+v", l)
 	}
 }

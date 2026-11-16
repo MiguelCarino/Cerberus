@@ -182,7 +182,7 @@ func (m *Manager) launch(s *session) error {
 		command = p.ResumeCommand
 	}
 	argv := ph.expand(command)
-	extra, err := m.mcpArgs(p, argv, s.dir, info.ID)
+	mcp, err := m.mcpArgs(p, argv, s.dir, info.ID)
 	if err != nil {
 		return fmt.Errorf("write MCP config: %w", err)
 	}
@@ -202,12 +202,12 @@ func (m *Manager) launch(s *session) error {
 		m.sandboxWarn(s, "running the agent", plan.fallback)
 	}
 	setupHash := m.writeSetup(s.dir, setupInput{info: info, profile: p, command: command, resume: resume,
-		argv: argv, mcp: extra, sandbox: plan.bin != "", secrets: secrets})
+		argv: argv, mcp: mcp.flags, sandbox: plan.bin != "", secrets: secrets})
 	// The scope goes outside, bwrap inside, the agent's command last.
-	argv, unit := m.wrapScope(plan.wrap(append(argv, extra...)), info)
+	argv, unit := m.wrapScope(plan.wrap(mcp.argv), info)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = info.Worktree
-	cmd.Env = m.env(info, p, ph, s.dir, secrets)
+	cmd.Env = append(m.env(info, p, ph, s.dir, secrets), mcp.env...)
 	if agentCfg != "" {
 		cmd.Env = append(cmd.Env, "CERBERUS_AGENT_CONFIG="+agentCfg)
 	}
@@ -276,9 +276,13 @@ func (m *Manager) env(info Info, p config.AgentProfile, ph placeholders, sessDir
 		"CERBERUS_URL":         serverURL(m.conf().Server.Listen),
 		"OPENAI_BASE_URL":      ph.BaseURL,
 		"OPENAI_API_KEY":       m.agentKey(info.ID), // /v1 + this session's /api/agent scope, never the admin token
-		"CERBERUS_REPO":        info.Repo,           // deny_paths also apply to the repo the worktree came from
-		"TERM":                 "xterm-256color",
-		previewTagEnv:          m.previewTag(info.ID), // live preview ownership of servers that leave the agent's tree
+		// `cerberus mcp` prefers this over OPENAI_API_KEY: always the
+		// session's own, so one inherited from the daemon's environment
+		// (a dev daemon started inside an agent session) never reaches it.
+		agentTokenEnv:   m.agentKey(info.ID),
+		"CERBERUS_REPO": info.Repo, // deny_paths also apply to the repo the worktree came from
+		"TERM":          "xterm-256color",
+		previewTagEnv:   m.previewTag(info.ID), // live preview ownership of servers that leave the agent's tree
 	}
 	for k, v := range p.Env {
 		if v == apiKeyPlaceholder {

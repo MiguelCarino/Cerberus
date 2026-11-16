@@ -71,6 +71,7 @@ var routeTable = map[string]routeSpec{
 	"/v1/":                        {class: clsGateway, target: "/v1/models", noAudit: "the gateway is recorded by usage"},
 
 	// Core API.
+	"GET /api/gpu":                               {class: clsAny},
 	"GET /api/status":                            {class: clsAny},
 	"GET /api/models":                            {class: clsWork},
 	"POST /api/models/{rest...}":                 {class: clsAdmin, target: "/api/models/m1/load"},
@@ -107,6 +108,7 @@ var routeTable = map[string]routeSpec{
 	"GET /api/sessions/{id}/preview":             {class: clsWatch},
 	"POST /api/sessions/{id}/preview/start":      {class: clsWork},
 	"POST /api/sessions/{id}/preview/stop":       {class: clsWork},
+	"POST /api/sessions/{id}/guard/approve":      {class: clsWork},
 	"GET /api/fs":                                {class: clsAdmin},
 	"POST /api/sessions/{id}/{action}":           {class: clsWork, target: "/api/sessions/s1/stop"},
 	"GET /api/events":                            {class: clsAny},
@@ -138,6 +140,9 @@ var routeTable = map[string]routeSpec{
 	"GET /api/agent/files/raw":           {class: clsAgent, target: "/api/agent/files/raw?path=x"},
 	"GET /api/agent/runs":                {class: clsAgent},
 	"GET /api/agent/runs/{name}":         {class: clsAgent, target: "/api/agent/runs/x.cast"},
+	"GET /api/agent/flows":               {class: clsAgent},
+	"POST /api/agent/flows/{id}/run":     {class: clsAgent, target: "/api/agent/flows/fl-x/run"},
+	"GET /api/agent/flows/runs/{run}":    {class: clsAgent, target: "/api/agent/flows/runs/fr-20261115-000000-abcd?wait=0"},
 	"/api/agent/":                        {class: clsAgent, target: "/api/agent/no-such-endpoint"},
 
 	// Files.

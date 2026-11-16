@@ -98,7 +98,8 @@ export function edgeText(e) {
     // caption; a branch says which way it went.
     case 'next': case 'item': return '';
     case 'then': return 'then';
-    case 'else': return 'else';
+    // An on_error jump is drawn as an else edge labelled "on error".
+    case 'else': return e.label === 'on error' ? 'on error' : 'else';
     case 'ask': if (n === 0) return ''; head = plural(n, 'job', 'jobs'); break;
     case 'answer': head = replies(e) ? plural(n, 'reply', 'replies') : plural(n, 'request', 'requests'); break;
     default: return e.label || e.kind || '';
@@ -121,7 +122,7 @@ export function edgeTitle(e, fromLabel = '', toLabel = '') {
     case 'next': return `${who}next step`;
     case 'item': return `${who}fan-out item`;
     case 'then': return `${who}the test held`;
-    case 'else': return `${who}the test did not hold`;
+    case 'else': return e.label === 'on error' ? `${who}the step failed` : `${who}the test did not hold`;
     default: {
       const parts = [e.kind === 'ask' ? `${plural(n, 'delegated job', 'delegated jobs')}`
         : replies(e) ? plural(n, 'reply', 'replies') : plural(n, 'request', 'requests')];

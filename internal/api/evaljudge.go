@@ -33,12 +33,15 @@ func (h *EvalHost) Judge(ctx context.Context, req flows.JudgeRequest) (flows.Jud
 			break
 		}
 	}
-	task := ""
-	if in, ok := h.d.Sessions.Get(req.Session); ok {
-		task = in.Task
+	task := req.Task
+	if req.Session != "" {
+		if in, ok := h.d.Sessions.Get(req.Session); ok {
+			task = in.Task
+		}
 	}
 	job := evals.Job{Session: req.Session, Task: task, Gates: req.Gates, Criteria: req.Criteria, Persona: req.Persona,
-		JudgeModel: model, Run: req.Run, Owner: req.Owner, Setup: req.Step, Feedback: true}
+		JudgeModel: model, Run: req.Run, Owner: req.Owner, Setup: req.Step, Feedback: true,
+		Text: req.Text, Revise: req.Revise}
 	if req.Charge != nil {
 		job.Charge = func(u evals.Usage) error {
 			prompt, completion := u.Prompt, u.Completion

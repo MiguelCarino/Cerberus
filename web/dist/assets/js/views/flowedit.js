@@ -422,6 +422,11 @@ export function mount(root, r = {}) {
         control = h('input', { class: 'input fe-num', type: 'number', min: f.min || 0, max: f.max || null, inputmode: 'numeric', value: s[f.key] ? String(s[f.key]) : '', placeholder: f.placeholder || '', 'aria-label': f.label, 'data-focus': focusKey });
         control.addEventListener('input', () => set(Number(control.value) || 0));
         break;
+      case 'decimal':
+        // Empty is unset (the model's default); 0 is a real value.
+        control = h('input', { class: 'input fe-num', type: 'number', min: f.min ?? 0, max: f.max ?? null, step: f.step || 'any', inputmode: 'decimal', value: typeof s[f.key] === 'number' ? String(s[f.key]) : '', placeholder: f.placeholder || '', 'aria-label': f.label, 'data-focus': focusKey });
+        control.addEventListener('input', () => { const t = control.value.trim(); set(t === '' || !Number.isFinite(Number(t)) ? undefined : Number(t)); });
+        break;
       case 'bool': {
         const cb = h('input', { type: 'checkbox', checked: !!s[f.key], 'data-focus': focusKey });
         // A JSON prompt may feed a fan-out: other cards' "Parts from" change.
@@ -451,7 +456,21 @@ export function mount(root, r = {}) {
         break;
       }
       case 'model': control = modelSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
-      case 'agent': control = agentSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
+      case 'agent': control = agentSelect(s[f.key] || '', (v) => set(v || undefined), f.label, focusKey, !!f.optional); break;
+      case 'retry': {
+        // retry {max, backoff_s}: two numbers; no tries means no retry.
+        const part = (k, label, max, ph) => {
+          const r = s.retry || {};
+          const inp = h('input', { class: 'input fe-num', type: 'number', min: 0, max, inputmode: 'numeric', value: r[k] ? String(r[k]) : '',
+            placeholder: ph, 'aria-label': label, 'data-focus': `${focusKey}.${k}` });
+          inp.addEventListener('input', () => {
+            const next = { ...(s.retry || {}), [k]: Math.max(0, Math.floor(Number(inp.value) || 0)) };
+            set(next.max ? next : (next.backoff_s ? next : undefined));
+          });
+          return h('label', { class: 'fe-retry-part' }, h('span', { class: 'fe-hint', text: label }), inp);
+        };
+        return fieldBlock(f, h('div', { class: 'fe-retry' }, part('max', 'Tries (0 to 3)', 3, '0'), part('backoff_s', 'Seconds between', 600, '0')), s.id);
+      }
       case 'repo': control = repoSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
       case 'routes': return fieldBlock(f, routesEditor(s, i), s.id);
       case 'json': {
@@ -476,7 +495,7 @@ export function mount(root, r = {}) {
   function fieldBlock(f, control, step) {
     const prob = h('div', { class: 'fe-prob' });
     addSlot({ step, field: f.key, el: prob });
-    const isGroup = f.type === 'routes' || f.type === 'template' || f.type === 'json';
+    const isGroup = f.type === 'routes' || f.type === 'template' || f.type === 'json' || f.type === 'retry';
     return h(isGroup ? 'div' : 'label', { class: `field fe-field fe-f-${f.type}` },
       h('span', { class: 'field-label', text: f.label }), control,
       f.hint ? h('span', { class: 'fe-hint', text: f.hint }) : null, prob);
@@ -497,12 +516,13 @@ export function mount(root, r = {}) {
     return sel;
   }
 
-  function agentSelect(cur, onChange, label, focusKey) {
+  function agentSelect(cur, onChange, label, focusKey, optional = false) {
     const list = choices.agents || [];
     const opts = list.map((a) => [a.name, a.available ? a.name : `${a.name} (not installed)`]);
     if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} (not configured)`]);
+    // An optional agent (escalate_to) keeps an empty choice.
     const sel = h('select', { class: 'select', 'aria-label': label, 'data-focus': focusKey },
-      cur ? null : h('option', { value: '', selected: true, text: 'Pick an agent' }),
+      cur && !optional ? null : h('option', { value: '', selected: !cur, text: optional ? 'None' : 'Pick an agent' }),
       opts.map(([v, l]) => h('option', { value: v, selected: v === cur, text: l })));
     sel.addEventListener('change', () => onChange(sel.value));
     return sel;

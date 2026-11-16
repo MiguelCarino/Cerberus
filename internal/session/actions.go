@@ -32,6 +32,19 @@ func (m *Manager) Attach(id string) ([]byte, <-chan []byte, func(), error) {
 	return backlog, ch, detach, nil
 }
 
+// AttachFrom is Attach for a client that already has the output up to
+// from (a StreamPos from an earlier attachment): it is sent only what it
+// missed, or the backlog with Reset when that is no longer held.
+func (m *Manager) AttachFrom(id string, from StreamPos) (Attachment, error) {
+	m.mu.Lock()
+	s, err := m.lookup(id)
+	m.mu.Unlock()
+	if err != nil {
+		return Attachment{}, err
+	}
+	return s.out.attachFrom(from, s.out.tailMax), nil
+}
+
 // Input writes data to the agent's terminal. Answering a waiting agent
 // moves it back to running.
 func (m *Manager) Input(id string, data []byte) error {

@@ -25,6 +25,28 @@ type WallChunk struct {
 // client then reattaches for fresh backlogs. Call detach when done. Ids are
 // deduplicated; at most 16; an unknown id fails the whole call.
 func (m *Manager) AttachMany(ids []string, backlogKiB int) (map[string][]byte, <-chan WallChunk, func(), error) {
+	bl, ch, detach, err := m.AttachManyFrom(ids, backlogKiB, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	backlogs := make(map[string][]byte, len(bl))
+	for id, a := range bl {
+		backlogs[id] = a.Backlog
+	}
+	return backlogs, ch, detach, nil
+}
+
+// WallBacklog is one session's start on a wall stream: as Attachment,
+// without the channel.
+type WallBacklog struct {
+	Backlog []byte
+	Reset   bool
+	Pos     StreamPos
+}
+
+// AttachManyFrom is AttachMany for a client that has each session's output
+// up to from[id]: a session it is current on is sent only what it missed.
+func (m *Manager) AttachManyFrom(ids []string, backlogKiB int, from map[string]StreamPos) (map[string]WallBacklog, <-chan WallChunk, func(), error) {
 	uniq := make([]string, 0, len(ids))
 	for _, id := range ids {
 		if id != "" && !slices.Contains(uniq, id) {
@@ -50,7 +72,7 @@ func (m *Manager) AttachMany(ids []string, backlogKiB int) (map[string][]byte, <
 	m.mu.Unlock()
 
 	limit := max(backlogKiB, 1) << 10
-	backlogs := make(map[string][]byte, len(uniq))
+	backlogs := make(map[string]WallBacklog, len(uniq))
 	merged := make(chan WallChunk, subBuffer)
 	stop := make(chan struct{})
 	var stopOnce sync.Once
@@ -58,12 +80,10 @@ func (m *Manager) AttachMany(ids []string, backlogKiB int) (map[string][]byte, <
 	var detaches []func()
 	var wg sync.WaitGroup
 	for i, id := range uniq {
-		backlog, ch, detach := outs[i].attach()
-		if len(backlog) > limit {
-			backlog = backlog[len(backlog)-limit:]
-		}
-		backlogs[id] = backlog
-		detaches = append(detaches, detach)
+		a := outs[i].attachFrom(from[id], limit)
+		ch := a.Out
+		backlogs[id] = WallBacklog{Backlog: a.Backlog, Reset: a.Reset, Pos: a.Pos}
+		detaches = append(detaches, a.Detach)
 		wg.Go(func() {
 			defer end() // one stream ended: end them all, so the client reattaches
 			for {

@@ -93,7 +93,8 @@ type Gateway struct {
 	defaults map[string]config.ModelDefaults // G4: per-model request defaults (under priceMu)
 	noted    map[string]bool                 // G4: notes already logged (under priceMu)
 
-	wd watchdog // G5: the stall watchdog
+	wd      watchdog    // G5: the stall watchdog
+	prefill prefillFeed // G5: prompt reading hints (step web-api)
 
 	guardCfg  guardSettings           // G2: live guard settings (under priceMu)
 	guardUser config.AgentGuardConfig // G2: the configured lists (under priceMu)
@@ -152,12 +153,31 @@ func newGateway(src modelSource, energy func() float64, rec recorder, log *slog.
 	}
 	// No client timeout: streams last as long as generation; the client's
 	// request context bounds every upstream call.
-	g := &Gateway{src: src, energy: energy, store: rec, log: log, client: &http.Client{},
+	g := &Gateway{src: src, energy: energy, store: rec, log: log, client: &http.Client{Transport: newTransport()},
 		now: time.Now, notified: map[string]time.Time{}}
 	for _, o := range opts {
 		o(g)
 	}
 	return g
+}
+
+// maxIdlePerHost is how many idle connections the gateway keeps to each
+// upstream: llama.cpp with -np 4, LM Studio with --parallel 4 and fan-outs
+// to one cloud provider all hold several at once, and Go's default of 2
+// would close the rest after each request (a new TLS handshake each time
+// for a cloud provider).
+const maxIdlePerHost = 32
+
+// newTransport is the gateway's own transport, shared by requests, the
+// stall probe and token counting: Go's default one with more idle
+// connections per upstream.
+func newTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = max(t.MaxIdleConns, 4*maxIdlePerHost)
+	t.MaxIdleConnsPerHost = maxIdlePerHost
+	t.IdleConnTimeout = 90 * time.Second
+	t.ForceAttemptHTTP2 = true
+	return t
 }
 
 // Handler serves the /v1 API; paths are relative to the /v1 mount point.

@@ -151,7 +151,29 @@ type StepRecord struct {
 	File             string       `json:"file"` // output to file: path relative to the run folder
 	Items            []ItemRecord `json:"items"`
 	Retries          int          `json:"retries,omitempty"`     // model calls retried after a transient engine failure
-	RetryError       string       `json:"retry_error,omitempty"` // the error that caused the retry
+	RetryError       string       `json:"retry_error,omitempty"` // the error that caused the (first) retry
+	// Attempts is how many times the whole step ran when its retry
+	// setting ran it again (0 = once). Usage counts every attempt.
+	Attempts int `json:"attempts,omitempty"`
+	// OnError is set on a failed step whose on_error let the run go on:
+	// "next", or the step it jumped to. Its output is {"error": "..."}.
+	OnError string `json:"on_error,omitempty"`
+	// Revisions (a judge step on a prompt or fan-out step) are the
+	// answers the judge's feedback asked for, one per revise call.
+	Revisions []Revision `json:"revisions,omitempty"`
+}
+
+// Revision is one revise call of a judge step on a prompt step (or one
+// fan-out item): the feedback sent as a user turn and the new answer.
+type Revision struct {
+	Item      int    `json:"item,omitempty"` // the fan-out item (1-based; 0 = the step itself)
+	Gate      string `json:"gate"`
+	Iteration int    `json:"iteration"` // the iteration that failed
+	Feedback  string `json:"feedback"`
+	Output    string `json:"output"` // the new answer (clipped)
+	Model     string `json:"model"`
+	Tokens    int    `json:"tokens"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ItemRecord is one fan-out item's result.
@@ -160,6 +182,7 @@ type ItemRecord struct {
 	Title            string    `json:"title"`
 	Kind             string    `json:"kind"`
 	Model            string    `json:"model"`
+	Route            string    `json:"route,omitempty"` // the model the routes picked (Model is the one that answered)
 	State            string    `json:"state"`
 	Input            string    `json:"input"`
 	Output           any       `json:"output"`
@@ -175,6 +198,8 @@ type ItemRecord struct {
 	Retries          int       `json:"retries,omitempty"`     // model calls retried after a transient engine failure
 	RetryError       string    `json:"retry_error,omitempty"` // the error that caused the retry
 	Waiting          string    `json:"waiting,omitempty"`     // why its model call is queued now (live only)
+	Reused           bool      `json:"reused,omitempty"`      // kept from an earlier attempt of the step (Continue): not run again, not charged
+	Attempts         int       `json:"attempts,omitempty"`    // runs of the item when the step's retry ran it again (0 = once)
 }
 
 // RunDetail is a run with its finished steps (in execution order). Live

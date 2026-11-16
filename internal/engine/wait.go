@@ -45,7 +45,7 @@ func waitHook(ctx context.Context) func(string) {
 // gateway's own 503 text and room timeout.
 var reCrash = regexp.MustCompile(`(?i)channel error|\bterminated\b|cuda error|out of memory|` +
 	`connection (reset|refused)|broken pipe|unexpected eof|\beof\b|server disconnected|` +
-	`local engine failed|exited during load|timed out waiting for busy models`)
+	`local engine failed|local engine ended|exited during load|timed out waiting for busy models`)
 
 // reStatus finds the HTTP status in errors shaped "... (502): message".
 var reStatus = regexp.MustCompile(`\((\d{3})\)`)

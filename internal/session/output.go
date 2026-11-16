@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 const (
@@ -35,6 +39,40 @@ type output struct {
 	tail  []byte   // nil = not loaded
 	subs  map[*subscriber]struct{}
 	cast  *castWriter // the current run's recording (nil = none)
+
+	// Stream positions (step web-api): epoch names this output in this
+	// process, total counts the bytes Write was given (already masked:
+	// the same bytes a client receives). A client keeps "<epoch>.<total>"
+	// and reconnects from it, so it is sent only what it missed.
+	epoch string
+	total int64
+}
+
+// outputSeq makes epochs unique within a process; the start time makes
+// them unique across restarts.
+var (
+	outputSeq   atomic.Int64
+	outputStart = strconv.FormatInt(time.Now().UnixNano(), 36)
+)
+
+// StreamPos is a client's place in a session's output stream:
+// "<epoch>.<offset>". The zero value (or any token from another daemon run
+// or session) means "send the backlog and reset".
+type StreamPos = string
+
+func makePos(epoch string, off int64) StreamPos { return epoch + "." + strconv.FormatInt(off, 10) }
+
+// parsePos splits a position token; ok is false for anything malformed.
+func parsePos(p StreamPos) (epoch string, off int64, ok bool) {
+	i := strings.LastIndexByte(p, '.')
+	if i <= 0 || len(p) > 80 {
+		return "", 0, false
+	}
+	n, err := strconv.ParseInt(p[i+1:], 10, 64)
+	if err != nil || n < 0 {
+		return "", 0, false
+	}
+	return p[:i], n, true
 }
 
 type subscriber struct {
@@ -49,8 +87,9 @@ func newOutput(path string, capBytes int64, tailMax int) *output {
 		capBytes = 2 * int64(tailMax)
 	}
 	return &output{tailMax: tailMax, subs: map[*subscriber]struct{}{},
-		sb: capFile{path: path, cap: capBytes},
-		tx: capFile{path: filepath.Join(filepath.Dir(path), transcriptName), cap: transcriptCap}}
+		epoch: outputStart + "-" + strconv.FormatInt(outputSeq.Add(1), 36),
+		sb:    capFile{path: path, cap: capBytes},
+		tx:    capFile{path: filepath.Join(filepath.Dir(path), transcriptName), cap: transcriptCap}}
 }
 
 // Write appends p to the scrollback, the transcript and the tail and fans it
@@ -70,6 +109,7 @@ func (o *output) Write(p []byte) (int, error) {
 		o.tx.write(o.maskTextLocked(lines))
 	}
 	o.tail = append(o.tail, p...)
+	o.total += int64(len(p))
 	if len(o.tail) > 2*o.tailMax {
 		n := copy(o.tail, o.tail[len(o.tail)-o.tailMax:])
 		o.tail = o.tail[:n]
@@ -116,13 +156,45 @@ func (o *output) loadTailLocked() {
 // attach returns the last tailMax bytes and a live channel. Both are taken
 // under one lock, so no output is lost or repeated between them.
 func (o *output) attach() ([]byte, <-chan []byte, func()) {
+	a := o.attachFrom("", o.tailMax)
+	return a.Backlog, a.Out, a.Detach
+}
+
+// Attachment is a terminal stream from a position (AttachFrom).
+type Attachment struct {
+	// Backlog is what the client lacks: with Reset, the last bytes of the
+	// output (the client clears its terminal first); without, exactly the
+	// bytes after the client's position (often none).
+	Backlog []byte
+	Reset   bool
+	// Pos is the position at the end of Backlog; each later chunk on Out
+	// moves it on by its length.
+	Pos    StreamPos
+	Out    <-chan []byte
+	Detach func()
+}
+
+// attachFrom is attach for a client that has the output up to from. It
+// sends only what the client missed when that is still held (in memory,
+// or the last tailMax bytes on disk) and no more than limit bytes; any
+// other position (empty, malformed, another epoch, ahead of the output
+// after a daemon restart, or too far behind) gets the last limit bytes and
+// Reset.
+func (o *output) attachFrom(from StreamPos, limit int) Attachment {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	var backlog []byte
-	if o.tail != nil {
-		backlog = bytes.Clone(o.tail[max(len(o.tail)-o.tailMax, 0):])
-	} else {
-		backlog = readLast(o.sb.path, int64(o.tailMax))
+	held := o.tail // ends at o.total
+	if held == nil {
+		held = readLast(o.sb.path, int64(o.tailMax))
+	}
+	a := Attachment{Reset: true, Pos: makePos(o.epoch, o.total)}
+	if ep, off, ok := parsePos(from); ok && ep == o.epoch && off <= o.total {
+		if miss := o.total - off; miss <= int64(len(held)) && miss <= int64(limit) {
+			a.Backlog, a.Reset = bytes.Clone(held[int64(len(held))-miss:]), false
+		}
+	}
+	if a.Reset {
+		a.Backlog = bytes.Clone(held[max(len(held)-limit, 0):])
 	}
 	s := &subscriber{ch: make(chan []byte, subBuffer)}
 	o.subs[s] = struct{}{}
@@ -132,7 +204,8 @@ func (o *output) attach() ([]byte, <-chan []byte, func()) {
 		o.mu.Unlock()
 		s.close()
 	}
-	return backlog, s.ch, detach
+	a.Out, a.Detach = s.ch, detach
+	return a
 }
 
 // transcript is the whole plain-text transcript, including the line still
