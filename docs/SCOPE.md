@@ -402,6 +402,18 @@ func New(d Deps) http.Handler
 - `cerberus install-service`: writes `~/.config/systemd/user/cerberus.service` from `packaging/`
   (embedded), then `systemctl --user daemon-reload && systemctl --user enable --now cerberus` (Linux only;
   elsewhere it prints "not supported yet").
+  As built (2026-11-16): one `daemon-reload`, then `enable --no-reload`, then `start` or `restart`
+  (restart only when a new binary was copied over a running service) with `--no-block`. The command
+  then reads the unit's pending job (`show -p Job`) every 500 ms. A job still queued after 30 s is
+  cancelled (`systemctl --user cancel <id>`), and the command fails with a message that names the
+  manual restart and `systemctl --user list-jobs`. A unit that is not active once its job is done is
+  reported, pointing to `journalctl --user -u cerberus`. Every systemctl call has a 20 s timeout.
+  Why: on 2026-11-15 the install at 23:48 queued its restart right after the two reloads
+  (`daemon-reload`, then the one `enable` does), and the job never ran. Every later job of the
+  user manager queued behind it with none running: agent command scopes, new kitty windows,
+  timers. It cleared only with `systemctl --user daemon-reexec` at 00:27. The 21:58 install had
+  already waited 56 s on its restart. systemd 262's own cause is unknown, because the reexec dropped
+  the queue. If it happens again, save the full `systemctl --user list-jobs` first.
 - `cerberus version`.
 
 ## Desktop integration (Phase 1 scope)

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"carino.systems/cerberus/internal/config"
 	"carino.systems/cerberus/internal/session"
@@ -206,13 +207,22 @@ func TestInstall(t *testing.T) {
 	}
 	var calls []string
 	active := true
+	jobs := []string{"41 restart", ""} // the restart is pending once, then done
 	in := &installer{goos: "linux", exe: exe, home: filepath.Join(dir, "home"), configDir: filepath.Join(dir, "home", ".config"),
-		out: io.Discard, systemctl: func(args ...string) error {
+		out: io.Discard, sleep: func(time.Duration) {}, systemctl: func(args ...string) error {
 			calls = append(calls, strings.Join(args, " "))
 			if args[0] == "is-active" && !active {
 				return os.ErrNotExist
 			}
 			return nil
+		}, query: func(args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if len(jobs) == 0 {
+				return "", nil
+			}
+			j := jobs[0]
+			jobs = jobs[1:]
+			return j, nil
 		}}
 	var audited []string
 	in.audit = func(event, detail string, targets ...string) {
@@ -240,7 +250,10 @@ func TestInstall(t *testing.T) {
 	if string(slice) != packaging.SessionSlice {
 		t.Fatalf("slice not written: %q", slice)
 	}
-	want := []string{"daemon-reload", "is-active --quiet cerberus.service", "enable --now cerberus.service", "restart cerberus.service"}
+	// One reload, a non-blocking restart, the job watched until it is done.
+	show := "show -p Job --value cerberus.service"
+	want := []string{"daemon-reload", "is-active --quiet cerberus.service", "enable --no-reload cerberus.service",
+		"restart --no-block cerberus.service", show, show, "is-active --quiet cerberus.service"}
 	if !slices.Equal(calls, want) {
 		t.Fatalf("systemctl calls = %q", calls)
 	}
@@ -253,7 +266,7 @@ func TestInstall(t *testing.T) {
 	if err := in.install(); err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(calls, "restart cerberus.service") {
+	if slices.ContainsFunc(calls, func(c string) bool { return strings.HasPrefix(c, "restart") || strings.HasPrefix(c, "start") }) {
 		t.Fatalf("restarted without a new binary: %q", calls)
 	}
 	slice, _ = os.ReadFile(filepath.Join(dir, "home", ".config", "systemd", "user", "cerberus-sessions.slice"))
@@ -265,4 +278,72 @@ func TestInstall(t *testing.T) {
 	if err := in.install(); err == nil || !strings.Contains(err.Error(), "not supported yet") {
 		t.Fatalf("darwin: %v", err)
 	}
+}
+
+// A service that is not running is started without blocking; a start or
+// restart that stays queued past jobWait is cancelled with a clear error
+// (2026-11-15: a stuck restart held the whole user job queue); a unit that
+// dies after its restart is reported.
+func TestInstallJobQueue(t *testing.T) {
+	setup := func(t *testing.T, active func(call int) bool, job func() string) (*installer, *[]string) {
+		dir := t.TempDir()
+		exe := filepath.Join(dir, "build", "cerberus")
+		_ = os.MkdirAll(filepath.Dir(exe), 0o755)
+		if err := os.WriteFile(exe, []byte("binary-v3"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var calls []string
+		isActive := 0
+		in := &installer{goos: "linux", exe: exe, home: filepath.Join(dir, "home"), configDir: filepath.Join(dir, "home", ".config"),
+			out: io.Discard, jobWait: 2 * time.Second, poll: 500 * time.Millisecond, sleep: func(time.Duration) {},
+			systemctl: func(args ...string) error {
+				calls = append(calls, strings.Join(args, " "))
+				if args[0] == "is-active" {
+					isActive++
+					if !active(isActive) {
+						return os.ErrNotExist
+					}
+				}
+				return nil
+			},
+			query: func(args ...string) (string, error) {
+				calls = append(calls, strings.Join(args, " "))
+				return job(), nil
+			}}
+		return in, &calls
+	}
+
+	t.Run("start when inactive", func(t *testing.T) {
+		in, calls := setup(t, func(n int) bool { return n > 1 }, func() string { return "" })
+		if err := in.install(); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(*calls, "start --no-block cerberus.service") || slices.Contains(*calls, "restart --no-block cerberus.service") {
+			t.Fatalf("calls = %q", *calls)
+		}
+	})
+
+	t.Run("stuck restart is cancelled", func(t *testing.T) {
+		in, calls := setup(t, func(int) bool { return true }, func() string { return "39052 restart" })
+		err := in.install()
+		if err == nil || !strings.Contains(err.Error(), "still waiting in systemd's job queue") ||
+			!strings.Contains(err.Error(), "systemctl --user restart cerberus.service") {
+			t.Fatalf("err = %v", err)
+		}
+		if !slices.Contains(*calls, "cancel 39052") {
+			t.Fatalf("job not cancelled: %q", *calls)
+		}
+		// 2 s at 500 ms: the first look plus four more, then the cancel.
+		if n := slices.IndexFunc(*calls, func(c string) bool { return c == "cancel 39052" }); n < 0 ||
+			strings.Count(strings.Join((*calls)[:n], "\n"), "show -p Job") != 5 {
+			t.Fatalf("looks before the cancel: %q", *calls)
+		}
+	})
+
+	t.Run("dies after restart", func(t *testing.T) {
+		in, _ := setup(t, func(n int) bool { return n == 1 }, func() string { return "" })
+		if err := in.install(); err == nil || !strings.Contains(err.Error(), "did not stay up after the restart") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }
