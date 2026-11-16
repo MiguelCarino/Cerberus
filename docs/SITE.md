@@ -28,6 +28,10 @@ Notes for keeping it current:
   files under `site/`, so `index.html` loads `site/carino-clock.js` itself with `data-carino-clock`,
   and the navbar skips its own load. If `propagate.sh` should cover this site, add the files under
   `Cerberus/site/` to its targets (they are not at the repo root).
+- `#flows`, `#evals` and `#spawn` (2026-11-15) describe Flows, Evals (E1, E2) and agent spawning
+  only as SCOPE's "As built" notes have them; their example cards are illustrations, not screenshots.
+  When a step kind, a default limit (`flows.Limits`, `agent.spawn`) or a gate rule changes, check
+  those cards and the "agent framework" FAQ answer.
 - No analytics and no outside requests. A meta CSP backs it (`connect-src 'none'`, scripts and
   fonts from self only). Verified in headless Chromium at 1280, 390 and 360 wide: no requests
   outside the site, no console errors, no horizontal scroll, navbar pinned at top after scrolling.

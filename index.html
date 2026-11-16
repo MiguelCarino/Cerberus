@@ -36,6 +36,8 @@
 <div data-carino-strip>
   <nav class="lp-jumps" data-carino-actions aria-label="On this page">
     <a class="cs-btn" href="#parts">Parts</a>
+    <a class="cs-btn" href="#flows">Flows</a>
+    <a class="cs-btn" href="#evals">Evals</a>
     <a class="cs-btn" href="#chat">Chat</a>
     <a class="cs-btn" href="#screens">Screens</a>
     <a class="cs-btn" href="#faq">FAQ</a>
@@ -126,10 +128,132 @@
     </div>
   </section>
 
-  <!-- 02 · LLM chat + mascots -->
+  <!-- 02 · flows (SCOPE "Flows" and its as-built notes) -->
+  <section class="lp-sec" id="flows" aria-labelledby="h-flows">
+    <div class="lp-head">
+      <div class="lp-kicker">02 · Flows</div>
+      <h2 id="h-flows">Saved recipes, not a chatty swarm.</h2>
+      <p class="lp-sub">A flow is a fixed list of steps that hands work to models and agent sessions. Cerberus checks the list when you save it, then runs it in that order every time.</p>
+    </div>
+    <div class="split">
+      <ul class="facts">
+        <li><b>Plan, then fan out.</b> A <code>plan</code> step asks a model for a JSON list of tasks. A <code>fan_out</code> step sends each task to the model its kind routes to, as a prompt or as an agent session, a few at a time.</li>
+        <li><b>Branch on the result.</b> An <code>if</code> step tests a step&#39;s output (contains, regex, equals, a JSON path) or the final state of a session, and jumps forward.</li>
+        <li><b>You sign off.</b> An <code>approve</code> step waits with Approve and Reject in the bell, and can send a push to your phone.</li>
+        <li><b>On a schedule, within limits.</b> Run a flow by hand or on a schedule (<code>weekdays 08:00</code>, or a cron line). Each run has limits on steps, tokens, cost, parallel calls and time, and stops as <code>limited</code> when it passes one. Agent sessions it starts count too, for the calls they make through the gateway.</li>
+        <li><b>Why fixed steps.</b> Models, agents and references are checked before a run starts. Steps only jump forward, so a run cannot go round in circles, and the run page shows each step&#39;s input, output, tokens and cost. A run that failed can continue from the step where it stopped.</li>
+      </ul>
+      <figure class="flow-ex" aria-labelledby="flowExT">
+        <div class="fx-head">
+          <div class="fx-title" id="flowExT">Example: a website, checked before you see it</div>
+          <div class="fx-sub">The built-in Website template, with a judge step added. Trigger: manual.</div>
+        </div>
+        <ol class="fx-steps">
+          <li><span class="fx-kind">plan</span><b>Plan the site.</b> A big model returns a JSON list of parts, each <code>{title, kind, task}</code>.</li>
+          <li><span class="fx-kind">fan_out</span><b>Write the parts.</b> Each part goes to the model its kind routes to, two at a time.
+            <ul class="fx-routes">
+              <li><code>html</code> → a local coding model</li>
+              <li><code>css</code> → a local coding model</li>
+              <li><code>copy</code> → a cloud model</li>
+            </ul>
+          </li>
+          <li><span class="fx-kind">session</span><b>Assemble.</b> An agent session builds the site from the parts in a scratch folder.</li>
+          <li class="fx-gate"><span class="fx-kind">judge</span><b>Check it.</b> A judge model checks the session&#39;s folder against your criteria. A failed gate sends its feedback back to the same session, which tries again.<span class="fx-loop">↺ feedback → Assemble, while the gate has tries left</span></li>
+          <li><span class="fx-kind">if</span><b>Passed?</b> Yes: go on. No: the run ends, and the judge&#39;s report is on the run page.</li>
+          <li><span class="fx-kind">approve</span><b>Approve.</b> Waits in the bell, and can push to your phone.</li>
+          <li><span class="fx-kind">output</span><b>Tell me.</b> An inbox entry that points to the files.</li>
+        </ol>
+        <p class="fx-limits"><span>Limits per run:</span> 50&nbsp;steps · 200,000&nbsp;tokens · $1.00 · 2&nbsp;at&nbsp;once · 60&nbsp;min <span>(the defaults)</span></p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 03 · evals and gates (SCOPE "Evals phase", E1 and E2 as built) -->
+  <section class="lp-sec" id="evals" aria-labelledby="h-evals">
+    <div class="lp-head">
+      <div class="lp-kicker">03 · Evals and gates</div>
+      <h2 id="h-evals">Finished is not the same as right.</h2>
+      <p class="lp-sub">An eval gives a task to one or more agent setups, and a judge model checks the work against criteria you write. The same judge can gate a flow.</p>
+    </div>
+    <div class="split rev">
+      <ul class="facts">
+        <li><b>Criteria as a graph.</b> Each criterion is one sentence in a gate, and it can depend on others. When a criterion fails, the ones that depend on it are skipped, not judged.</li>
+        <li><b>A judge that only reads.</b> A model through the gateway, with a fixed prompt at temperature 0. It reads the session&#39;s files, check output, transcript and diff, never runs anything, and answers pass or fail with its reasons. Secrets are masked first.</li>
+        <li><b>Gates send feedback back.</b> Gates run in order. When one fails and has tries left, the judge writes the failures up as one message and it goes to the same session, which tries again in the same folder.</li>
+        <li><b>Compare setups.</b> Run one task on several agent and model setups; in a repo they all start from the same commit. The run page ranks them by gates passed, criteria passed, tries and time, and each session records the exact setup it ran with.</li>
+        <li><b>Gate a flow.</b> A <code>judge</code> step after a session step does the same inside a flow, and an <code>if</code> step branches on its <code>passed</code>. Its calls count toward the run&#39;s limits.</li>
+      </ul>
+      <figure class="gate-ex" aria-labelledby="gateExT">
+        <div class="fx-head">
+          <div class="fx-title" id="gateExT">Example eval: a health endpoint</div>
+          <div class="fx-sub">Task: add <code>GET /health</code> that returns <code>{"ok": true}</code>.</div>
+        </div>
+        <div class="gx-gate">
+          <div class="gx-name">Gate 1 · Build <span>up to 2 tries</span></div>
+          <div class="gx-try">Try 1</div>
+          <ul class="gx-list">
+            <li class="gx-pass"><span class="gx-mark" aria-label="pass">✓</span><code>has_server</code> There is an HTTP server entry point.</li>
+            <li class="gx-fail"><span class="gx-mark" aria-label="fail">✗</span><code>health_route</code> <code>GET /health</code> returns 200 with <code>{"ok": true}</code>. <span class="gx-dep">Depends on has_server.</span></li>
+          </ul>
+          <blockquote class="gx-feedback"><span>Feedback to the session:</span> GET /health answers 404. The handler is registered as /healthz in main.go. Register it at /health.</blockquote>
+          <div class="gx-try">Try 2</div>
+          <ul class="gx-list">
+            <li class="gx-pass"><span class="gx-mark" aria-label="pass">✓</span><code>has_server</code> There is an HTTP server entry point.</li>
+            <li class="gx-pass"><span class="gx-mark" aria-label="pass">✓</span><code>health_route</code> <code>GET /health</code> returns 200 with <code>{"ok": true}</code>.</li>
+          </ul>
+        </div>
+        <div class="gx-gate">
+          <div class="gx-name">Gate 2 · Test <span>1 try</span></div>
+          <ul class="gx-list">
+            <li class="gx-pass"><span class="gx-mark" aria-label="pass">✓</span><code>tests_pass</code> The project&#39;s tests run and none fail.</li>
+          </ul>
+        </div>
+        <p class="fx-limits"><span>Result:</span> 2 of 2 gates passed, Build on its second try.</p>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 04 · agents start agents (SCOPE "Agents managing agents" + control center as built) -->
+  <section class="lp-sec" id="spawn" aria-labelledby="h-spawn">
+    <div class="lp-head">
+      <div class="lp-kicker">04 · Agents start agents</div>
+      <h2 id="h-spawn">Helpers, within the limits you set.</h2>
+      <p class="lp-sub">An agent can split its work into child sessions. Each child is an ordinary session: you can watch it, steer it, accept it or discard it.</p>
+    </div>
+    <div class="split">
+      <ul class="facts">
+        <li><b>Six tools.</b> <code>cerberus_spawn</code>, <code>cerberus_list</code>, <code>cerberus_read</code>, <code>cerberus_send</code>, <code>cerberus_wait</code> and <code>cerberus_stop</code>, through <code>cerberus mcp</code> or the built-in agent&#39;s own tools.</li>
+        <li><b>Limits.</b> By default, two levels below your session, four open children per session and eight open sessions in a tree. A spawn past a limit is refused.</li>
+        <li><b>Approval, if you want it.</b> With <code>require_approval</code> on, each child waits in the queue until you approve or reject it.</li>
+        <li><b>Only its own tree.</b> A parent sees and steers only its own descendants. It cannot type into a child&#39;s terminal or answer a child&#39;s approvals.</li>
+        <li><b>See the tree.</b> The sessions list puts children under their parent, and a session&#39;s Flow tab draws the tree with the models each one used.</li>
+      </ul>
+      <figure class="tree-ex" aria-labelledby="treeExT">
+        <div class="fx-head">
+          <div class="fx-title" id="treeExT">Example: one task, four helpers</div>
+          <div class="fx-sub"><code>agent.spawn</code>: max_depth 2 · max_children 4 · max_total 8 · require_approval on</div>
+        </div>
+        <ul class="tx">
+          <li><span class="tx-row"><span class="tx-name">Refactor the config loader</span><span class="tx-meta">depth 0 · running</span></span>
+            <ul>
+              <li><span class="tx-row"><span class="tx-name">Write tests for the loader</span><span class="tx-meta">depth 1 · passed</span></span></li>
+              <li><span class="tx-row"><span class="tx-name">Port the old keys</span><span class="tx-meta">depth 1 · running</span></span>
+                <ul>
+                  <li><span class="tx-row"><span class="tx-name">Check the migration</span><span class="tx-meta">depth 2 · running</span></span></li>
+                </ul>
+              </li>
+              <li class="tx-wait"><span class="tx-row"><span class="tx-name">Update the docs</span><span class="tx-meta">depth 1 · needs approval</span></span><span class="tx-pills"><span>Approve</span><span>Reject</span></span></li>
+            </ul>
+          </li>
+        </ul>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 05 · LLM chat + mascots -->
   <section class="lp-sec" id="chat" aria-labelledby="h-chat">
     <div class="lp-head">
-      <div class="lp-kicker">02 · LLM chat</div>
+      <div class="lp-kicker">05 · LLM chat</div>
       <h2 id="h-chat">A chat that can do things, and asks first.</h2>
       <p class="lp-sub">The desktop LLM chat, in any browser. It talks to any model the gateway serves, local or cloud, and keeps running when you close the tab.</p>
     </div>
@@ -151,10 +275,10 @@
     </div>
   </section>
 
-  <!-- 03 · screenshots -->
+  <!-- 06 · screenshots -->
   <section class="lp-sec" id="screens" aria-labelledby="h-screens">
     <div class="lp-head">
-      <div class="lp-kicker">03 · The web UI</div>
+      <div class="lp-kicker">06 · The web UI</div>
       <h2 id="h-screens">Made for a phone first, roomy on a desktop.</h2>
       <p class="lp-sub">The UI is built into the binary and does no work while it is closed. Tap a picture to see it full size.</p>
     </div>
@@ -182,10 +306,10 @@
     </div>
   </section>
 
-  <!-- 04 · also in the box -->
+  <!-- 07 · also in the box -->
   <section class="lp-sec" id="more" aria-labelledby="h-more">
     <div class="lp-head">
-      <div class="lp-kicker">04 · Also in the box</div>
+      <div class="lp-kicker">07 · Also in the box</div>
       <h2 id="h-more">The small things that make it work from a phone.</h2>
     </div>
     <div class="extras">
@@ -193,17 +317,17 @@
       <div class="extra"><h3>One bell</h3><p>Finished, failed and waiting sessions land in the bell, and on your phone through ntfy or the desktop notifier.</p></div>
       <div class="extra"><h3>Replay</h3><p>Each agent run is recorded. Scrub back through the terminal to see what it did and when.</p></div>
       <div class="extra"><h3>Get models</h3><p>Pull from LM Studio, Ollama or a Hugging Face GGUF link, with resume, checksums and a disk check. Downloading never loads a model.</p></div>
-      <div class="extra"><h3>Agents start agents</h3><p>An agent can start child sessions through MCP, within the limits you set, and you approve the tree.</p></div>
+      <div class="extra"><h3>Setup snapshots</h3><p>Each agent run records its agent and version, model and quantization, so <code>cerberus sessions setup A B</code> shows what differed between two runs.</p></div>
       <div class="extra"><h3>Install as an app</h3><p>Over HTTPS (your tailnet, for example) the UI installs on a phone home screen and opens offline.</p></div>
       <div class="extra"><h3>Every option explained</h3><p>Settings shows each option with its help, checks it before saving and says when a restart is needed. <code>cerberus config</code> does the same in a terminal.</p></div>
       <div class="extra"><h3>A leaderboard</h3><p>Which session, agent, model or repo spent the most tokens, money, energy or time this week.</p></div>
     </div>
   </section>
 
-  <!-- 05 · energy -->
+  <!-- 08 · energy -->
   <section class="lp-sec" id="energy" aria-labelledby="h-energy">
     <div class="lp-head">
-      <div class="lp-kicker">05 · Energy</div>
+      <div class="lp-kicker">08 · Energy</div>
       <h2 id="h-energy">All the energy goes to the models.</h2>
       <p class="lp-sub">The control plane is built to stay out of the way, and it tells you what the work costs.</p>
     </div>
@@ -221,10 +345,10 @@
     </div>
   </section>
 
-  <!-- 06 · safety -->
+  <!-- 09 · safety -->
   <section class="lp-sec" id="safety" aria-labelledby="h-safety">
     <div class="lp-head">
-      <div class="lp-kicker">06 · Safety</div>
+      <div class="lp-kicker">09 · Safety</div>
       <h2 id="h-safety">It runs commands for you, so it is locked down.</h2>
       <p class="lp-sub">Treat Cerberus like an SSH login to your own account. The threat model says what it protects, from whom, and where it stops.</p>
     </div>
@@ -244,10 +368,10 @@
     <p class="lp-link"><a class="btn" href="https://github.com/MiguelCarino/Cerberus/blob/main/docs/SECURITY.md" target="_blank" rel="noopener">Read the threat model (SECURITY.md) ↗</a></p>
   </section>
 
-  <!-- 07 · install -->
+  <!-- 10 · install -->
   <section class="lp-sec" id="install" aria-labelledby="h-install">
     <div class="lp-head">
-      <div class="lp-kicker">07 · Install</div>
+      <div class="lp-kicker">10 · Install</div>
       <h2 id="h-install">Build it, answer six questions, start it.</h2>
       <p class="lp-sub">Needs Go 1.26 or newer to build, plus <code>git</code> and <code>bash</code> for sessions. Optional: <code>llama-server</code>, LM Studio, Ollama, and <code>nvidia-smi</code> or the amdgpu driver for GPU readings.</p>
     </div>
@@ -308,16 +432,20 @@
 
   </section>
 
-  <!-- 08 · FAQ -->
+  <!-- 11 · FAQ -->
   <section class="lp-sec" id="faq" aria-labelledby="h-faq">
     <div class="lp-head">
-      <div class="lp-kicker">08 · Questions</div>
+      <div class="lp-kicker">11 · Questions</div>
       <h2 id="h-faq">Short answers.</h2>
     </div>
     <div class="faq">
       <details>
         <summary>Why one service instead of separate tools?</summary>
         <p>Running coding agents in their own git worktrees is a known idea. Cerberus puts it next to the rest: it is a background service you reach from any browser, your phone included; it hosts the models and one OpenAI-compatible gateway, so agents can run on a model your own machine serves; and it measures what each request costs in tokens, money and energy.</p>
+      </details>
+      <details>
+        <summary>Do I need an agent framework on top?</summary>
+        <p>For many jobs, no. A flow gives you a planner, a fan-out to several models or agents, branches, a judge gate and an approval, saved as a file the service runs by hand or on a schedule. It is a fixed list of steps that jump forward, not a general graph, and its templates run no code. When a job needs your own code between the steps, call the <code>/v1</code> gateway from your program or framework.</p>
       </details>
       <details>
         <summary>Can I use my LLM subscription?</summary>
