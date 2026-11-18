@@ -1,24 +1,29 @@
 // Sessions view: history search with filter chips, fleet tasks, the list
-// grouped by state (parent/child tree, pins, priority, tags, inline rename,
-// spawn approval), multi-select with the bulk bar, and the New task form.
+// (parent/child tree, pins, priority, tags, inline rename, spawn approval),
+// multi-select with the bulk bar, and the New task form.
 //
-// The Wall lives here too, steered by the Active / All filter in the head:
-// Active shows the live tiles of the active sessions as a grid and only
-// those sessions below; All shows every session with the tiles as one short
-// strip. A visit starts on Active when something is running, else All. A
-// tile tapped fills the screen with its input. #/wall opens this view on
-// Active; #/wall/a,b,c stays the full-screen watch page for a chosen set
-// (views/wall.js).
+// The list is one list in the order the sessions were created, newest
+// first (control.js bySessionOrder; pinned ones on top): a session that
+// changes state stays in its row, and stopped, failed, passed, accepted,
+// discarded and errored sessions stay listed with their state pill until
+// they are deleted (or the server's retention prune removes them).
+//
+// The Wall lives here too, steered by the All / Active filter in the head:
+// All (the default) shows every session with the live tiles as one short
+// strip; Active shows the live tiles of the active sessions as a grid and
+// only those sessions below. A tile tapped fills the screen with its
+// input. #/wall opens this view on Active; #/wall/a,b,c stays the
+// full-screen watch page for a chosen set (views/wall.js).
 
 import { previewChip } from '../preview.js';
 import { api, post, isReachable, onReachability } from '../api.js';
 import { h, clear, openDialog, confirmDialog, toast, errText, pill } from '../dom.js';
 import { store } from '../store.js';
-import { groupSessions, stateTone, relTime, workspaceKind, workspaceLabel, repoName, debounce, isLive } from '../util.js';
+import { stateTone, relTime, workspaceKind, workspaceLabel, repoName, debounce, isLive } from '../util.js';
 import { queryWords, highlightParts } from '../text.js';
 import { batchSessions, stateCounts, countChips, batchProgress } from '../fleet.js';
 import {
-  sessionName, buildTree, allTags, hasTag, parseTags, clampPriority, needsApproval, moveCursor, rowKey, isWatchable,
+  sessionName, buildTree, bySessionOrder, allTags, hasTag, parseTags, clampPriority, needsApproval, moveCursor, rowKey, isWatchable,
   PRIORITY_MIN, PRIORITY_MAX,
 } from '../control.js';
 import { folderPicker } from './picker.js';
@@ -55,11 +60,10 @@ export function mount(root, r = {}) {
   const writable = canWriteSessions(me);
   const watchAll = !!(me && me.hasUsers && store.can('sessions.watch_all'));
   if (!writable) selected.clear();
-  // 'active' or 'all'; #/wall asks for Active.
-  let show = r.layout === 'wall' || store.sessions().some(isWatchable) ? 'active' : 'all';
-  let showPicked = r.layout === 'wall';
+  // 'all' (the default) or 'active'; #/wall asks for Active.
+  let show = r.layout === 'wall' ? 'active' : 'all';
   if (r.layout) history.replaceState(null, '', '#/sessions');
-  const list = h('div', { class: 'sess-groups' });
+  const list = h('div', { class: 'sess-all' });
   const fleetEl = h('div', { class: 'fleet-list' });
   const results = h('div', { class: 'hist-results', hidden: true });
   const tagBar = h('div', { class: 'tag-filter', role: 'group', 'aria-label': 'Filter by tag' });
@@ -68,15 +72,14 @@ export function mount(root, r = {}) {
   function drawShow() {
     const n = store.sessions().filter(isWatchable).length;
     const total = store.sessions().length;
-    showSeg.replaceChildren(...[['active', 'Active', n, 'Running and waiting sessions, with their live terminals'],
-      ['all', 'All', total, 'Every session; live terminals as a strip']].map(([v, label, count, title]) => h('button', {
+    showSeg.replaceChildren(...[['all', 'All', total, 'Every session, newest first; live terminals as a strip'],
+      ['active', 'Active', n, 'Running and waiting sessions, with their live terminals']].map(([v, label, count, title]) => h('button', {
       class: `toggle-btn${show === v ? ' active' : ''}`, type: 'button', role: 'radio', title,
       'aria-checked': show === v ? 'true' : 'false',
-      onclick: () => setShow(v, true),
+      onclick: () => setShow(v),
     }, label, h('span', { class: 'sess-show-n', text: store.loaded() ? String(count) : '' }))));
   }
-  function setShow(v, picked = false) {
-    if (picked) showPicked = true;
+  function setShow(v) {
     if (show === v) return;
     show = v;
     wall.setStrip(v === 'all');
@@ -284,28 +287,24 @@ export function mount(root, r = {}) {
     for (const id of [...selected]) if (!store.session(id)) selected.delete(id);
     clear(list);
     order = [];
-    // Before the first list arrives, Active was a guess: settle it once.
-    if (!showPicked && store.loaded()) { showPicked = true; if (show === 'active' && !store.sessions().some(isWatchable)) { show = 'all'; wall.setStrip(true); } }
     drawShow();
     fillOwners();
     const tagged = ownedBy(store.sessions(), ownerFilter).filter((s) => hasTag(s, tagFilter));
     const all = show === 'active' ? tagged.filter(isWatchable) : tagged;
-    const groups = groupSessions(all);
-    if (!groups.length && show === 'active' && store.loaded() && tagged.length) {
+    const tree = buildTree(all, bySessionOrder);
+    if (!tree.length && show === 'active' && store.loaded() && tagged.length) {
       list.append(h('div', { class: 'empty' },
         h('p', { class: 'empty-title', text: tagFilter ? `Nothing tagged ${tagFilter} is running` : 'Nothing is running now' }),
         h('p', { class: 't-sec', text: `${tagged.length} finished or stopped session${tagged.length === 1 ? '' : 's'}.` }),
-        h('button', { class: 'btn btn-primary', type: 'button', onclick: () => setShow('all', true) }, 'Show all')));
-    } else if (!groups.length) {
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: () => setShow('all') }, 'Show all')));
+    } else if (!tree.length) {
       list.append(h('div', { class: 'empty' },
         h('p', { class: 'empty-title', text: !store.loaded() ? (isReachable() ? 'Loading…' : 'Waiting for the host…') : tagFilter ? `No sessions tagged ${tagFilter}` : 'No sessions yet' }),
         store.loaded() && !tagFilter ? h('p', { class: 't-sec', text: 'Start one with “New task”: describe the work, choose an agent, and pick a folder now or later.' }) : null));
-    }
-    for (const g of groups) {
-      const rows = buildTree(g.items).map(({ s, level, orphan }) => { order.push(s.ID); return row(s, level, orphan); });
-      list.append(h('div', { class: `sess-group g-${g.key}` },
-        h('h2', { class: 'group-title' }, g.label, h('span', { class: 'group-count', text: String(g.items.length) })),
-        h('div', { class: 'sess-list' }, rows)));
+    } else {
+      const rows = tree.map(({ s, level, orphan }) => { order.push(s.ID); return row(s, level, orphan); });
+      list.append(h('h2', { class: 'group-title' }, show === 'active' ? 'Active sessions' : 'All sessions',
+        h('span', { class: 'group-count', text: String(tree.length) })), h('div', { class: 'sess-list' }, rows));
     }
     if (cursor >= order.length) cursor = order.length - 1;
     markCursor(false);

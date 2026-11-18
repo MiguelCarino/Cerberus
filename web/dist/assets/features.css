@@ -148,10 +148,6 @@
 @media (max-width: 640px) {
   .head-actions { width: 100%; }
   .head-actions .btn-big { width: auto; flex: 1 1 140px; justify-content: center; }
-  /* Four bottom tabs at 360 px: tighter padding and the badge in the corner
-     so "Sessions" plus a count still fits in a quarter of the width. */
-  .bottom-tabs a { padding: 0 2px; letter-spacing: 0.04em; gap: 0; }
-  .bottom-tabs .nav-badge { position: absolute; top: 4px; right: 4px; min-width: 16px; height: 16px; padding: 0 4px; }
   .secret-row { flex-wrap: wrap; }
   .secret-actions { width: 100%; }
   .secret-actions .btn { flex: 1; justify-content: center; }

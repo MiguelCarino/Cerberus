@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   ROLES, ROLE_LABEL, ROLE_HELP, ROLE_CAPS, ROLE_HOME, ALL_CAPS, LEGACY_ME, normMe, can, canWriteSessions, roleHome, whoText, initialOf,
-  VIEW_CAPS, viewAllowed, guardRoute, isBare, tabVisible, moreItems, TAB_OF,
+  VIEW_CAPS, viewAllowed, guardRoute, isBare, tabVisible, mainTabs, MAIN_TABS, TAB_OF,
   nameError, cleanName, passwordError, newPasswordError, displayError,
   lockMinutes, loginErrorText, tokenErrorText, passwordChangeErrorText,
   normUser, normUsers, userStatus, usd, fmtTokens, spendText, budgetShare, budgetText, parseBudget, listText,
@@ -127,27 +127,41 @@ test('tabs per role', () => {
   assert.deepEqual(visible(ME.viewer), ['sessions', 'monitor']);
   assert.deepEqual(visible(ME.monitor), ['monitor']);
   assert.deepEqual(visible(ME.chat), ['chat']);
-  for (const r of ROLES) assert.equal(tabVisible('more', ME[r]), true, r);
+  for (const r of ROLES) assert.equal(tabVisible('account', ME[r]), true, r);
 });
 
-test('every tab in index.html has a rule, and the admin sees it', () => {
-  const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
-  const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
-  assert.ok(tabs.length >= 8);
-  for (const t of tabs) {
-    assert.ok(t === 'more' || VIEW_CAPS[t], `no rule for tab ${t}`);
+test('every main tab has a rule, lights itself, and the admin sees it', () => {
+  assert.deepEqual(MAIN_TABS.map(([t]) => t), [...TABS, 'account']);
+  for (const [t, label, sub] of MAIN_TABS) {
+    assert.ok(t === 'account' || VIEW_CAPS[t], 'no rule for tab ' + t);
+    assert.equal(TAB_OF[t], t, t);
+    assert.ok(label && sub, t);
     assert.equal(tabVisible(t, ME.admin), true, t);
   }
 });
 
-test('the More sheet holds what the role opens, then Account', () => {
-  const keys = (me) => moreItems(me).map(([k]) => k);
-  assert.deepEqual(keys(ME.admin), ['flows', 'models', 'usage', 'settings', 'account']);
-  assert.deepEqual(keys(ME.user), ['flows', 'models', 'usage', 'account']);
-  assert.deepEqual(keys(ME.viewer), ['account']);
-  assert.deepEqual(keys(ME.monitor), ['account']);
-  assert.deepEqual(keys(ME.chat), ['account']);
+test('the tab bar holds what the role opens, then Account', () => {
+  const keys = (me) => mainTabs(me).map(([k]) => k);
+  assert.deepEqual(keys(ME.admin), [...TABS, 'account']);
+  assert.deepEqual(keys(ME.user), ['chat', 'sessions', 'flows', 'models', 'usage', 'account']);
+  assert.deepEqual(keys(ME.viewer), ['sessions', 'monitor', 'account']);
+  assert.deepEqual(keys(ME.monitor), ['monitor', 'account']);
+  assert.deepEqual(keys(ME.chat), ['chat', 'account']);
+  assert.deepEqual(mainTabs(null), [], 'nobody signed in: no tabs');
   assert.equal(TAB_OF.account, 'account');
+  // A token or device (no user) has no password to change.
+  const acct = (me) => mainTabs(me).find(([k]) => k === 'account')[2];
+  assert.match(acct(ME.admin), /^Password/);
+  assert.match(acct(meFor('admin', { user: null })), /^Devices/);
+});
+
+test('index.html: the side nav beside main#app, nothing but actions for the navbar', () => {
+  const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
+  assert.match(html, /<div class="app-shell">\s*<nav class="side-nav" id="viewBar" aria-label="Views"><\/nav>\s*<main id="app"><\/main>\s*<\/div>/);
+  assert.ok(!html.includes('view-bar'), 'the old view bar is gone');
+  // The bell and the account button join this block; no view links in it.
+  assert.match(html, /<div data-carino-actions><\/div>/);
+  for (const gone of ['bottom-tabs', 'cn-tabs', 'data-more', 'data-tab=']) assert.ok(!html.includes(gone), gone);
 });
 
 // ---------- the route guard ----------

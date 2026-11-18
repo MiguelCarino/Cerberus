@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import {
   gridFit, buildTree, shortcutStep, isTypingContext, summarizeBulk, bulkBody, bulkResults, normTag, parseTags,
   allTags, hasTag, clampPriority, validateLimits, limitsText, needsApproval, wallIds, wallStreamURL, parseWallEvent,
-  miniTermSize, snapIndex, fmtElapsed, broadcastKey, mergeFeed, filterFeed, moveCursor, sessionName, byListOrder,
+  miniTermSize, snapIndex, fmtElapsed, broadcastKey, mergeFeed, filterFeed, moveCursor, sessionName, byListOrder, bySessionOrder,
   limitsHelp, rowKey, feedTone, FEED_KINDS,
   SEQ_TIMEOUT,
 } from '../dist/assets/js/control.js';
@@ -62,6 +62,63 @@ test('byListOrder: pinned, then priority, then most recent', () => {
   const b = { ID: 'b', Pinned: true, Priority: 0, Updated: '2026-11-01T09:00:00Z' };
   const c = { ID: 'c', Pinned: false, Priority: 5, Updated: '2026-11-01T11:00:00Z' };
   assert.deepEqual([a, b, c].sort(byListOrder).map((s) => s.ID), ['b', 'c', 'a']);
+});
+
+// ---------- the Sessions list order (one list, creation order) ----------
+
+const S = (id, created, extra = {}) => ({ ID: id, Created: created, Updated: created, State: 'running', ...extra });
+const ids = (rows) => rows.map((r) => r.s.ID);
+
+test('bySessionOrder: newest created first, every state in one list', () => {
+  const list = [
+    S('a', '2026-11-16T08:00:00Z', { State: 'stopped' }),
+    S('b', '2026-11-16T09:00:00Z', { State: 'discarded' }),
+    S('c', '2026-11-16T10:00:00Z', { State: 'running' }),
+    S('d', '2026-11-16T07:00:00Z', { State: 'accepted' }),
+    S('e', '2026-11-16T11:00:00Z', { State: 'failed' }),
+    S('f', '2026-11-16T06:00:00Z', { State: 'passed' }),
+    S('g', '2026-11-16T05:00:00Z', { State: 'error' }),
+    S('h', '2026-11-16T12:00:00Z', { State: 'waiting' }),
+    S('i', '2026-11-16T04:00:00Z', { State: 'queued' }),
+  ];
+  assert.deepEqual(ids(buildTree(list, bySessionOrder)), ['h', 'e', 'c', 'b', 'a', 'd', 'f', 'g', 'i']);
+});
+
+test('bySessionOrder: a session that updates keeps its row', () => {
+  const list = [S('old', '2026-11-16T08:00:00Z'), S('mid', '2026-11-16T09:00:00Z'), S('new', '2026-11-16T10:00:00Z')];
+  const before = ids(buildTree(list, bySessionOrder));
+  // The oldest one finishes, gets renamed, re-prioritised and new activity: nothing moves.
+  list[0] = { ...list[0], State: 'stopped', Updated: '2026-11-16T23:00:00Z', Priority: 9, Name: 'renamed', Activity: 'x' };
+  list[1] = { ...list[1], State: 'waiting', Updated: '2026-11-16T22:00:00Z' };
+  assert.deepEqual(ids(buildTree(list, bySessionOrder)), before);
+  assert.deepEqual(before, ['new', 'mid', 'old']);
+  // The input order does not matter either.
+  assert.deepEqual(ids(buildTree([...list].reverse(), bySessionOrder)), before);
+});
+
+test('bySessionOrder: pinned on top, ties by id, a missing Created sorts last', () => {
+  const list = [
+    S('20261116-100000-aaaaaa', '2026-11-16T10:00:00Z'),
+    S('20261116-100000-bbbbbb', '2026-11-16T10:00:00Z'),
+    S('20261116-080000-cccccc', '2026-11-16T08:00:00Z', { Pinned: true }),
+    { ID: '20261116-120000-dddddd', State: 'stopped' },
+  ];
+  assert.deepEqual(ids(buildTree(list, bySessionOrder)),
+    ['20261116-080000-cccccc', '20261116-100000-bbbbbb', '20261116-100000-aaaaaa', '20261116-120000-dddddd']);
+});
+
+test('bySessionOrder keeps the parent/child tree', () => {
+  const list = [
+    S('p', '2026-11-16T08:00:00Z', { State: 'passed' }),
+    S('c1', '2026-11-16T08:01:00Z', { Parent: 'p', State: 'stopped' }),
+    S('c2', '2026-11-16T08:02:00Z', { Parent: 'p', State: 'running' }),
+    S('later', '2026-11-16T09:00:00Z'),
+    S('orphan', '2026-11-16T07:00:00Z', { Parent: 'gone' }),
+  ];
+  const out = buildTree(list, bySessionOrder);
+  assert.deepEqual(ids(out), ['later', 'p', 'c2', 'c1', 'orphan']);
+  assert.deepEqual(out.map((r) => r.level), [0, 0, 1, 1, 0]);
+  assert.equal(out[4].orphan, true);
 });
 
 test('shortcutStep parses sequences and single keys', () => {

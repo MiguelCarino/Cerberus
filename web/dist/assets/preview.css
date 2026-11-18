@@ -59,10 +59,6 @@
 .tile-tools .pv-chip { height: 28px; }
 
 @media (max-width: 640px) {
-  /* Six tabs do not fit 360 px: they scroll inside their own row. */
-  .ss-tabs { overflow-x: auto; scrollbar-width: none; }
-  .ss-tabs::-webkit-scrollbar { display: none; }
-  .ss-tab { padding: 0 10px; flex-shrink: 0; }
   .pv-bar { padding: 8px; }
   .pv-presets { display: none; }
   .pv-source { flex: 1 1 100%; }

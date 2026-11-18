@@ -89,13 +89,20 @@ package api
 //	POST   /api/flows/validate         Flow (a draft; nothing saved) → {problems, graph}
 //	                                     (graph: FlowGraph without states, for a preview)
 //	POST   /api/flows/test             {flow, input} → 202 Run (marked test, never scheduled)
-//	GET    /api/flows/runs?flow=&limit= → [Run] newest first (no snapshot; limit 1-500, default 50)
-//	GET    /api/flows/runs/{run}       → {run: Run, steps: [StepRecord]}
+//	GET    /api/flows/runs?flow=&limit= → [Run] newest first (no snapshot; limit 1-500, default 50;
+//	                                     asks: approvals its sessions wait for, omitted when 0)
+//	       &per_flow=N                   at most N (1-500) runs of each flow, newest first, for a
+//	                                     list of flows with their runs; limit then defaults to 500,
+//	                                     and each run carries flow_runs: how many runs its flow
+//	                                     has in this scope (owner scoping and all=1 as above)
+//	GET    /api/flows/runs/{run}       → {run: Run, steps: [StepRecord], live?, asks: [FlowAsk]}
+//	                                     (asks: flowasks.go; answered through the session routes)
 //	POST   /api/flows/runs/{run}/cancel           → Run (409 when already final)
 //	POST   /api/flows/runs/{run}/approve {ok, note} → Run (409 unless waiting)
 //	POST   /api/flows/runs/{run}/continue          → Run, queued again from the step
 //	                                     it stopped at (409 unless failed, limited or canceled)
-//	GET    /api/flows/runs/{run}/flow  → Graph (live states)
+//	GET    /api/flows/runs/{run}/flow  → Graph (live states; a step or item whose session
+//	                                     waits for an approval is "waiting", sub "approve: <tool>")
 //	GET    /api/flows/{id}             → FlowView
 //	PUT    /api/flows/{id}             Flow with the version it was read at → FlowView
 //	                                     (409 + {error, flow} when it changed elsewhere)
@@ -137,10 +144,22 @@ type FlowView struct {
 	Versions    []int           `json:"versions"`
 }
 
-// flowRunItem is a run in a list: the snapshot is left out.
+// flowRunItem is a run in a list: the snapshot is left out. Asks counts
+// the approvals its sessions wait for (flowasks.go).
 type flowRunItem struct {
 	flows.Run
 	Snapshot *flows.Flow `json:"snapshot,omitempty"`
+	Asks     int         `json:"asks,omitempty"`
+	// FlowRuns is how many runs the run's flow has in the caller's scope
+	// (only with ?per_flow=N, where the list holds at most N of them).
+	FlowRuns int `json:"flow_runs,omitempty"`
+}
+
+// flowRunView is a run with its steps and the approvals its sessions
+// wait for (flowasks.go).
+type flowRunView struct {
+	flows.RunDetail
+	Asks []FlowAsk `json:"asks"`
 }
 
 func (s *server) flowsRoutes(mux *routeMux) {
@@ -332,17 +351,48 @@ func (s *server) handleFlowRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, flowRunsMax)
 	}
+	// per_flow: the newest N runs of each flow (the Flows list shows each
+	// flow with its runs), every flow's runs counted in flow_runs.
+	perFlow := 0
+	if v := q.Get("per_flow"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "per_flow must be a positive number")
+			return
+		}
+		perFlow = min(n, flowRunsMax)
+		if q.Get("limit") == "" {
+			limit = flowRunsMax
+		}
+	}
 	keep := s.ownFilter(principalOf(r), q.Get("all") == "1")
 	runs := s.flows.Runs(flow, 0)
+	asks := s.asksIndex()
 	out := []flowRunItem{}
+	seen := map[string]int{}
 	for _, run := range runs {
 		if keep != nil && !keep(run.Owner) {
 			continue
 		}
+		if perFlow > 0 {
+			seen[run.Flow]++
+			if seen[run.Flow] > perFlow || len(out) >= limit {
+				continue // still counted
+			}
+		}
+		n := 0
+		if asks != nil {
+			n = asks.count(run)
+		}
 		s.decorateRun(&run)
-		out = append(out, flowRunItem{Run: run})
-		if len(out) >= limit {
+		out = append(out, flowRunItem{Run: run, Asks: n})
+		if perFlow == 0 && len(out) >= limit {
 			break
+		}
+	}
+	if perFlow > 0 {
+		for i := range out {
+			out[i].FlowRuns = seen[out[i].Flow]
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -361,12 +411,13 @@ func (s *server) handleFlowRun(w http.ResponseWriter, r *http.Request) {
 		flowError(w, err)
 		return
 	}
+	asks := s.runAsks(d)
 	s.decorateRun(&d.Run)
 	d.Steps = nonNil(d.Steps)
 	for i := range d.Steps {
 		d.Steps[i].Items = nonNil(d.Steps[i].Items)
 	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(w, http.StatusOK, flowRunView{RunDetail: d, Asks: asks})
 }
 
 func (s *server) handleFlowCancel(w http.ResponseWriter, r *http.Request) {
@@ -447,6 +498,9 @@ func (s *server) handleFlowRunGraph(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		flowError(w, err)
 		return
+	}
+	if d, err := s.flows.GetRun(id); err == nil {
+		markAsks(&g, s.runAsks(d))
 	}
 	writeJSON(w, http.StatusOK, g)
 }

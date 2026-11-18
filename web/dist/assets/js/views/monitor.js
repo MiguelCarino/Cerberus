@@ -12,7 +12,6 @@ import {
   groupProcs, mergeGroups, isModelProc, focusKey, sortGroups, filterGroups, lowerNice, memParts, usedPct, tempTone, diskTone,
   livePayload, limitsOf,
 } from '../monitor.js';
-import * as usageView from './usage.js';
 import { doctorCard } from './security.js';
 import { store } from '../store.js';
 
@@ -47,29 +46,10 @@ export function mount(root) {
     [['cpu', 'CPU'], ['ram', 'Memory'], ['gpu', 'GPU'], ['name', 'Name']].map(([v, t]) => h('option', { value: v, text: `Sort: ${t}` })));
   const tasksEl = h('div', { class: 'mon-tasks' }, h('p', { class: 't-sec', text: 'Loading tasks…' }));
   const tasksNote = h('p', { class: 'mon-note' });
-  // Phones: five tabs do not fit, so Usage lives here as a section (CSS
-  // shows it only under 640 px). Its view mounts only while it is open, so
-  // a closed section polls nothing.
-  const usageBody = h('div', { class: 'mon-usage-body' });
-  let usageCleanup = null;
   // Users and roles: Usage is for roles that see spend; process actions
   // (signal, renice) are for admins.
   const canUsage = store.can('usage');
   const canSignal = store.can('monitor.signal');
-  const usageEl = h('details', { class: 'mon-usage', hidden: !canUsage },
-    h('summary', { class: 'mon-usage-sum' }, h('span', { class: 'group-title', text: 'Usage & spend' })),
-    usageBody);
-  usageEl.addEventListener('toggle', () => {
-    if (usageEl.open && !usageCleanup && !gone) {
-      clear(usageBody);
-      usageCleanup = usageView.mount(usageBody) || (() => {});
-    } else if (!usageEl.open && usageCleanup) {
-      usageCleanup();
-      usageCleanup = null;
-      clear(usageBody);
-    }
-  });
-
   // The doctor's ok/warn/fail counts; tap for the checklist.
   const doctor = doctorCard();
 
@@ -78,7 +58,7 @@ export function mount(root) {
       h('div', {}, h('h1', { class: 'view-title', text: 'Monitor' }),
         h('p', { class: 'view-sub', text: 'Power, energy, cost and everything running on this machine.' })),
       canUsage ? h('a', { class: 'btn mon-usage-link', href: '#/usage' }, 'Usage & spend →') : null),
-    overviewEl, doctor.el, billEl, usageEl,
+    overviewEl, doctor.el, billEl,
     h('div', { class: 'mon-chart-head' }, h('h2', { class: 'group-title', text: 'Power' }), rangeBtns),
     h('div', { class: 'mon-chart-card' }, chartEl, legendEl),
     h('h2', { class: 'group-title', text: 'System' }), systemEl,
@@ -472,7 +452,6 @@ export function mount(root) {
     clearTimeout(seriesTimer);
     stream.stop();
     doctor.unmount();
-    if (usageCleanup) { usageCleanup(); usageCleanup = null; }
     window.removeEventListener('cerberus:visible', onVisible);
     document.removeEventListener('visibilitychange', onHidden);
     document.removeEventListener('pointerdown', onDocDown);

@@ -572,6 +572,7 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer func() { dlCancel() }()
 	var flowCh <-chan flows.Event
 	flowCancel := func() {}
+	askWatch := s.newFlowAskWatch()
 	if s.flowFeed != nil {
 		flowCh, flowCancel = s.flowFeed.Subscribe()
 	}
@@ -635,11 +636,16 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if !seeSession(ev.Session.Owner) {
-				continue
+			// A flow run's session started or stopped waiting for an
+			// approval: its run page and graph refetch (flowasks.go).
+			fe, flowChanged := askWatch.change(ev)
+			if seeSession(ev.Session.Owner) {
+				ev.Session = s.decorate(ev.Session)
+				if !send("session", ev) {
+					return
+				}
 			}
-			ev.Session = s.decorate(ev.Session)
-			if !send("session", ev) {
+			if flowChanged && s.flowVisible(pr, fe.Owner) && !send(flows.EventType, fe) {
 				return
 			}
 		case id, ok := <-useCh:

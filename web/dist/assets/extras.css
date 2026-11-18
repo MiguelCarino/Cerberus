@@ -84,9 +84,7 @@ body[data-view="login"] .bell-btn { display: none; }
 .pwa-bar.offline .pwa-msg { color: #fca5a5; }
 .pwa-msg { min-width: 0; }
 @media (max-width: 640px) {
-  /* above the bottom tabs */
-  .pwa-bar { bottom: calc(66px + env(safe-area-inset-bottom)); width: calc(100vw - 32px); justify-content: space-between; }
-  body[data-view="session"] .pwa-bar, body[data-view="diff"] .pwa-bar { bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .pwa-bar { bottom: calc(12px + env(safe-area-inset-bottom)); width: calc(100vw - 32px); justify-content: space-between; }
 }
 
 /* ---------- session Replay tab ---------- */
@@ -169,7 +167,7 @@ a.lb-label:hover { color: var(--accent); }
 .lb-data th[scope="row"] { font-weight: 400; text-align: left; overflow-wrap: anywhere; }
 
 /* .fchips is a sticky filter bar in Branding; these groups sit inline. */
-.replay-speed.fchips, .lb-chips.fchips {
+.replay-speed.fchips, .lb-chips.fchips, .head-actions > .fchips {
   position: static; z-index: auto; padding: 0; background: none; -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom: 0;
 }
 .lb-chips.fchips { gap: 6px; }

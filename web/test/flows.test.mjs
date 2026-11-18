@@ -133,9 +133,9 @@ test('every kind has a label, its fields and a form', () => {
 
 test('step forms show the fields the other values ask for', () => {
   const vis = (s, steps = [s]) => stepFields(s, steps).filter((f) => f.show !== false).map((f) => f.key);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'scratch' }), ['agent', 'workspace', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'repo' }), ['agent', 'workspace', 'repo', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
-  assert.deepEqual(vis({ kind: 'session', workspace: 'folder' }), ['agent', 'workspace', 'folder', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'scratch' }), ['agent', 'model', 'workspace', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'repo' }), ['agent', 'model', 'workspace', 'repo', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
+  assert.deepEqual(vis({ kind: 'session', workspace: 'folder' }), ['agent', 'model', 'workspace', 'folder', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error']);
   assert.ok(!vis({ kind: 'fan_out', as: 'prompt' }).includes('agent'));
   assert.ok(vis({ kind: 'fan_out', as: 'session' }).includes('agent'));
   assert.ok(vis({ kind: 'if', test: 'json' }).includes('path'));

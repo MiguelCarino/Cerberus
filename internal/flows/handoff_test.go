@@ -4,8 +4,11 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"carino.systems/cerberus/internal/evals"
 )
 
 // A session step's output carries the workspace, files, checks, diff
@@ -33,6 +36,30 @@ func TestSessionOutputFields(t *testing.T) {
 	next := h.stepRec(r.ID, "next")
 	if next.Input != "Folder /ws/s-1; first file index.html; agent said: I wrote <index.html>." {
 		t.Fatalf("next input %q", next.Input)
+	}
+}
+
+// A session step's own model reaches the session; without one the agent
+// profile's model is kept (2026-11-16: Assemble ran on a 1.7B default
+// model and looped, with no way to pick another in the flow).
+func TestSessionStepModel(t *testing.T) {
+	h := newHarness(t)
+	f := h.create(Flow{Name: "M", Steps: []Step{
+		{ID: "a", Kind: KindSession, Agent: "cerberus", Model: "small", Task: "build {input}"},
+		{ID: "b", Kind: KindSession, Agent: "cerberus", Task: "check {input}"},
+	}})
+	if r := h.wait(h.run(f.ID, "x").ID); r.State != StatePassed {
+		t.Fatalf("%s %q", r.State, r.Reason)
+	}
+	reqs := slices.Clone(h.sessions.reqs)
+	if len(reqs) != 2 || reqs[0].Model != "small" || reqs[1].Model != "" {
+		t.Fatalf("models %+v", reqs)
+	}
+	bad := Flow{Name: "B", Steps: []Step{{ID: "a", Kind: KindSession, Agent: "cerberus", Model: "no-such-model", Task: "t"}}}
+	if probs := Validate(bad, fakeCatalog{}); !slices.ContainsFunc(probs, func(p Problem) bool {
+		return p.Step == "a" && p.Field == "model" && p.Severity == SevError
+	}) {
+		t.Fatalf("unknown session model not refused: %+v", probs)
 	}
 }
 
@@ -199,19 +226,35 @@ func TestContinueRerunsChangedItems(t *testing.T) {
 	}
 }
 
-// The Website template hands the parts to the Assemble session as titled
-// sections with the markup as written, not as escaped JSON.
+// The Website template writes every part from the same outline and the
+// whole plan, hands the parts to the Assemble session as titled sections
+// with the markup as written (not as escaped JSON), and reviews the
+// result before the approval.
 func TestWebsiteTemplateAssembleTask(t *testing.T) {
 	h := newHarness(t)
+	var mu sync.Mutex
+	var partInputs []string
 	h.models.fn = func(ctx context.Context, req ModelRequest) (ModelReply, error) {
-		if req.Step == "plan" {
-			return ModelReply{Text: `[{"title":"Home","kind":"html","task":"page"},{"title":"Look","kind":"css","task":"styles"}]`}, nil
+		switch req.Step {
+		case "outline":
+			return ModelReply{Text: "OUTLINE: sections #intro, #menu; class .card"}, nil
+		case "plan":
+			if last := req.Messages[len(req.Messages)-1].Content; !strings.Contains(last, "OUTLINE: sections #intro") {
+				t.Errorf("the plan does not see the outline: %s", last)
+			}
+			return ModelReply{Text: `[{"title":"Home","kind":"section","task":"the intro section"},{"title":"Look","kind":"css","task":"styles"}]`}, nil
 		}
-		if strings.Contains(req.Messages[0].Content, "(html)") {
-			return ModelReply{Text: "<main>\n  <h1>Tom & Jerry</h1>\n</main>"}, nil
+		mu.Lock()
+		partInputs = append(partInputs, req.Messages[0].Content)
+		mu.Unlock()
+		if strings.Contains(req.Messages[0].Content, "(section)") {
+			return ModelReply{Text: "<section id=\"intro\">\n  <h1>Tom & Jerry</h1>\n</section>"}, nil
 		}
 		return ModelReply{Text: "h1 { color: red; }"}, nil
 	}
+	fj := &fakeJudgeRunner{h: h, result: JudgeResult{Passed: true, GatesPassed: 1, GatesTotal: 1,
+		Report: evals.Report{GatesPassed: 1, GatesTotal: 1}}}
+	h.e.o.Judge = fj
 	var site Flow
 	for _, tpl := range Templates() {
 		if tpl.Key == "website" {
@@ -224,13 +267,34 @@ func TestWebsiteTemplateAssembleTask(t *testing.T) {
 	if r.State != StateWaiting {
 		t.Fatalf("%s %q", r.State, r.Reason)
 	}
+	if len(partInputs) != 2 {
+		t.Fatalf("%d parts", len(partInputs))
+	}
+	for _, in := range partInputs {
+		// Each writer sees the outline and every part of the plan.
+		if !strings.Contains(in, "OUTLINE: sections #intro") || !strings.Contains(in, `"title": "Home"`) || !strings.Contains(in, `"title": "Look"`) {
+			t.Errorf("a part is written blind:\n%s", in)
+		}
+	}
 	h.sessions.mu.Lock()
 	task := h.sessions.reqs[0].Task
 	h.sessions.mu.Unlock()
-	if !strings.Contains(task, "### 1. Home (html)\n<main>\n  <h1>Tom & Jerry</h1>\n</main>\n\n### 2. Look (css)\nh1 { color: red; }") {
+	if !strings.Contains(task, "### 1. Home (section)\n<section id=\"intro\">\n  <h1>Tom & Jerry</h1>\n</section>\n\n### 2. Look (css)\nh1 { color: red; }") {
 		t.Fatalf("assemble task:\n%s", task)
+	}
+	if !strings.Contains(task, "OUTLINE: sections #intro") || !strings.Contains(task, "do not write a file again with the same content") {
+		t.Fatalf("assemble task lacks the outline or the work rules:\n%s", task)
 	}
 	if strings.Contains(task, "\\u003c") || strings.Contains(task, `\n`) {
 		t.Fatalf("assemble task is escaped:\n%s", task)
+	}
+	if len(fj.reqs) != 1 || fj.reqs[0].Step != "review" || len(fj.reqs[0].Criteria) != 4 {
+		t.Fatalf("judge requests %+v", fj.reqs)
+	}
+	h.notifier.mu.Lock()
+	posted := slices.Clone(h.notifier.posted)
+	h.notifier.mu.Unlock()
+	if len(posted) == 0 || !strings.Contains(posted[len(posted)-1].Body, "Review passed: true") {
+		t.Fatalf("approval %+v", posted)
 	}
 }

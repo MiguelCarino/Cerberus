@@ -331,10 +331,11 @@ type engine struct {
 	last     Usage
 	total    Usage
 
-	ctxTokens int       // the model's context (0 = not known)
-	squeezed  bool      // the server said the context overflowed: elide hard from now on
-	elided    int       // tool results elided in the last note
-	started   time.Time // the run's start: the day the default prompt names
+	ctxTokens int         // the model's context (0 = not known)
+	squeezed  bool        // the server said the context overflowed: elide hard from now on
+	elided    int         // tool results elided in the last note
+	started   time.Time   // the run's start: the day the default prompt names
+	repeats   repeatGuard // the stuck-loop guard (repeat.go)
 }
 
 // Run executes one turn and returns when the model answered without tools,
@@ -508,17 +509,26 @@ func (e *engine) loop(ctx context.Context) error {
 		if len(calls) == 0 {
 			return nil
 		}
+		stuck := false
 		for _, c := range calls {
 			var out string
 			if ctx.Err() != nil {
 				out = "stopped by the user before it ran"
 				e.emit(Event{Type: EvToolDone, ID: c.ID, Output: out, IsError: true})
 			} else {
-				out = e.call(ctx, c)
+				var bad, stop bool
+				out, bad = e.call(ctx, c)
+				out, stop = e.watch(c, out, bad)
+				stuck = stuck || stop
 			}
 			e.messages = append(e.messages, Message{Role: "tool", ToolCallID: c.ID, Content: out})
 		}
 		e.save()
+		if stuck {
+			// Every call of the turn has its result, so the conversation
+			// stays valid for a resume.
+			return ErrRepeating
+		}
 		step++
 	}
 	return nil
@@ -739,7 +749,7 @@ func (e *engine) readable(p string) bool {
 
 // call runs one tool call (asking first when needed) and returns what the
 // model is told.
-func (e *engine) call(ctx context.Context, c toolCall) string {
+func (e *engine) call(ctx context.Context, c toolCall) (string, bool) {
 	e.calls++
 	name := c.Function.Name
 	var a args
@@ -751,18 +761,18 @@ func (e *engine) call(ctx context.Context, c toolCall) string {
 		}
 		out := fmt.Sprintf("the arguments were not valid JSON (%s): %s", why, truncRunes(c.Function.Arguments, 200))
 		e.emit(Event{Type: EvToolDone, ID: c.ID, Output: out, IsError: true})
-		return out
+		return out, true
 	}
 	cname, cinput := Canon(name, a)
 	e.emit(Event{Type: EvTool, ID: c.ID, Name: name, Canon: cname, Input: cinput, Args: a})
 	if isSpawnTool(name) {
-		return e.callSpawn(ctx, c.ID, name, a)
+		return e.callSpawn(ctx, c.ID, name, a), false
 	}
 	v := e.judge(name, a)
 	switch v.action {
 	case "refuse":
 		e.emit(Event{Type: EvToolDone, ID: c.ID, Output: v.why, IsError: true})
-		return v.why
+		return v.why, true
 	case "ask":
 		req := AskRequest{ID: randomHex(16), Tool: cname, Display: name, Input: cinput, Suggestions: []map[string]any{},
 			Reason: v.why, ToolUseID: c.ID, Native: true, Forced: v.forced, Args: a}
@@ -772,12 +782,12 @@ func (e *engine) call(ctx context.Context, c toolCall) string {
 				out = "stopped by the user"
 			}
 			e.emit(Event{Type: EvToolDone, ID: c.ID, Output: out, IsError: true})
-			return out
+			return out, true
 		}
 	}
 	out, bad := e.tools.run(ctx, name, a)
 	e.emit(Event{Type: EvToolDone, ID: c.ID, Output: out, IsError: bad})
-	return out
+	return out, bad
 }
 
 // ask answers a card: a covering session rule first (unless the policy

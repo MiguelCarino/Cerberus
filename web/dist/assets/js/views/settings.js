@@ -1,8 +1,9 @@
 // Settings view (#/settings[/<group>]): every config setting rendered from
 // GET /api/config/schema, edited into a draft and saved as one atomic
-// PATCH /api/config {set}. Groups are a left column on desktop and a list
-// on phones; each shows its Basic settings, with Advanced ones behind one
-// toggle. Fields render by kind (text, number with unit, switch, select,
+// PATCH /api/config {set}. The sections are one horizontal bar of pills
+// above the section (sectionbar.js; it scrolls sideways on phones), and
+// #/settings opens the first one. Each shows its Basic settings, with
+// Advanced ones behind one toggle. Fields render by kind (text, number with unit, switch, select,
 // duration with a friendly reading, path, list and map editors, a vault
 // secret picker), show the server's problems inline and a "needs restart"
 // badge. A sticky bar counts the changes and saves or discards them; a
@@ -31,6 +32,7 @@ import { settingsIOPanel } from './settingsio.js';
 import { usersPanel } from './users.js';
 import { permissionsPanel } from './permissions.js';
 import { store } from '../store.js';
+import { sectionBar, setSections } from '../sectionbar.js';
 
 const ADV_KEY = 'cerberus.settings.advanced';
 const readAdvanced = () => { try { return localStorage.getItem(ADV_KEY) === '1'; } catch { return false; } };
@@ -68,17 +70,17 @@ export function mount(root, r) {
   const search = h('input', {
     class: 'input set-search', type: 'search', placeholder: 'Search settings', 'aria-label': 'Search settings',
     autocapitalize: 'off', spellcheck: 'false', value: S.query,
-    oninput: (e) => { S.query = e.target.value; renderMain(); },
+    oninput: (e) => { S.query = e.target.value; renderMain(); if (!S.query.trim()) renderNav(); },
   });
   const banner = h('div', { class: 'set-banner' });
-  const navEl = h('nav', { class: 'set-nav', 'aria-label': 'Setting groups' });
+  const navEl = sectionBar({ label: 'Settings sections', cls: 'set-nav' });
   const mainEl = h('div', { class: 'set-main' });
   const countEl = h('span', { class: 'set-count' });
   const saveBtn = h('button', { class: 'btn btn-primary', type: 'button', onclick: () => save() }, 'Save');
   const discardBtn = h('button', { class: 'btn btn-ghost', type: 'button', onclick: () => discard() }, 'Discard');
   const bar = h('div', { class: 'set-bar', hidden: true, role: 'region', 'aria-label': 'Unsaved changes' },
     countEl, h('span', { class: 'set-bar-gap' }), discardBtn, saveBtn);
-  const view = h('section', { class: 'view view-pad set', 'data-pick': want ? '0' : '1' },
+  const view = h('section', { class: 'view view-pad set' },
     h('div', { class: 'view-head' },
       h('div', {}, h('h1', { class: 'view-title', text: 'Settings' }),
         h('p', { class: 'view-sub', text: store.can('settings') ? 'Every option, explained. Changes apply when you save.' : 'What runs without asking you.' })),
@@ -167,39 +169,34 @@ export function mount(root, r) {
   }
 
   function renderNav() {
-    clear(navEl);
     if (!store.can('settings')) {
       // A user (not an admin) reaches Settings for their own saved
       // permissions only.
-      navEl.append(h('a', { class: 'set-nav-item', href: '#/settings/permissions', 'aria-current': 'page' },
-        h('span', { class: 'set-nav-label', text: 'Permissions' }), h('span', { class: 'set-nav-sub', text: 'What runs without asking' }),
-        h('span', { class: 'set-nav-go', 'aria-hidden': 'true', text: '›' })));
+      setSections(navEl, [{ key: 'permissions', label: 'Permissions', href: '#/settings/permissions', current: true, title: 'What runs without asking' }]);
       return;
     }
     const counts = problemCounts(S.schema || [], S.problems);
     const diff = dirty();
     const changedGroups = new Set(Object.keys(diff).map((p) => ((S.schema || []).find((f) => f.path === p) || {}).group || 'Advanced'));
     const cur = S.query ? '' : currentGroup();
-    // On phones the bare #/settings is the group list, so nothing is current.
-    const showsGroup = want !== '' || window.matchMedia('(min-width: 900px)').matches;
-    const item = (label, href, extra) => h('a', { class: 'set-nav-item', href, 'aria-current': label === cur && showsGroup ? 'page' : null },
-      h('span', { class: 'set-nav-label', text: label }), extra, h('span', { class: 'set-nav-go', 'aria-hidden': 'true', text: '›' }));
-    for (const g of S.groups) {
-      const n = counts[g.group];
-      navEl.append(item(g.group, `#/settings/${g.slug}`, [
-        changedGroups.has(g.group) ? h('span', { class: 'set-dot', title: 'Unsaved changes', 'aria-label': 'unsaved changes' }) : null,
-        n && n.error ? pill(String(n.error), 'err') : n && n.warn ? pill(String(n.warn), 'warn') : null,
-      ]));
-    }
-    navEl.append(h('div', { class: 'set-nav-sep' }),
-      store.can('users') ? item('Users', '#/settings/users', h('span', { class: 'set-nav-sub', text: 'Accounts, roles, budgets' })) : null,
-      item('Permissions', '#/settings/permissions', h('span', { class: 'set-nav-sub', text: 'Saved “always allow” rules, command policy' })),
-      item(SECURITY, '#/settings/security',
-      h('span', { class: 'set-nav-sub', text: 'Devices, token, doctor, audit' })),
-    item('Secrets', '#/settings/secrets', h('span', { class: 'set-nav-sub', text: 'API keys and tokens in the vault' })),
-    item('Fine-tuning', '#/settings/finetune', h('span', { class: 'set-nav-sub', text: 'Training examples, ratings and runs' })),
-    item('Import & export', '#/settings/transfer', h('span', { class: 'set-nav-sub', text: 'Settings and models to a file, and back' })),
-    item('About', '#/settings/about', h('span', { class: 'set-nav-sub', text: 'Version, what Cerberus is, links' })));
+    const item = (key, label, href, title, extra) => ({ key, label, href, title, extra, current: label === cur });
+    setSections(navEl, [
+      ...S.groups.map((g) => {
+        const n = counts[g.group];
+        return item(g.slug, g.group, '#/settings/' + g.slug, null, [
+          changedGroups.has(g.group) ? h('span', { class: 'set-dot', title: 'Unsaved changes', 'aria-label': 'unsaved changes' }) : null,
+          n && n.error ? pill(String(n.error), 'err') : n && n.warn ? pill(String(n.warn), 'warn') : null,
+        ]);
+      }),
+      S.groups.length ? 'sep' : null,
+      store.can('users') ? item('users', 'Users', '#/settings/users', 'Accounts, roles, budgets') : null,
+      item('permissions', 'Permissions', '#/settings/permissions', 'Saved “always allow” rules, command policy'),
+      item('security', SECURITY, '#/settings/security', 'Devices, token, doctor, audit'),
+      item('secrets', 'Secrets', '#/settings/secrets', 'API keys and tokens in the vault'),
+      item('finetune', 'Fine-tuning', '#/settings/finetune', 'Training examples, ratings and runs'),
+      item('transfer', 'Import & export', '#/settings/transfer', 'Settings and models to a file, and back'),
+      item('about', 'About', '#/settings/about', 'Version, what Cerberus is, links'),
+    ]);
   }
 
   function renderMain() {
@@ -207,25 +204,23 @@ export function mount(root, r) {
     rows.clear();
     invalid.clear(); // every input is rebuilt from the draft
     clear(mainEl);
+    // Only search results need a way back: the section bar is always there.
     const back = h('a', { class: 'btn btn-ghost set-back', href: '#/settings', onclick: (e) => {
       if (!S.query) return;
       S.query = '';
       search.value = '';
-      if (location.hash === '#/settings') { e.preventDefault(); renderMain(); }
-    } }, '‹ All settings');
+      if (location.hash === '#/settings') { e.preventDefault(); renderMain(); renderNav(); }
+    } }, '‹ Clear search');
     if (!S.query.trim() && want === 'security') {
-      view.dataset.pick = '0';
-      renderSecurity(back);
+      renderSecurity();
       return;
     }
     if (!S.query.trim() && (want === 'users' || want === 'permissions' || want === 'secrets' || want === 'finetune' || want === 'transfer' || want === 'about')) {
-      view.dataset.pick = '0';
-      renderPanel(back, want);
+      renderPanel(want);
       return;
     }
     if (!S.schema) { mainEl.append(h('p', { class: 't-sec', text: 'Loading…' })); return; }
     if (S.query.trim()) {
-      view.dataset.pick = '0';
       const hits = filterFields(S.schema, S.query);
       mainEl.append(h('div', { class: 'set-group-head' }, back,
         h('h2', { class: 'set-group-title', text: `${hits.length} match${hits.length === 1 ? '' : 'es'}` })));
@@ -234,7 +229,6 @@ export function mount(root, r) {
       renderNav();
       return;
     }
-    view.dataset.pick = want ? '0' : '1';
     const group = currentGroup();
     const g = S.groups.find((x) => x.group === group);
     if (!g) return;
@@ -243,7 +237,7 @@ export function mount(root, r) {
         h('input', { type: 'checkbox', checked: S.advanced, 'aria-label': 'Show advanced settings', onchange: (e) => { S.advanced = e.target.checked; writeAdvanced(S.advanced); renderMain(); } }),
         h('span', { class: 'track' })),
       h('span', { text: `Advanced (${g.advanced.length})` }));
-    mainEl.append(h('div', { class: 'set-group-head' }, back, h('h2', { class: 'set-group-title', text: g.group }), g.advanced.length ? adv : null));
+    mainEl.append(h('div', { class: 'set-group-head' }, h('h2', { class: 'set-group-title', text: g.group }), g.advanced.length ? adv : null));
     if (!g.basic.length && !S.advanced) {
       mainEl.append(h('p', { class: 't-sec set-empty', text: 'Everything here is advanced. Turn on Advanced to see it.' }));
     }
@@ -260,8 +254,8 @@ export function mount(root, r) {
   }
 
   // The phase 3 Security panel, embedded (it loads and refreshes itself).
-  function renderSecurity(back) {
-    mainEl.append(h('div', { class: 'set-group-head' }, back, h('h2', { class: 'set-group-title', text: 'Security' })),
+  function renderSecurity() {
+    mainEl.append(h('div', { class: 'set-group-head' }, h('h2', { class: 'set-group-title', text: 'Security' })),
       h('p', { class: 'field-hint set-group-sub', text: 'Who can reach this host, what they did, and what to fix.' }));
     const box = h('div', {});
     mainEl.append(box);
@@ -270,7 +264,7 @@ export function mount(root, r) {
 
   // Secrets (the vault), Fine-tuning and About, embedded like Security.
   // Each loads itself; secUnmount takes it down when the group changes.
-  function renderPanel(back, which) {
+  function renderPanel(which) {
     const P = {
       users: ['Users', 'Who can sign in, with which role, and what they may spend.'],
       permissions: ['Permissions', 'Your saved permissions: tool calls that run without asking.'],
@@ -280,7 +274,7 @@ export function mount(root, r) {
       about: ['About', 'This build of Cerberus, and where to read more.'],
     };
     const [title, sub] = P[which];
-    mainEl.append(h('div', { class: 'set-group-head' }, back, h('h2', { class: 'set-group-title', text: title })),
+    mainEl.append(h('div', { class: 'set-group-head' }, h('h2', { class: 'set-group-title', text: title })),
       h('p', { class: 'field-hint set-group-sub', text: sub }));
     const box = h('div', {});
     mainEl.append(box);

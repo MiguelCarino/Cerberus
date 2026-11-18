@@ -394,8 +394,17 @@ func TestPermissionOnceSessionDeny(t *testing.T) {
 		t.Fatalf("tool messages %q", tm)
 	}
 	for i := range want {
-		if tm[i] != want[i] {
-			t.Errorf("tool message %d = %q, want %q", i, tm[i], want[i])
+		got := tm[i]
+		// The second identical echo within the turn is a repeat: the
+		// stuck-loop guard (agent/repeat.go) adds its note once.
+		if i == 1 {
+			if !strings.Contains(got, "You are repeating yourself") {
+				t.Errorf("tool message 1 lacks the repeat note: %q", got)
+			}
+			got, _, _ = strings.Cut(got, "\n\n")
+		}
+		if got != want[i] {
+			t.Errorf("tool message %d = %q, want %q", i, got, want[i])
 		}
 	}
 	if _, err := os.Stat(filepath.Join(e.home, "x.txt")); err == nil {

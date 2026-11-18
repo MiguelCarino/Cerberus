@@ -167,28 +167,35 @@ export const TAB_OF = {
   flows: 'flows', flowedit: 'flows', flowrun: 'flows', account: 'account', evalrun: 'usage',
 };
 
-// tabVisible: the navbar and bottom tabs a role sees ("more" always: it
-// holds Account).
+// tabVisible: may this role see the main tab? Account is everyone's.
 export function tabVisible(tab, me) {
-  if (tab === 'more' || tab === 'account') return true;
+  if (tab === 'account') return true;
   // Settings is a tab for admins; a user reaches its Permissions page from Account.
   if (tab === 'settings') return can(me, 'settings');
   return viewAllowed({ view: tab }, me);
 }
 
-// The phone's More sheet: [tab, label, sub].
-export const MORE_ITEMS = [
+// The main views, in side-nav order: [tab, label, what it holds]. The side
+// nav (sidenav.js, app.js) is a column left of the content, a scrolling row
+// above it on phones; the third field is the link's title. Account is last
+// (the foot of the column).
+export const MAIN_TABS = [
+  ['chat', 'Chat', 'Talk to a model'],
+  ['sessions', 'Sessions', 'Coding-agent sessions'],
   ['flows', 'Flows', 'Designed, scheduled and triggered tasks'],
   ['models', 'Models', 'GPUs, loaded models, tok/s'],
+  ['monitor', 'Monitor', 'Power, energy and what runs on this machine'],
   ['usage', 'Usage', 'Requests, spend and plans'],
   ['settings', 'Settings', 'Every option, users, secrets, devices, about'],
+  ['account', 'Account', 'Password, browsers, devices, sign out'],
 ];
 
-// moreItems is the More sheet for this person: the views their role opens,
-// then Account.
-export function moreItems(me) {
-  return [...MORE_ITEMS.filter(([tab]) => tabVisible(tab, me)),
-    ['account', 'Account', me && me.user ? 'Password, browsers, devices, sign out' : 'Devices, sign out']];
+// mainTabs is the side nav for this person: the views their role opens,
+// then Account. Nobody signed in sees no links.
+export function mainTabs(me) {
+  if (!me) return [];
+  return MAIN_TABS.filter(([tab]) => tabVisible(tab, me))
+    .map(([tab, label, sub]) => [tab, label, tab === 'account' && !me.user ? 'Devices, sign out' : sub]);
 }
 
 // ---------- forms ----------

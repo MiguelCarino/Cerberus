@@ -5,9 +5,9 @@
 // answers permission cards and sends messages with images.
 //
 // Layout: the mascot stage (stage.js) sits on top on phones and narrow
-// windows and in a right-hand column from 1100 px; Ctrl+K folds it into a
-// corner card (click "Move" to go round the corners), remembered per
-// browser. Below: the transcript, the input strip (image pills, the text,
+// windows and in a right-hand column from 1320 px (1100 px beside the side
+// nav); Ctrl+K folds it into a corner card (click "Move" to go round the
+// corners), remembered per browser. Below: the transcript, the input strip (image pills, the text,
 // attach, mic, Send/Queue, Stop) and the status line.
 //
 // Energy: the stream is a LiveSource (closed while the tab is hidden), the

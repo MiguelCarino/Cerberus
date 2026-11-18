@@ -187,7 +187,7 @@ export const KIND_FIELDS = {
   plan: ['model', 'template', 'max_items', 'temperature', 'max_tokens', 'thinking', 'retry', 'on_error'],
   fan_out: ['from', 'routes', 'default_model', 'as', 'template', 'agent', 'workspace', 'repo', 'folder', 'max_parallel',
     'min_ok', 'temperature', 'max_tokens', 'thinking', 'max_attempts', 'escalate_to', 'max_minutes', 'retry', 'on_error'],
-  session: ['agent', 'workspace', 'repo', 'folder', 'from', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error'],
+  session: ['agent', 'model', 'workspace', 'repo', 'folder', 'from', 'task', 'max_attempts', 'escalate_to', 'max_minutes', 'on_error'],
   judge: ['on', 'criteria', 'gates', 'persona', 'model', 'on_error'],
   if: ['test', 'on', 'value', 'path', 'then', 'else'],
   approve: ['message'],
@@ -284,6 +284,8 @@ export function stepFields(step, steps = []) {
       const sources = before.filter((s) => s.kind === 'session' || (s.kind === 'fan_out' && s.as === 'session')).map((s) => [s.id, `${s.id} · ${kindLabel(s.kind)}`]);
       return [
         { key: 'agent', label: 'Agent', type: 'agent' },
+        { key: 'model', label: 'Model (optional)', type: 'model', optional: "As the agent's profile says",
+          hint: 'Agent work needs a capable model: a small one tends to loop.' },
         { key: 'workspace', label: 'Workspace', type: 'select', options: SESSION_WORKSPACES },
         { key: 'repo', label: 'Repository', type: 'repo', show: ws(step) === 'repo' },
         { key: 'folder', label: 'Folder', type: 'text', placeholder: '/home/me/projects/site', show: ws(step) === 'folder' },
@@ -320,7 +322,7 @@ export function stepFields(step, steps = []) {
         { key: 'gates', label: 'Gates (JSON, optional)', type: 'json', rows: 3, placeholder: JUDGE_GATES_EXAMPLE,
           hint: 'In order, each {id, name?, max_iterations}. With more than 1 iteration, a failed gate sends feedback and the session tries again.' },
         { key: 'persona', label: 'Feedback persona (optional)', type: 'text', placeholder: 'reviewer', hint: 'A name from evals.personas; empty is the built-in reviewer.' },
-        { key: 'model', label: 'Judge model (optional)', type: 'model', hint: 'Empty uses evals.judge_model, then the default model.' },
+        { key: 'model', label: 'Judge model (optional)', type: 'model', optional: 'evals.judge_model, else the default model', hint: 'Empty uses evals.judge_model, then the default model.' },
         onError,
       ];
     }

@@ -1,11 +1,6 @@
-/* Settings view (#/settings) and the first-run welcome. Mobile first:
-   below 900 px the groups are a list and a group fills the screen; from
-   900 px the groups are a left column. Tokens from carino-ui.css. */
-
-/* Seven navbar tabs between the phone layout and a wide desktop. */
-@media (min-width: 641px) and (max-width: 1100px) {
-  #carinoNav .cn-tabs a { padding: 0 8px; letter-spacing: 0.04em; }
-}
+/* Settings view (#/settings) and the first-run welcome. The sections are
+   one section bar above the section at every width (it scrolls sideways
+   on phones). Tokens from carino-ui.css. */
 
 /* .btn and .field set display, which would beat the hidden attribute. */
 .set [hidden], dialog.modal .wel [hidden], dialog.modal .modal-foot [hidden] { display: none !important; }
@@ -25,35 +20,11 @@
 .set-layout { display: block; }
 .set-main { min-width: 0; }
 
-/* ---------- group navigation ---------- */
-.set-nav { display: flex; flex-direction: column; gap: 6px; }
-.set-nav-item {
-  display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 10px 14px;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-card);
-  color: var(--text); text-decoration: none; transition: 0.15s;
-}
-.set-nav-item:hover, .set-nav-item:focus-visible { border-color: var(--accent-dim); outline: none; }
-.set-nav-item[aria-current] { border-color: var(--accent); color: var(--accent); background: var(--accent-faint); }
-.set-nav-label { font-weight: 600; }
-.set-nav-sub { font-size: var(--fs-sm); color: var(--text-sec); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.set-nav-go { margin-left: auto; color: var(--text-muted); }
-.set-nav-sep { height: 1px; background: var(--border); margin: 6px 0; }
+/* ---------- sections: the shared section bar (app.css .sbar) ---------- */
+.set-nav { margin-bottom: 16px; }
 .set-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
 .set-nav .pill { padding: 1px 7px; }
-
-/* Phones and tablets: either the list or one group. */
-@media (max-width: 899px) {
-  .set[data-pick="1"] .set-main { display: none; }
-  .set[data-pick="0"] .set-nav { display: none; }
-  .set-search { max-width: none; flex: 1 1 100%; }
-}
-@media (min-width: 900px) {
-  .set-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 24px; align-items: start; }
-  .set-nav { position: sticky; top: 12px; }
-  .set-nav-item { min-height: 40px; padding: 8px 12px; }
-  .set-nav-sub { display: none; }
-  .set-back { display: none; }
-}
+@media (max-width: 899px) { .set-search { max-width: none; flex: 1 1 100%; } }
 
 /* ---------- a group ---------- */
 .set-group-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

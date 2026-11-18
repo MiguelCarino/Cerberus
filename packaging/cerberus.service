@@ -36,9 +36,10 @@ TimeoutStopSec=60
 # oom_score_adj 500, so they go first) is reported and reloaded; the
 # daemon, its sessions and chats keep running.
 OOMPolicy=continue
-# Ask systemd-oomd to pick another unit under memory pressure. Some systemd
-# versions ignore this for user units.
-ManagedOOMPreference=avoid
+# No ManagedOOMPreference= here. With it, Fedora's uresourced (its AppBoost
+# writes CPUWeight/IOWeight on app.slice units) fell into a loop on this
+# unit: thousands of SetUnitProperties a second, which starved the user
+# manager's job queue so no other unit could start (2026-11-15/16).
 
 [Install]
 WantedBy=default.target

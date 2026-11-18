@@ -125,6 +125,17 @@ export function byListOrder(a, b) {
     ((Date.parse(b.Updated) || 0) - (Date.parse(a.Updated) || 0));
 }
 
+// bySessionOrder is the Sessions list's order: pinned first (the Pin
+// button), then the newest created first, ties by id (ids sort by creation
+// time too). Nothing a session does while it runs (its state, activity or
+// Updated) moves its row; priority orders the queue, not the list.
+export function bySessionOrder(a, b) {
+  const ia = String(a.ID || '');
+  const ib = String(b.ID || '');
+  return (!!b.Pinned - !!a.Pinned) || ((Date.parse(b.Created) || 0) - (Date.parse(a.Created) || 0)) ||
+    (ia < ib ? 1 : ia > ib ? -1 : 0);
+}
+
 // buildTree orders a flat list so every child follows its parent, and gives
 // each row its indent level: [{ s, level, orphan }]. A child whose parent is
 // not in the list is a root with orphan = true (the UI says where it came

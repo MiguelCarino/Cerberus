@@ -15,12 +15,16 @@ func TestUnit(t *testing.T) {
 		"KillMode=mixed",
 		"TimeoutStopSec=60",
 		"OOMPolicy=continue",
-		"ManagedOOMPreference=avoid",
 		"WantedBy=default.target",
 	} {
 		if !strings.Contains(Unit, want+"\n") {
 			t.Errorf("unit lacks %q", want)
 		}
+	}
+	// ManagedOOMPreference= on this app.slice unit sent uresourced into a
+	// SetUnitProperties loop that starved the user manager's job queue.
+	if strings.Contains(Unit, "\nManagedOOMPreference=") {
+		t.Error("the unit must not set ManagedOOMPreference=")
 	}
 	if strings.Contains(Unit, "MemoryMax") {
 		t.Error("the daemon itself must not have a MemoryMax")

@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDiff, lineRef, formatComments, b64ToBytes, groupSessions, stateTone, countWaiting,
+  parseDiff, lineRef, formatComments, b64ToBytes, stateTone, countWaiting,
   quickKeyData, parseRoute, relTime, fmtMiB, fmtNum, repoName, isLive, canFollowUp,
   workspaceKind, workspaceLabel, canDiff, canAcceptSession, canSave, breadcrumbs, folderNote, joinPath,
 } from '../dist/assets/js/util.js';
@@ -112,21 +112,12 @@ test('b64ToBytes keeps raw bytes (UTF-8 split across chunks)', () => {
   assert.equal(new TextDecoder().decode(new Uint8Array([...a, ...b])), '✓');
 });
 
-test('groupSessions orders groups and sorts newest first', () => {
+test('countWaiting counts the sessions that need someone', () => {
   const list = [
-    { ID: '1', State: 'running', Updated: '2026-11-01T10:00:00Z' },
-    { ID: '2', State: 'waiting', Updated: '2026-11-01T09:00:00Z' },
-    { ID: '3', State: 'running', Updated: '2026-11-01T11:00:00Z' },
-    { ID: '4', State: 'accepted', Updated: '2026-11-01T08:00:00Z' },
-    { ID: '5', State: 'something-new', Updated: '2026-11-01T07:00:00Z' },
-    { ID: '6', State: 'failed', Updated: '2026-11-01T06:00:00Z' },
+    { ID: '1', State: 'running' }, { ID: '2', State: 'waiting' }, { ID: '3', State: 'accepted' }, { ID: '4', State: 'failed' },
   ];
-  const g = groupSessions(list);
-  assert.deepEqual(g.map((x) => [x.key, x.items.map((s) => s.ID)]), [
-    ['waiting', ['2']], ['active', ['3', '1', '5']], ['review', ['6']], ['done', ['4']],
-  ]);
-  assert.deepEqual(groupSessions([]), []);
   assert.equal(countWaiting(list), 1);
+  assert.equal(countWaiting([]), 0);
 });
 
 test('state helpers', () => {

@@ -7,11 +7,8 @@
 /* ---------- bare screens (login, first admin, forced password) ---------- */
 /* No tabs, bell or account button before someone is signed in; and no
    flash of every tab while GET /api/me is still on its way. */
-body[data-bare] .bell-btn, body[data-bare] .acct-btn,
-body[data-bare] #carinoNav .cn-tabs > a, body[data-bare] .cn-tabs > a,
-body:not([data-role]) .cn-tabs > a, body:not([data-role]) .bottom-tabs > * { visibility: hidden; }
-body[data-bare] .bottom-tabs { display: none; }
-[data-tab][hidden] { display: none !important; }
+body[data-bare] .bell-btn, body[data-bare] .acct-btn { visibility: hidden; }
+/* The tab bar itself: app.css "section bars". */
 .app-loading { padding: 24px 20px; }
 
 .login-form { display: flex; flex-direction: column; gap: 14px; margin: 0; }
@@ -177,4 +174,4 @@ button.owner-chip:hover { border-color: var(--accent-dim); color: var(--accent);
 .nf-path { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-elev); border: 1px solid var(--border); overflow-wrap: anywhere; font-size: var(--fs-sm); }
 
 /* Parts a role does not get stay hidden even where a class sets display. */
-.fp-bar[hidden], .fp-list[hidden], .fp-foot[hidden], .toggle-btn[hidden], .mon-usage[hidden] { display: none !important; }
+.fp-bar[hidden], .fp-list[hidden], .fp-foot[hidden], .toggle-btn[hidden] { display: none !important; }

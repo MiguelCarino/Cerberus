@@ -33,6 +33,7 @@ import { copyLater } from './chatdom.js';
 import { canWriteSessions, ownerLabel } from '../users.js';
 import { prefillText } from '../models.js';
 import { mount as mountNotFound } from './notfound.js';
+import { wireBar, wireTabKeys, revealCurrent } from '../sectionbar.js';
 
 // mount shows the session. One the store does not know yet is fetched
 // first: a session that does not exist, or that this account may not see
@@ -87,13 +88,15 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
   let flow = null; // the Flow panel, built on first open
   let preview = null; // the Preview panel, built on first open
   let view = 'terminal';
-  const termTab = h('button', { class: 'ss-tab', type: 'button', role: 'tab', onclick: () => showTab('terminal') }, 'Terminal');
-  const filesTab = h('button', { class: 'ss-tab', type: 'button', role: 'tab', onclick: () => showTab('files') }, 'Files');
-  const diffTab = h('a', { class: 'ss-tab', href: `#/s/${encodeURIComponent(id)}/diff`, hidden: true }, 'Diff');
-  const replayTab = h('button', { class: 'ss-tab', type: 'button', role: 'tab', onclick: () => showTab('replay') }, 'Replay');
-  const flowTab = h('button', { class: 'ss-tab', type: 'button', role: 'tab', onclick: () => showTab('flow') }, 'Flow');
-  const previewTab = h('button', { class: 'ss-tab', type: 'button', role: 'tab', onclick: () => showTab('preview') }, 'Preview');
-  const tabs = h('div', { class: 'ss-tabs', role: 'tablist', 'aria-label': 'Session views' }, termTab, filesTab, previewTab, replayTab, flowTab, diffTab);
+  const termTab = h('button', { class: 'sbar-tab ss-tab', type: 'button', role: 'tab', onclick: () => showTab('terminal') }, 'Terminal');
+  const filesTab = h('button', { class: 'sbar-tab ss-tab', type: 'button', role: 'tab', onclick: () => showTab('files') }, 'Files');
+  const diffTab = h('a', { class: 'sbar-tab ss-tab', href: `#/s/${encodeURIComponent(id)}/diff`, hidden: true }, 'Diff');
+  const replayTab = h('button', { class: 'sbar-tab ss-tab', type: 'button', role: 'tab', onclick: () => showTab('replay') }, 'Replay');
+  const flowTab = h('button', { class: 'sbar-tab ss-tab', type: 'button', role: 'tab', onclick: () => showTab('flow') }, 'Flow');
+  const previewTab = h('button', { class: 'sbar-tab ss-tab', type: 'button', role: 'tab', onclick: () => showTab('preview') }, 'Preview');
+  // The shared section bar (sectionbar.js): pills, sideways scroll, arrow keys.
+  const tabs = wireBar(h('div', { class: 'sbar ss-tabs', role: 'tablist', 'aria-label': 'Session views' }, termTab, filesTab, previewTab, replayTab, flowTab, diffTab));
+  const syncTabs = wireTabKeys(tabs);
   const filesBox = h('div', { class: 'ss-files' });
   const replayBox = h('div', { class: 'ss-replay-box', hidden: true });
   const flowBox = h('div', { class: 'ss-flow-box', hidden: true });
@@ -116,6 +119,8 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
     replayTab.setAttribute('aria-selected', String(onReplay));
     flowTab.setAttribute('aria-selected', String(onFlow));
     previewTab.setAttribute('aria-selected', String(onPreview));
+    syncTabs();
+    revealCurrent(tabs);
     termBox.hidden = view !== 'terminal';
     filesBox.hidden = !onFiles;
     replayBox.hidden = !onReplay;
@@ -266,6 +271,7 @@ function mountSession(root, { id, tab = 'terminal', attempt = 0, t = 0 }) {
     renderNotice();
     diffTab.hidden = workspaceKind(info) !== 'repo';
     diffTab.classList.toggle('disabled', !canDiff(info));
+    revealCurrent(tabs);
     ti.sync();
     if (view !== 'terminal' || readOnly) ti.keys.hidden = true;
     if (isLive(info.State)) pushSize();

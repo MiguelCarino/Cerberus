@@ -1,7 +1,8 @@
 /* Chat view (day phase 5): the LLM chat with the mascot stage. Carino
    palette for the page; only the stage takes the mascot theme's panel
    colour (--stage-bg, set by stage.js). Mobile first: the stage sits on top,
-   a right-hand column from 1100 px, or a corner card (Ctrl+K). */
+   a right-hand column from 1320 px of viewport (1100 px of content beside
+   the side nav), or a corner card (Ctrl+K). */
 
 body[data-view="chat"] #app { display: flex; flex-direction: column; overflow: hidden; }
 .view-chat { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
@@ -61,7 +62,9 @@ body[data-view="chat"] #app { display: flex; flex-direction: column; overflow: h
 @media (min-width: 641px) {
   .chat-stage { height: clamp(150px, calc(var(--app-h, 100dvh) * 0.34), 380px); padding: 8px 12px 0; }
 }
-@media (min-width: 1100px) {
+/* The stage column needs about 1100 px of content; the side nav (app.css,
+   212 px + its border) takes the rest of the viewport. */
+@media (min-width: 1320px) {
   .chat-body { display: grid; grid-template-columns: minmax(0, 1fr) max(380px, 45%); grid-template-areas: "main stage"; }
   .chat-stage { grid-area: stage; height: auto; min-height: 0; padding: 12px 12px 12px 0; }
   .chat-main { grid-area: main; }
@@ -94,7 +97,7 @@ body[data-view="chat"] #app { display: flex; flex-direction: column; overflow: h
 }
 .stage-bubble {
   position: relative; flex: 0 0 auto; align-self: flex-start; max-width: calc(100% - 20px); margin: 8px 10px 6px;
-  padding: 5px 12px; border-radius: 12px; background: rgba(5,5,5,0.78); color: var(--text); border: 1px solid var(--accent-dim);
+  padding: 5px 12px; border-radius: 12px; background: rgba(5,5,5,0.78); color: #f2f2f2; border: 1px solid var(--accent-dim);
   font-size: var(--fs-sm); line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .chat-body.corner .stage-bubble {
@@ -307,10 +310,9 @@ body[data-view="chat"] #app { display: flex; flex-direction: column; overflow: h
   .mp, .rc-wrap, .mode-menu, .mm { min-width: 0; }
 
   /* The on-screen keyboard is open (body[data-kb], app.js): the stage, the
-     header's second and third rows and the bottom tabs fold away, so the
+     header's second and third rows and the tab bar (app.css) fold away, so the
      input strip and a few lines of the transcript stay in view. A field
      being typed in never folds. */
-  body[data-kb][data-view="chat"] .bottom-tabs { display: none; }
   body[data-kb] .chat-stage { display: none; }
   body[data-kb] .chat-tools { display: none; }
   body[data-kb] .chat-kbmodel { display: inline-block; order: 2; margin-left: auto; }

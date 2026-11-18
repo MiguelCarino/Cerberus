@@ -2,7 +2,7 @@
 // person's initial (a person icon for the admin token or a device) and, on
 // desktop, their name. It opens a small menu with Account and Sign out.
 // Like the bell, it joins the actions block before carino-navbar.js moves
-// the block into the bar. Phones also reach Account from the More sheet.
+// the block into the bar. Account is also the last link of the side nav.
 //
 // hardGo and signOut live here so the sign-in screens share them: a sign
 // in or out reloads the page, so nothing of the previous person stays in

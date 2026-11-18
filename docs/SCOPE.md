@@ -5327,6 +5327,16 @@ Railguard never reads Cerberus' token or config.
     shutdown comment now says what `KillMode=mixed` does: whatever is left in the unit is
     SIGKILLed as soon as the daemon exits. `systemd-analyze --user verify` passes on a copy.
     The installed unit is untouched: the owner runs `cerberus install-service` to update it.
+  - *Removed 2026-11-16:* `ManagedOOMPreference=avoid` is gone from the unit again. Once the unit
+    carried it, Fedora's uresourced (0.5.4, AppBoost, which writes CPUWeight/IOWeight on
+    `app.slice` units) looped on `cerberus.service`: about 1,250 `SetUnitProperties` a second.
+    That starved systemd 262's user job queue, whose dispatch runs only when the manager is otherwise
+    idle. Every start job waited, including agent command scopes, new terminals, timers and
+    `install-service`'s restart. Commands timed out, and their scopes later failed with
+    "PID vanished … result 'resources'", one desktop notification each. Killing uresourced and
+    setting the property to `none` at runtime stopped the loop, and it did not come back.
+    `embed_test` now fails if the unit sets the key. The session scopes keep
+    `-p ManagedOOMPreference=avoid`: they are not in `app.slice`, and no loop was seen on them.
   - `cerberus.container` gains `RunInit=true`, `StopTimeout=60` and `TimeoutStopSec=90`.
     `compose.yaml` gains `init: true` and `stop_grace_period: 60s`. The Containerfile gains
     `STOPSIGNAL SIGTERM`. `docs/CONTAINER.md` explains them. Quadlet's dry run on podman 6.1
@@ -5875,3 +5885,353 @@ again after a shed) is in Atrium.
   (`TestGuardApproveByOwnerAfterReading`), `api/modelsfeed_test.go`
   (`TestPrefillSessionMaskedOnModelRoutes`), `notify/notify_test.go` (Owner),
   `web/test/models-busy.test.mjs` and `web/test/flows.test.mjs`.
+
+# Section bars (2026-11-16)
+
+As built. The owner asked for "sections in a horizontal bar, like Carino DICOM does" and chose main
+views + inner sections. This replaces the navbar view tabs, the phone bottom tabs and the More sheet
+described in earlier sections (Secrets, Monitor, Settings, Chat, users and roles); where those say
+"navbar tab", "bottom tab" or "More sheet", read "the view bar".
+
+- **One component.** `web/dist/assets/js/sectionbar.js` builds every bar: `nav.sbar` (or a
+  `div.sbar[role=tablist]`) holding `a.sbar-tab` hash links with `aria-current="page"`, or
+  `button.sbar-tab[role=tab]` with `aria-selected`. One CSS block in `app.css` ("section bars")
+  styles them as DICOM's `.hist-tab` pills: hairline border, accent on hover, the current one filled
+  with `--accent` and inked with `--ct-on-accent` (Colourful light/dark) or `#050505` (Gold).
+  `:focus-visible` draws a 2 px accent ring; the bar's 4 px padding keeps it unclipped. `.sbar-sep`
+  is a thin divider. Pure helpers, tested in `web/test/sectionbar.test.mjs`: `edgeFade`,
+  `revealLeft`, `nextTabIndex`.
+- **Never wraps.** A bar that does not fit scrolls sideways by itself (no scrollbar, never the page),
+  the current pill is scrolled into view (`revealCurrent`, the least movement plus 28 px of room),
+  and `data-fade-start` / `data-fade-end` mask the edge that hides more.
+- **Main views.** `index.html` has `<div class="view-bar"><nav class="sbar" id="viewBar">` between
+  the navbar and `main#app` (body is a non-scrolling flex column, so the bar stays under the pinned
+  navbar). `app.js` fills it from `users.js` `MAIN_TABS` / `mainTabs(me)`: Chat, Sessions, Flows,
+  Models, Monitor, Usage, Settings, then Account for everyone, each only when the role opens it
+  (redrawn only when that set changes). The Sessions tab keeps the waiting badge. The navbar's
+  `[data-carino-actions]` block is now an empty div that only the bell and the account button join.
+  `body[data-bare]` hides the bar; before `/api/me` answers it is invisible but keeps its height.
+  Phones: the same bar at the 16 px gutter; hidden in a session and a diff (full height, own back
+  button) and while the on-screen keyboard is open (`body[data-kb]`). The bottom tabs, the More sheet,
+  their safe-area padding and the PWA banner's lift above them are gone. `MORE_ITEMS` / `moreItems`
+  became `MAIN_TABS` / `mainTabs`.
+- **Settings.** The section list is a section bar above the section at every width (schema groups,
+  a divider, then Users, Permissions, Security, Secrets, Fine-tuning, Import & export, About; the old
+  sub-lines are the pills' titles). `#/settings` opens the first group on phones too (the phone-only
+  list page and `data-pick` are gone); `#/settings/<section>` deep links are unchanged. The
+  "‹ Clear search" link shows only on search results.
+- **Session.** Terminal / Files / Preview / Replay / Flow / Diff use the same pills, keep
+  `role=tablist`, and gain a roving tabindex with Left/Right/Home/End (`wireTabKeys`).
+- **Monitor.** The phone-only "Usage & spend" section (Usage had no bottom tab) is removed; the
+  "Usage & spend →" link shows at every width.
+- Left alone on purpose (filters, not section navigation): scope and filter chips (`.fchip`), the
+  Sessions Active/All radio, Monitor's power ranges, Fine-tuning's mode segment, the wall dots.
+  Usage stays one long page with headings; it is the next candidate if it should get sections.
+
+# Flow quality (2026-11-16)
+
+Why: the owner's Website run `fr-20261116-005014-blkefg` ("Planet Side 2") planned on `lfm3-1.7b`
+(h1, one paragraph, a footer, 4 items). The parts (qwen/qwen3.8-27b) were written blind to each
+other: copy came twice, the nav linked to pages that did not exist, and copy came back as loose
+fragments. The Assemble session ran on the default model (`lfm3-1.7b` again) and made 39 model
+calls (369k prompt tokens), rewriting the same 889-byte `index.html` with two or three versions in
+turn, until the run's 200k-token limit stopped it before the approve step.
+
+## As built: the stuck-loop guard (built-in agent)
+
+- `internal/agent/repeat.go`, run by `engine.loop` after every tool call (`engine.watch`). It
+  applies to every client of `agent.Run`: the session agent and the web chat.
+- **Signature.** The tool name and its arguments as compact JSON (keys sorted), with `path`
+  resolved against the working directory and `run_command`'s `description` left out (models reword
+  it). `cerberus_*` tools are never watched: waiting on a child repeats by design. Arguments that
+  are not a JSON object are not watched either (they already fail).
+- **What a repeat is.** The guard keeps the last 8 calls (`repeatWindow`) and an epoch, bumped by
+  each successful call that may have changed the workspace: `write_file` that wrote, `edit_file`,
+  and `run_command` unless `SafeCommand` calls it read-only. A `write_file` or `edit_file` repeats
+  when the same call is among the last 8 (writing A, B, A is going round in circles) or when
+  `write_file` found the file already holding the content. Any other call repeats when the same
+  call is among the last 8 with the same epoch, that is, nothing changed since it last ran (a test
+  command run again after an edit is not a repeat). Once old tool results are being elided
+  (`fit.go`: the stub says "run it again if you need it") or after an overflow, repeated reads and
+  commands are not counted; repeated writes still are.
+- **What happens.** The first repeat gets a note appended to its tool result, so the model reads it
+  in its next request: "(Cerberus: you already made this exact call and nothing has changed since.
+  You are repeating yourself. Do something different, or stop and give your final answer now.)",
+  plus an `EvNote` for the transcript. The 4th repeat (`repeatStop`) ends the run once every call of
+  that turn has its result (so a resume replays a valid conversation): `Run` returns
+  `agent.ErrRepeating`, "stopped: the model kept repeating the same action", as `Done.Error`, with
+  an `EvNote` first. The terminal agent prints it and exits 2, so the session ends failed, not
+  passed. 10 calls in a row without a repeat (`repeatClear`) clear the count. The state is per
+  `Run`: a resumed session starts clean.
+- **write_file says when nothing changed.** When the file already holds exactly the content, it is
+  not written again (the mtime stays) and the result is
+  `unchanged (same content) <path>: N lines, N bytes; it already had exactly this content, nothing
+  was written`. Before, it said "replaced".
+- Replayed on the owner's run, the guard gives the note at the 11th tool call (the first write that
+  repeats one of 8 calls back) and stops the run at the 19th, the 18th model call instead of the 39th.
+- Tests: `internal/agent/repeat_test.go` (identical writes, the A/B oscillation, rereads, normal
+  read-edit-check work with no note, spawn tools ignored, the clear, rereads while elided,
+  signature normalising, `write_file` unchanged), with the fake model server of `agent_test.go`.
+  `fit_test.go`'s `readTurn` now varies `limit` per step (same result: f.txt is one line), since
+  its fake model read the same file with the same arguments 5 to 8 times before any elision, which
+  the guard stops.
+
+## As built: templates whose parts agree
+
+- **Website** is now outline → plan → parts → assemble → check → review → approve → done.
+  - `outline` (prompt): a one-page site outline every writer follows: title and purpose, audience
+    and tone, 3 to 6 sections with ids, headings and real facts, a nav of `#<id>` links to those
+    sections only ("there are no other pages"), colours, system font stacks and the CSS class
+    names. It rules out placeholder text and, for someone else's brand, product or game, any
+    "official" claim, copyright or "all rights reserved" line, and made-up contacts, prices, dates
+    or numbers.
+  - `plan` (max 7): one `section` item per outline section, in order, plus one `css` item; no
+    items for other pages, a separate copy text, a header or a footer. The copy is written inside
+    the sections, so there are no loose copy fragments any more. Routes: `section` and `css`.
+  - `parts` (fan-out as prompts): every part's template has `{steps.outline.output}` and the whole
+    plan (`{steps.plan.output}`), says to write only its own part without repeating the others, and
+    asks for one `<section id>` element (no html/head/nav/footer) or the whole `style.css`, with no
+    Markdown fences or notes.
+  - `assemble` (session, `cerberus`, scratch): writes `index.html` (doctype, title, viewport,
+    `style.css` link, a header with the outline's nav, the sections in order, a short footer with
+    no copyright line for a brand it does not own) and `style.css`; keeps the parts' text, removes
+    repeats, makes every nav link point at an existing id; "write each file once, read it back once
+    to check it, fix only what is wrong, and do not write a file again with the same content". The
+    task carries the outline and the parts.
+  - `check`: the session state is passed, else the run ends (as before).
+  - `review` (judge on `assemble`, new): gate `site` (2 iterations, so a weak assembly gets one
+    round of feedback into the session) with criteria on the files: `files` (both exist, the page
+    links the CSS), and, depending on it, `nav` (every nav link has its section), `content` (several
+    sections of real text, nothing said twice, no fences or notes) and `honest` (no "official"
+    claim, no copyright line for a brand it does not own). Model and persona are unset:
+    `evals.judge_model`, then the default model; the built-in reviewer.
+  - `approve` says "Review passed: {steps.review.output.passed}". `done` is unchanged.
+- **Plan → Delegate → Merge.** The plan asks for parts that do not overlap and that are
+  self-contained, naming what they must agree on (names, terms, formats). Each delegated part sees
+  the whole plan ("write only your part; do not repeat what another part covers"). Merge removes
+  repeats and makes names and terms agree.
+- Clarify → Answer and Draft → Critique → Revise had no blind parts and are unchanged.
+- Saved flows are not changed: the owner's `fl-website` keeps its old steps until it is made again
+  from the template (or edited).
+- Tests: `TestWebsiteTemplateAssembleTask` (`internal/flows/handoff_test.go`) now checks that every
+  part sees the outline and the whole plan, that the session task carries the outline, the parts as
+  written and the work rules, that the judge runs with the four criteria, and that the approval
+  shows the verdict. Every template still passes `Validate` (flows and the API).
+
+## As built: the small-model hint
+
+- `internal/flows/modelsize.go`. `ParamsB(id)` reads a parameter count from a model id: `1.7b`,
+  `27b`, `e4b`/`E4B` (4), `0.6b`, `360m` (0.36), `8x7b` (7: the expert count is left out),
+  `30b-a3b` (30, the first size), each between non-alphanumerics; 0 when the id says none
+  (`MiniMax-M2.7`, `GLM-4.7-Flash`). A model is small below 5B parameters, or, with no size in its
+  name, when its file is under 3500 MiB.
+- `flows.ModelHints` is a new optional interface on a `Catalog`: `ModelSizeMiB(id)`,
+  `DefaultModel()` (`engines.default_model`), `AgentModel(agent)` (the default model for a profile
+  with `needs_model`, else "") and `LocalModels()`. The daemon's `flowCatalog` implements it
+  (`internal/api/flowcatalog_hints.go`, from the cached model list and the live config).
+- **Warnings, never errors** (saving and running are never blocked):
+  - a plan step's `model`, and a judge step's `model` when set: "lfm3-1.7b (about 1.7B parameters)
+    is small for planning: pick a larger model such as qwen/qwen3.8-27b or MiniMax-M2.7. A small
+    model gives thin plans and can loop in agent work.";
+  - `default` is resolved through `DefaultModel()` ("this runs on the default model …, which is
+    small for …: pick a larger default model in Settings, or a larger model here");
+  - a session step, and a fan-out run as sessions without its own default model, on the field
+    `agent`, when its profile runs on a small default model ("set a larger default model in
+    Settings (engines.default_model) such as …"); a session fan-out's `default_model` and route
+    models are checked as agent work too;
+  - the suggestions are up to two installed local models: those with at least 7B in the name,
+    largest first, then (no size in the name) files of at least 10500 MiB, largest first.
+  - Prompt steps and fan-outs run as prompts are not warned: a small model can write a part.
+  - A judge without a model (`evals.judge_model`, then the default) is not checked; the flows
+    package does not see `evals.judge_model`.
+  - With no catalog (or one without `ModelHints`) only explicit ids are checked, by name.
+- **Editor.** `web/dist/assets/js/modelsize.js` mirrors `ParamsB` (`paramsB`, `isSmallModel`,
+  `smallRole`, `pickerLabel`). `flowedit.js`'s model picker on plan and judge steps labels small
+  models "… · small for planning" / "… · small for judging". The warning text itself comes from the
+  server's validation and shows on the field like every other problem. Tests:
+  `web/test/modelsize.test.mjs`, `internal/flows/modelsize_test.go`,
+  `internal/api/flowcatalog_hints_test.go`. `sw.js` needs `python3 web/tools/build_sw.py` (not run
+  by this step; another agent rebuilds it).
+- **Not built.** A session step has no `model` field, so a flow cannot run one session step on a
+  larger model than the default: the editor's `cleanStep`/`stepFields` (`web/dist/assets/js/flows.js`,
+  not this step's file) would drop it. Until then the Assemble session runs on
+  `engines.default_model`, which the session-step warning points at.
+
+# Approvals in flows (2026-11-16)
+
+As built. The owner's words: "The approval should appear on flow too". In run
+`fr-20261116-005014-blkefg` the Assemble session (built-in agent, approve mode "ask") stopped at
+tool prompts, and they could only be answered from the session; the run page showed the flow's
+own `approve` step only.
+
+- **What counts.** An approval holds a run when a session the run started (`run.sessions`, plus the
+  sessions named by step and item records) or a session spawned under one of them (the `Parent`
+  chain, 16 levels at most) waits for a person. Two kinds:
+  - `tool`: the agent's approval prompt (`State` waiting, `WaitingReason` "approval"), answered with
+    `POST /api/sessions/{id}/answer {answer, seq[, option]}`;
+  - `spawn`: a spawned child held until approved (`State` queued, `WaitingReason`
+    "needs approval"), answered with `POST /api/sessions/{id}/approve {approve}`.
+
+  Guard holds are not included: they do not block the session (the call is refused and the agent
+  goes on), and the bell already answers them.
+- **No new route.** The run page answers through the session routes, so the session owner check,
+  the route class, the audit record ("approval yes|always|no: <ask>", "permit:" targets for
+  "Every time") and the 409 on a stale prompt are the session view's. `internal/api/flowasks.go`:
+  - `GET /api/flows/runs/{run}` gains `asks: [FlowAsk]` (always present, oldest first):
+    `{session, name, kind, step?, item?, via?, ask, seq, always?, since}`. `step` is the step the
+    session belongs to: the record naming it, else a live item naming it, else the step the run is
+    on (sessions only run inside the current step). `item` is a fan-out item's index, found the same
+    way or, while the item runs, by the name the engine gives its session
+    (`<flow> · <step> · <title>`, cut to 80 characters; left out when two items match). `via` is the
+    run's own session when the waiting one is a child. `ask`, `seq` and `always` are the session's
+    `WaitingAsk`, `AskSeq` and `WaitingAlways`.
+  - `GET /api/flows/runs` gains `asks: N` per run (omitted when 0): the count of those sessions,
+    read from one session list per request. **For the Flows list (not changed here):** a run with
+    `asks > 0` should show a "Waiting for you" badge (the warn look of a waiting run) in Recent
+    runs, and a flow whose last run has it the same badge; the list already refetches on `flowrun`
+    events, which now fire on these changes.
+  - `GET /api/flows/runs/{run}/flow`: the node of each ask (its item node when known and drawn,
+    else the step node) gets state `waiting` (the `.fl-wait` look), sub `approve: <tool>`
+    ("approve: a child session" for a spawn), the ask in `detail` (the tooltip) and `href` to the
+    waiting session.
+  - `/api/events`: each stream keeps the sessions waiting now (`flowAskWatch`). When a session
+    event starts, changes (a new prompt) or ends such a wait, or removes the session, the stream
+    finds the run that holds it (the newest run whose sessions include it or an ancestor) and sends
+    a `flowrun` event `{run, flow, state, step, owner}` with the run's current values, to the run's
+    owner and admins only (`flowVisible`). Nothing new is published on the flow feed, so the CLI
+    and other readers see an ordinary run event.
+  - The session Flow view's session nodes (`GET /api/sessions/{id}/flow`, `FlowNode`) gain
+    `detail` (omitted when empty): what a session waiting for an approval asks.
+- **Run page** (`views/flowrun.js`, helpers in `web/dist/assets/js/flowasks.js`).
+  - Every approval holding the run is one card look (`alert warn fr-approval`, "Waiting for your
+    approval"): the flow's approve step and each session ask. The cards are at the top (the notice
+    area, with where it is: step name, item title, "a session it started") and again on the step's
+    card. The approve step's Approve / Reject moved from the header into its card.
+  - A tool ask shows what the agent wants (mono) with the session list's own buttons
+    (`approvalButtons` from `views/approval.js`: Yes, Always ▾ with "This run" and each
+    "Every time" rule, No; armed after 600 ms; a 409 says "That prompt is no longer open").
+    A spawn ask has Approve / Reject (Reject asks first, like the Sessions list) through
+    `approveSession` (`views/ctl.js`). Each card links to the session.
+  - A step (or a running fan-out item) with an ask shows the state "Waiting for approval" and the
+    line "waiting for your approval: <ask>" ("(N)" for several).
+  - The notice is rebuilt only when the approvals change, so armed buttons and focus stay put. The
+    page refetches on the run's `flowrun` events and on store `session` events of the sessions
+    whose asks it shows (answered in the session, the bell or the Sessions list).
+- **Graph.** `views/flow.js` is unchanged: the server's `waiting` state already draws the
+  `.fl-wait` look and the WAITING pill, the sub shows the short label and the tooltip the detail.
+- **Tests.** `internal/api/flowasks_test.go`: `TestFlowRunShowsSessionApprovals` (a real engine and
+  flow host over a session fake: the ask appears on the run, the run list and the graph; the owner's
+  stream gets `flowrun` events when it starts and stops waiting, also for a spawned child; another
+  user gets 404 on the run, the graph and the answer, no list entry and no event; a stale seq is
+  409; the answer is audited, releases the prompt and the run passes) and
+  `TestAskStepOfFanOutItem` (item matching, records, item nodes). `web/test/flowasks.test.mjs` for
+  the helpers. `sw.js` must be rebuilt for the new `flowasks.js` (not done in this step).
+
+# Flows as recipes with their runs (2026-11-16)
+
+The owner: "Flows is like Images (containers), it is the recipe, and can be executed n times depending
+of the prompt or the same prompt, the flow sessions appear below the flow. Each flow session can be
+stopped too, and each flow can be edited." As built, this replaces the list described in "The Flows
+view (phase 2, web)" ("Recent runs below"):
+
+- **A card per flow, its runs below it** (`views/flows.js`). Head: name (links to the editor),
+  description, trigger in words, next run, steps, owner chip, the last run's note, the skip note;
+  then the enabled switch, **Edit** (`#/flows/<id>`) and **▶ Run**. Run still asks for the input
+  when the flow has an `input_hint`, now with the newest non-test run's input in the box, so the
+  same prompt is one click away. Run and Run again stay on the list (a toast; the new run shows
+  first under its flow) instead of opening the run page.
+- **A run row**: state pill ("Waiting for you" when `asks` > 0), the input on one line (ellipsised,
+  the full text in a title; "No input" when empty, links to the run page), a test / scheduled tag,
+  the run's owner when it differs from the flow's, "Started 5 min ago" (or "Queued"), "ended … ·
+  took …" or "going for …", usage, reason and note; then **Open**, **Stop** while queued, running
+  or waiting (the run page's confirm, "Stop run"; POST cancel; a toast) and **Run again** (the same
+  flow with that run's input, asked first with it prefilled when the flow takes input or the run
+  had one; not offered for draft test runs or deleted flows). Phones stack the row (state + input,
+  meta, buttons); from 641 px the buttons sit at its right.
+- **Five runs show**, then "Show all N runs" / "Show fewer" (`aria-expanded`). Opening a card reads
+  that flow's runs (`?flow=<id>&limit=500`) and keeps them fresh on each reload while open; which
+  cards are open is kept across visits.
+- **Runs of deleted flows**: a group at the bottom ("Their flows were deleted (or moved to another
+  person); the runs stay."), one card per missing flow id with its runs, Open and Stop only. The
+  separate "Recent runs" list is gone.
+- **Live**: the view still refetches on `flowrun` events (at most every 1.5 s, none while hidden);
+  Stop, Run and Run again refetch at once. A rebuild keeps keyboard focus (`keepFocus`,
+  `data-fkey` on every control). The list lost `aria-live` (it re-rendered on every event).
+- **API**: `GET /api/flows/runs` gains `per_flow=N` (1-500): at most N runs of each flow, newest
+  first; `limit` then defaults to 500; each run carries `flow_runs`, how many runs its flow has in
+  the caller's scope (owner scoping and `all=1` unchanged). The page makes one runs request
+  (`per_flow=5`) plus one per open card. Bad values are 400.
+- **Helpers**: `web/dist/assets/js/flowruns.js` (`groupRuns`, `runTotal`, `shownRuns`, `toggleText`,
+  `needsFetch`, `runActions`, `inputLine`, `lastInput`, `runWhen`), tested in
+  `web/test/flowruns.test.mjs`. Go: `internal/api/flowruns_perflow_test.go`
+  (`TestFlowRunsPerFlow`, `TestFlowRunsPerFlowScoped`). `sw.js` must be rebuilt for the new
+  `flowruns.js`.
+
+# Side nav and session order (2026-11-16)
+
+As built. The owner: "the UI is side nav with the main sections. Chat is just a chat. Sessions has
+the sessions in the order they appear, they still appear even if terminated or paused." This
+replaces the "Main views" item of "Section bars (2026-11-16)" above: the main views are not a
+section bar any more. Settings' sections and the session's Terminal / Files / Preview / Replay /
+Flow / Diff keep their section bars unchanged.
+
+- **Side nav.** `index.html` has `<div class="app-shell"><nav class="side-nav" id="viewBar">` and
+  `main#app` beside it (body stays a non-scrolling flex column, so the fleet navbar stays pinned;
+  the nav and `#app` each scroll on their own). It follows Carino DICOM's `nav.sidebar`: a 212 px
+  column (184 px at 900 px and below) of full-width `a.side-link` links, each an inline-SVG outline
+  icon (`.nav-ico`, stroke `currentColor`; `NAV_ICONS` in `sidenav.js`, no icon font, no request)
+  and the label (`.nav-label`, ellipsised). Hover and the current link (`aria-current="page"`) use
+  the accent border and text, the current one on `--accent-faint`; `:focus-visible` draws the 2 px
+  accent ring. Tokens only, so Gold and Colourful (light and dark) both follow. Account is last and
+  sits at the foot of the column (`margin-top: auto`, where DICOM keeps Sign out). The Sessions link
+  keeps the waiting badge (`.nav-badge`, now inked with `--ct-on-accent` on Colourful).
+  - `web/dist/assets/js/sidenav.js`: `navItems(mainTabs(me))`, `setSideNav`, `markSideNav`,
+    `wireSideNav`. `app.js` fills it per role exactly as before (`users.js` `MAIN_TABS` /
+    `mainTabs`, redrawn only when the set changes; keyboard focus on a link survives a redraw).
+  - `body[data-bare]` (login, first admin, forced password change) hides it; before `/api/me`
+    answers it is invisible but keeps its width.
+- **Phones (720 px and below).** The same nav becomes one row above the content that scrolls
+  sideways, reusing the section bar's code (`sectionbar.js` `wireBar` / `revealCurrent`: the edge
+  fade on the side that hides more, the current link scrolled into view; `CURRENT` now also matches
+  `.side-link[aria-current]`). It folds away in a session and a diff (full height, own back button)
+  and while the on-screen keyboard is open (`body[data-kb]`). Before, that fold applied at 640 px
+  and below; it now applies wherever the nav is a row (720 px and below).
+- **Chat.** Nothing in the chat view duplicated the navigation (its header holds Chats, the title
+  and working folder, the "??" quick answer, Model, Ask me, Flow, the mascot menu, the corner-card
+  toggle and New; none of them link to another view), so the view is unchanged except for one
+  breakpoint: the mascot stage's right-hand column now starts at 1320 px of viewport instead of
+  1100 px, so it still gets about 1100 px of content beside the side nav (below that the stage sits
+  on top, as in a narrow window). Kept as is, for the owner to decide: the "??" quick answer and the
+  mascot stage are chat-adjacent extras in the chat header and body.
+- **Sessions order.** One list, no state groups (`util.js` `GROUPS` / `groupSessions` are gone):
+  `buildTree(list, bySessionOrder)` (`control.js`): pinned first (the Pin button), then the newest
+  `Created` first, ties by id (ids are UTC time plus random hex, so they sort by creation too).
+  State, activity, `Updated` and priority never move a row; priority still orders the queue and
+  shows as the P±N mark. Parent/child nesting, orphans and cycles behave as before (siblings newest
+  first). One heading, "All sessions" or "Active sessions", with the count.
+  - Every state stays listed with its pill: queued, running, waiting, checking, retrying, escalated,
+    passed, failed, stopped, error, accepted, discarded. There is no "paused" state in
+    `internal/session`; a stopped session (and a daemon restart's stopped one) is the nearest.
+  - **All is the default** on every visit. The All / Active radio stays as an optional filter (All
+    first); Active shows only running and waiting sessions with the wall as a grid, All shows the
+    wall as one strip. `#/wall` still opens on Active. The old "start on Active when something
+    runs" guess and its one-time settle are gone. Filters, tags, the owner filter, search, j/k (in
+    list order), the bulk bar and the Wall strip are unchanged.
+- **What the server keeps.** `GET /api/sessions` returns every session the caller may see
+  (`canSeeSession`: own sessions, or all with `sessions.watch_all`), optionally one owner's,
+  whatever the state; `session.Manager.List` keeps them in creation order. Sessions leave the list
+  only by (1) an explicit Delete (row trash button or bulk delete; a running one is stopped first,
+  unaccepted repo work needs force), or (2) the retention prune (`session/history.go` `Prune`): at
+  daemon start and then every 24 h it removes finished sessions (accepted, discarded, passed,
+  failed, stopped, error) last updated more than `sessions.retention_days` ago (default 30; 0 keeps
+  everything), keeping any repo session whose worktree holds unaccepted work. Each removal is a
+  `removed` session event, which the store drops from the list.
+- **Not changed, worth a look.** The activity feed still docks beside `#app` from 900 px
+  (`feed.js`, `control.css`); with the side nav that leaves about 370 to 570 px of content between
+  900 and 1100 px of viewport while the feed is open.
+- **Tests.** `web/test/sidenav.test.mjs` (link specs per role, an icon per view, the CSS contract:
+  column, current link, phone row with the fade, the folds, the chat breakpoint);
+  `control.test.mjs` (`bySessionOrder`: every state in one list newest first, a session that
+  updates keeps its row, pinned and id ties, the tree); `users.test.mjs` (the `index.html` shell);
+  `sectionbar.test.mjs` (`.view-bar` gone); `smoke.test.mjs` (the `groupSessions` test became a
+  `countWaiting` test).

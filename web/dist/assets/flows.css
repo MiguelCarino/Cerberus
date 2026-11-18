@@ -25,59 +25,78 @@
 .view-flows .pill, .view-flowedit .pill, .view-flowrun .pill { white-space: nowrap; flex-shrink: 0; }
 
 /* ---------- the list ---------- */
+/* A card is the flow (head: name, meta, switch, Edit, Run) with its runs
+   below it, newest first. A run is a small row: state + input, then when
+   and usage, then Open / Stop / Run again; on wider screens the buttons
+   sit at the row's right. */
 .flw-note { margin-bottom: 14px; }
 .flw-note[hidden] { display: none; }
-.flw-list { display: flex; flex-direction: column; gap: 10px; }
+.flw-list { display: flex; flex-direction: column; gap: 12px; }
 .flw-row {
   display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; min-width: 0;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
 }
 .flw-row:hover { border-color: var(--accent-dim); }
+.flw-head { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .flw-main { min-width: 0; flex: 1 1 auto; }
 .flw-name {
   font-family: var(--display); font-weight: 900; font-size: var(--fs-lg); text-transform: uppercase;
   letter-spacing: 0.02em; color: var(--text); text-decoration: none; overflow-wrap: anywhere;
 }
-.flw-name:hover, .flw-name:focus-visible { color: var(--accent); }
+a.flw-name:hover, a.flw-name:focus-visible { color: var(--accent); }
+.flw-name-gone { color: var(--text-sec); }
 .flw-desc { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--text-sec); overflow-wrap: anywhere; }
 .flw-meta {
-  display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--text-muted);
+  display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; min-width: 0;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--text-muted); overflow-wrap: anywhere;
 }
 .flw-trigger { color: var(--accent); font-weight: 700; }
 .flw-skip { margin: 6px 0 0; font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 .flw-lastnote { margin: 6px 0 0; font-family: var(--mono); font-size: var(--fs-label); color: var(--text-sec); overflow-wrap: anywhere; }
-.flw-side { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.flw-last { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text-sec); }
-a.flw-last:hover .t-sm, a.flw-last:focus-visible .t-sm { color: var(--accent); }
-.flw-actions { display: flex; align-items: center; gap: 10px; }
-.flw-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.flw-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
+.flw-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin-right: auto; }
 .flw-switch-text { font-family: var(--mono); font-size: var(--fs-label); text-transform: uppercase; color: var(--text-sec); min-width: 2.2em; }
 .switch input:focus-visible + .track { box-shadow: 0 0 0 3px var(--accent-glow); }
 
-.flw-runs { display: flex; flex-direction: column; gap: 6px; }
-.flw-none { margin: 0; }
+/* a flow's runs */
+.flw-runs-box { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 10px; border-top: 1px solid var(--border); }
+.flw-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.flw-none { margin: 0; color: var(--text-muted); }
+.flw-more { align-self: flex-start; }
 .flw-run {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 12px;
-  padding: 10px 14px; min-width: 0; text-decoration: none; color: inherit;
-  background: var(--bg-card); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 10px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0;
+  padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px;
 }
-.flw-run:hover, .flw-run:focus-visible { border-color: var(--accent-dim); outline: none; }
+.flw-run:hover, .flw-run:focus-within { border-color: var(--accent-dim); }
 .flw-run.tone-ok { border-left-color: var(--ok); }
 .flw-run.tone-err { border-left-color: var(--err); }
 .flw-run.tone-warn { border-left-color: var(--warn); }
 .flw-run.tone-info { border-left-color: var(--info); }
-.flw-run-name { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.flw-run-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.flw-run-input {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); text-decoration: none; font-size: var(--fs-sm);
+}
+.flw-run-input.is-empty { color: var(--text-muted); font-style: italic; }
+.flw-run-input:hover, .flw-run-input:focus-visible { color: var(--accent); text-decoration: underline; }
 .flw-run-meta {
-  grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0;
+  display: flex; flex-wrap: wrap; gap: 2px 12px; min-width: 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--text-muted);
 }
 .flw-run-reason { color: var(--text-sec); overflow-wrap: anywhere; }
 .flw-run-note { color: var(--warn); overflow-wrap: anywhere; }
+.flw-run-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Stop reads in both themes (the shared .btn-danger text is a light pink). */
+.flw-stop { color: var(--err); }
 .flw-tag {
   font-family: var(--mono); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--text-sec); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
 }
+.flw-gone { margin-top: 8px; display: flex; flex-direction: column; gap: 10px; }
+.flw-gone[hidden] { display: none; }
+.flw-gone .group-title { margin-bottom: 0; }
+.flw-gone-sub { margin: 0; font-size: var(--fs-sm); }
+.flw-row-gone { background: transparent; }
 
 .flw-empty { padding: 28px 16px; }
 .flw-empty > .t-sec { max-width: 560px; margin: 0 auto 18px; }
@@ -309,19 +328,31 @@ a.flw-last:hover .t-sm, a.flw-last:focus-visible .t-sm { color: var(--accent); }
 /* Reject reads in both themes (the shared .btn-danger text is a light pink). */
 .view-flowrun .btn-danger, .fe-test .btn-danger { color: var(--err); }
 
+/* Approvals holding a run (the approve step, a session's tool prompt or
+   spawn request): one card look, buttons in a row even on phones. */
+.fr-approval { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fr-ask-where { color: var(--text-sec); overflow-wrap: anywhere; }
+.fr-ask-what { font-family: var(--mono); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.fr-ask-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 4px; }
+.view-flowrun .fr-approval .approve-btns { flex-direction: row; flex-wrap: wrap; }
+.fr-approval .fe-link { overflow-wrap: anywhere; }
+
 /* ---------- wider screens ---------- */
 @media (min-width: 641px) {
-  .flw-row { flex-direction: row; align-items: center; }
-  .flw-side { flex-direction: column; align-items: flex-end; flex-shrink: 0; }
+  .flw-head { flex-direction: row; align-items: flex-start; }
+  .flw-actions { flex-shrink: 0; flex-wrap: nowrap; }
+  .flw-switch { margin-right: 0; }
   .flw-templates { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
   .fe-step-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fe-step-body > .fe-f-template, .fe-step-body > .fe-f-routes { grid-column: 1 / -1; }
-  .flw-run { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .flw-run-meta { grid-column: auto; justify-content: flex-end; }
+  .flw-run { grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; }
+  .flw-run-acts { grid-column: 2; grid-row: 1 / span 2; flex-wrap: nowrap; justify-content: flex-end; }
 }
 @media (min-width: 900px) {
   .fe-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); align-items: start; }
-  .fe-side { position: sticky; top: calc(var(--nav-h) + 12px); max-height: calc(100vh - var(--nav-h) - 24px); overflow: auto; }
+  /* #app scrolls (below the navbar), so the column sticks 12px under its
+     top and fits its height. */
+  .fe-side { position: sticky; top: 12px; max-height: calc(var(--app-h, 100dvh) - var(--nav-h) - 24px); overflow: auto; }
   /* The whole flow fits beside the form: the drawing scales down to the
      column's height instead of scrolling inside a small box. */
   .fe-graph { max-height: none; overflow: hidden; }

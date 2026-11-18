@@ -95,6 +95,9 @@ type FlowNode struct {
 	Sub   string `json:"sub"`
 	State string `json:"state"`
 	Href  string `json:"href"`
+	// Detail is more about the state, for the tooltip: what a session
+	// waiting for an approval asks (flowasks.go).
+	Detail string `json:"detail,omitempty"`
 }
 
 // FlowEdge is one arrow, aggregated per (from, to, kind).
@@ -288,7 +291,7 @@ func buildFlow(in flowInput) FlowGraph {
 		for _, t := range in.sessions {
 			nid := "s:" + t.ID
 			g.Nodes = append(g.Nodes, FlowNode{ID: nid, Kind: flowSession, Label: flowOr(t.Name, flowOr(t.Title, t.ID)),
-				Sub: flowJoin(t.Agent, t.Model, t.Workspace), State: t.State, Href: "#/s/" + t.ID})
+				Sub: flowJoin(t.Agent, t.Model, t.Workspace), State: t.State, Href: "#/s/" + t.ID, Detail: sessionAskDetail(t)})
 			owner[t.ID] = nid
 			order = append(order, t.ID)
 			seen(t.Updated)

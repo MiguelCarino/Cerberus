@@ -199,7 +199,7 @@ body[data-view="login"] .feed-panel, body[data-view="login"] .feed-scrim { displ
   body.feed-open .feed-scrim { display: block; position: fixed; inset: var(--nav-h) 0 0 0; z-index: 59; background: rgba(0,0,0,0.55); }
 }
 
-/* ---------- shortcut help, More sheet ---------- */
+/* ---------- shortcut help, pick lists (.more-list: Flows' step kinds, user actions) ---------- */
 .kbd-table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
 .kbd-table td { padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .kbd-table td:first-child { white-space: nowrap; color: var(--text-muted); font-family: var(--mono); font-size: var(--fs-label); width: 40%; }
@@ -211,19 +211,10 @@ body[data-view="login"] .feed-panel, body[data-view="login"] .feed-scrim { displ
 .more-item:hover, .more-item:focus-visible { border-color: var(--accent-dim); outline: none; }
 .more-label { font-family: var(--mono); font-size: var(--fs-btn); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); }
 .more-sub { font-size: var(--fs-sm); color: var(--text-sec); }
-.bottom-tabs button {
-  position: relative; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; background: none;
-  font-family: var(--mono); font-size: var(--fs-btn); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-sec); padding: 0 14px; height: 36px; border-radius: 6px; border: 1px solid transparent;
-}
 
 
 /* ---------- phones ---------- */
 @media (max-width: 640px) {
-  .bottom-tabs button { flex: 1; justify-content: center; height: 56px; border-radius: 0; padding: 0 2px; letter-spacing: 0.04em; }
-  .bottom-tabs button[aria-current] { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
-  body[data-view="wall"] .bottom-tabs { display: flex; }
-
   .sess-item.child { margin-left: calc(var(--level, 1) * 12px); }
   .sess-item .sess-row { padding: 8px 8px 8px 2px; gap: 6px; }
   .sess-check { width: 34px; }

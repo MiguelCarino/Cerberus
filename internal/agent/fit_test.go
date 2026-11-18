@@ -96,8 +96,11 @@ func failWith(status int, msg string) func(http.ResponseWriter) {
 }
 
 // readTurn is one reply that reads f.txt with a call id unique to step i.
+// The limit differs per step (f.txt is one line, so the result is the
+// same): the same call again and again would be stopped by the stuck-loop
+// guard (repeat.go), which these tests are not about.
 func readTurn(i int) func(http.ResponseWriter, map[string]any) {
-	return sse(fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_s%d","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"f.txt\"}"}}]}}]}`, i),
+	return sse(fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_s%d","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"f.txt\",\"limit\":%d}"}}]}}]}`, i, i+1),
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
 }
 

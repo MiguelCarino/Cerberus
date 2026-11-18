@@ -5,30 +5,8 @@ import { parseReplayTime } from './cast.js';
 
 // ---------- session states ----------
 
-// Display groups for the Sessions list, in the order they are shown.
-export const GROUPS = [
-  { key: 'waiting', label: 'Needs you', states: ['waiting'] },
-  { key: 'active', label: 'Running', states: ['starting', 'running', 'checking', 'retrying', 'escalated'] },
-  { key: 'review', label: 'Ready for review', states: ['passed', 'failed'] },
-  { key: 'queued', label: 'Queued', states: ['queued'] },
-  { key: 'done', label: 'Finished', states: ['accepted', 'discarded', 'stopped', 'error'] },
-];
-
-const groupOf = new Map(GROUPS.flatMap((g) => g.states.map((s) => [s, g.key])));
-
-// groupSessions buckets sessions by display group, newest first inside each
-// group, and drops empty groups. Unknown states land in "active" so a new
-// server state is never hidden.
-export function groupSessions(list) {
-  const buckets = new Map(GROUPS.map((g) => [g.key, []]));
-  for (const s of list || []) buckets.get(groupOf.get(s.State) || 'active').push(s);
-  return GROUPS.map((g) => ({ key: g.key, label: g.label, items: buckets.get(g.key).sort(byUpdatedDesc) }))
-    .filter((g) => g.items.length > 0);
-}
-
-function byUpdatedDesc(a, b) {
-  return (Date.parse(b.Updated) || 0) - (Date.parse(a.Updated) || 0);
-}
+// The Sessions list is one list in creation order (control.js
+// bySessionOrder), every state included; there are no state groups.
 
 // stateTone maps a session state to a Branding status colour.
 export function stateTone(state) {

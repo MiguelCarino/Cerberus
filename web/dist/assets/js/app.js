@@ -1,17 +1,19 @@
-// Cerberus web UI entry point: hash router, view tabs (moved into the shared
-// Carino navbar by carino-navbar.js), the waiting badge and the 401 → Login switch.
+// Cerberus web UI entry point: hash router, the main views' side nav (a
+// column left of the content; a scrolling row above it on phones), the
+// waiting badge and the 401 → Login switch.
 //
 // Users and roles (phase 4a): GET /api/me (store.loadMe) says who is signed
 // in. The route guard (users.js guardRoute) sends a fresh admin token to the
 // first-run screen, a must-change sign-in to the forced password change,
-// and a view the role cannot use to Not found. Tabs and the More sheet show
-// only what the role opens; the server is the authority either way.
+// and a view the role cannot use to Not found. The side nav shows only what
+// the role opens, then Account; the server is the authority either way.
 
 import { setUnauthorizedHandler, setCodeHandler } from './api.js';
-import { h, clear, openDialog, toast } from './dom.js';
+import { h, clear, toast } from './dom.js';
 import { store } from './store.js';
 import { parseRoute, keyboardOpen } from './util.js';
-import { guardRoute, tabVisible, moreItems, isBare, TAB_OF, canWriteSessions } from './users.js';
+import { guardRoute, mainTabs, isBare, TAB_OF, canWriteSessions } from './users.js';
+import { setSideNav, wireSideNav, markSideNav, navItems } from './sidenav.js';
 import { initShortcuts } from './shortcuts.js';
 import { initFeed, toggleFeed } from './views/feed.js';
 import * as sessions from './views/sessions.js';
@@ -47,6 +49,8 @@ const VIEWS = {
 };
 
 const app = document.getElementById('app');
+// The main views: nav.side-nav in index.html, filled per role by applyRole().
+const viewBar = wireSideNav(document.getElementById('viewBar'));
 let unmount = null;
 let routeSeq = 0;
 let current = null; // the route on screen
@@ -75,10 +79,7 @@ function show(r) {
   document.body.dataset.view = r.view;
   document.body.toggleAttribute('data-bare', isBare(r.view));
   applyRole();
-  const tab = TAB_OF[r.view];
-  for (const a of document.querySelectorAll('[data-tab]')) {
-    a.toggleAttribute('aria-current', a.dataset.tab === tab || (a.dataset.tabAlso || '').split(' ').includes(tab));
-  }
+  markTab();
   if (isBare(r.view)) { store.stopEvents(); toggleFeed(false); }
   else { store.startEvents(); adminExtras(); }
   unmount = VIEWS[r.view].mount(app, r) || null;
@@ -95,13 +96,27 @@ function adminExtras() {
   maybeWelcome();
 }
 
-// applyRole shows only the tabs this person's role opens.
+// applyRole shows only the views this person's role opens (redrawn only
+// when that set changes).
+let tabsKey = null;
 function applyRole() {
   const me = store.me();
   document.body.dataset.role = me ? me.role : '';
-  for (const a of document.querySelectorAll('[data-tab]')) {
-    a.hidden = !!me && !tabVisible(a.dataset.tab, me);
-  }
+  const tabs = mainTabs(me);
+  const key = tabs.map(([t]) => t).join(' ');
+  if (key === tabsKey) return;
+  tabsKey = key;
+  setSideNav(viewBar, navItems(tabs).map((it) => ({
+    ...it, extra: it.key === 'sessions' ? h('span', { class: 'nav-badge', hidden: true }) : null,
+  })));
+  markTab();
+  updateBadge();
+}
+
+// markTab lights the link of the view on screen (and, on phones, scrolls
+// the nav row so it shows).
+function markTab() {
+  markSideNav(viewBar, current ? TAB_OF[current.view] || '' : '');
 }
 
 // Who is signed in changed (a reconnect after a role change, a sign-in in
@@ -146,8 +161,8 @@ store.subscribe((kind) => { if (kind === 'sessions' || kind === 'session') updat
 
 // ---------- phone keyboard: size the app to the visual viewport ----------
 // body[data-kb] marks an open on-screen keyboard, so views with fixed parts
-// (the chat's stage and header, the bottom tabs) fold them and keep the
-// input in view.
+// (the chat's stage and header, the phone nav row) fold them and keep the input
+// in view.
 if (window.visualViewport) {
   const vv = window.visualViewport;
   const editing = () => {
@@ -168,17 +183,6 @@ if (window.visualViewport) {
   window.addEventListener('resize', setH);
   setH();
 }
-
-// ---------- phone "More" sheet ----------
-function openMore() {
-  openDialog((close) => ({
-    title: 'More',
-    body: h('nav', { class: 'more-list', 'aria-label': 'More views' }, moreItems(store.me()).map(([tab, label, sub]) =>
-      h('a', { class: 'more-item', href: `#/${tab}`, onclick: () => close() },
-        h('span', { class: 'more-label', text: label }), h('span', { class: 'more-sub', text: sub })))),
-  }));
-}
-for (const b of document.querySelectorAll('[data-more]')) b.addEventListener('click', openMore);
 
 window.addEventListener('hashchange', route);
 initShortcuts();

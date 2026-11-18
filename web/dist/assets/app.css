@@ -9,25 +9,116 @@ body {
   background: var(--bg); color: var(--text);
 }
 
-/* ---------- view tabs (relocated into the shared #carinoNav) ----------
-   carino-navbar.js owns the bar itself; these style the tabs it adopts.
-   Id-scoped because the navbar's injected rules outrank class-only ones. */
-#carinoNav .cn-tabs, .cn-tabs { display: flex; gap: 4px; }
-#carinoNav .cn-tabs a, .cn-tabs a, .bottom-tabs a {
-  position: relative; display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--mono); font-size: var(--fs-btn); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-sec); text-decoration: none; padding: 0 14px; height: 36px; border-radius: 6px; border: 1px solid transparent;
-  transition: 0.15s;
+/* ---------- section bars (sectionbar.js) ----------
+   One component for every inner bar: Settings' sections and the session's
+   panels (the main views are the side nav below). Pills as in Carino DICOM's section
+   tabs: a hairline border, the accent on hover, the current one filled
+   with the accent. The bar never wraps; it scrolls sideways by itself and
+   fades the edge that hides more (data-fade-start / data-fade-end). */
+.sbar {
+  position: relative; display: flex; align-items: center; gap: 8px; min-width: 0;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+  padding: 4px; margin: 0 -4px; /* room for the focus ring */
+  -webkit-overflow-scrolling: touch;
 }
-#carinoNav .cn-tabs a:hover { color: var(--accent); background: var(--accent-faint); }
-#carinoNav .cn-tabs a[aria-current] { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-faint); }
+.sbar::-webkit-scrollbar { display: none; }
+.sbar[data-fade-end] { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+.sbar[data-fade-start] { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); }
+.sbar[data-fade-start][data-fade-end] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+.sbar-tab {
+  position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 14px;
+  font-family: var(--mono); font-size: var(--fs-btn); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; line-height: 1.2;
+  white-space: nowrap; color: var(--text-sec); background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  text-decoration: none; cursor: pointer; transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.sbar-tab:hover { color: var(--accent); border-color: var(--accent); }
+.sbar-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sbar-tab[aria-current], .sbar-tab[aria-selected="true"] {
+  color: var(--ct-on-accent, #050505); background: var(--accent); border-color: var(--accent); font-weight: 700;
+}
+.sbar-tab[aria-current]:hover, .sbar-tab[aria-selected="true"]:hover { color: var(--ct-on-accent, #050505); }
+.sbar-tab[hidden] { display: none; }
+.sbar-tab.disabled { opacity: 0.35; pointer-events: none; }
+/* Marks inside a pill (a count, an unsaved dot, a problem pill) read on the filled one too. */
+.sbar-tab[aria-current] .pill, .sbar-tab[aria-selected="true"] .pill { color: inherit; border-color: currentColor; background: transparent; }
+.sbar-tab[aria-current] .set-dot { background: currentColor; }
+.sbar-sep { flex: 0 0 1px; align-self: stretch; margin: 4px 2px; background: var(--border); }
+
+/* ---------- side nav (sidenav.js) ----------
+   The main views as Carino DICOM's sidebar: a fixed-width column left of
+   main#app with one full-width link per view (icon + label), the current
+   one in the accent on a faint accent fill, Account at the foot. The
+   navbar stays pinned above (body is a non-scrolling flex column); the
+   column and #app each scroll on their own. Phones (720 px and below): one
+   row above the content that scrolls sideways like a section bar (edge
+   fade, current link kept in view; sectionbar.js). */
+.app-shell { flex: 1 1 auto; min-height: 0; display: flex; }
+.side-nav {
+  position: relative; flex: 0 0 212px; display: flex; flex-direction: column; gap: 6px; min-height: 0;
+  padding: 14px 12px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+  border-right: 1px solid var(--border); background: var(--bg);
+}
+.side-link {
+  position: relative; flex-shrink: 0; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px;
+  font-family: var(--sans); font-size: var(--fs-sec); font-weight: 600; line-height: 1.2;
+  color: var(--text-sec); background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  text-decoration: none; cursor: pointer; transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.side-link:hover { color: var(--accent); border-color: var(--accent); }
+.side-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.side-link[aria-current] { color: var(--accent); border-color: var(--accent); background: var(--accent-faint); }
+.side-link .nav-ico { flex: 0 0 18px; width: 18px; height: 18px; display: inline-flex; }
+.side-link .nav-ico svg { width: 100%; height: 100%; }
+/* Only the label shrinks: a long one ellipsises, the badge stays. */
+.side-link .nav-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-link .nav-badge { flex-shrink: 0; }
+/* Account at the foot of the column, where DICOM keeps Sign out. */
+.side-link[data-tab="account"] { margin-top: auto; }
+body[data-bare] .side-nav { display: none; }
+body:not([data-role]) .side-nav { visibility: hidden; }
+@media (max-width: 900px) {
+  .side-nav { flex-basis: 184px; padding: 12px 10px; }
+  .side-link { gap: 8px; padding: 10px; }
+}
+
 .nav-badge {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center;
-  background: var(--accent); color: #050505; font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0;
+  background: var(--accent); color: var(--ct-on-accent, #050505); font-size: var(--fs-micro); font-weight: 700; letter-spacing: 0;
 }
 
 /* ---------- main area ---------- */
-#app { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+#app { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* #app is the scroller, already below the navbar: Branding's sticky
+   filter bar (top: var(--nav-h), for a scrolling window) sticks at its top. */
+#app .fchips { top: 0; }
+
+/* ---------- phones: the side nav becomes one scrolling row ---------- */
+/* It folds away in a session and a diff (full height, their own back
+   button) and while the on-screen keyboard is open (body[data-kb], app.js). */
+@media (max-width: 720px) {
+  .app-shell { flex-direction: column; }
+  .side-nav {
+    flex: 0 0 auto; flex-direction: row; align-items: center; gap: 6px; padding: 6px 12px;
+    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    border-right: 0; border-bottom: 1px solid var(--border);
+  }
+  .side-nav::-webkit-scrollbar { display: none; }
+  .side-nav[data-fade-end] { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  .side-nav[data-fade-start] { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent); }
+  .side-nav[data-fade-start][data-fade-end] {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  }
+  .side-link { flex: 0 0 auto; min-height: 38px; gap: 7px; padding: 6px 12px; border-radius: 8px; }
+  .side-link .nav-ico { flex-basis: 16px; width: 16px; height: 16px; }
+  .side-link .nav-label { overflow: visible; }
+  .side-link[data-tab="account"] { margin-top: 0; }
+  body[data-view="session"] .side-nav, body[data-view="diff"] .side-nav, body[data-kb] .side-nav { display: none; }
+}
+
 .view-pad { max-width: 1100px; margin: 0 auto; padding: 22px 20px 40px; }
 .view-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
 .view-title { margin: 0; font-family: var(--display); font-weight: 900; font-size: var(--fs-h1); text-transform: uppercase; letter-spacing: 0.5px; line-height: 1.1; }
@@ -35,6 +126,25 @@ body {
 .btn-big { height: 44px; padding: 0 20px; font-size: var(--fs-sm); }
 .btn-danger { border-color: rgba(239,68,68,0.5); color: #fca5a5; }
 .btn-danger:hover { border-color: var(--err); color: var(--err); background: rgba(239,68,68,0.08); }
+/* Colourful: the light pink is for dark backgrounds; its own red reads in both modes. */
+[data-carino-theme="color"] .btn-danger { color: var(--err); }
+/* Colourful: the near-black tints Gold uses for an ask card, a hovered or
+   selected row and a select's options would put dark text on black; a
+   faint accent over the card colour reads in its light and dark modes. */
+[data-carino-theme="color"] .pc, [data-carino-theme="color"] .bell-sess,
+[data-carino-theme="color"] .sess-row:hover, [data-carino-theme="color"] .sess-row:focus-visible,
+[data-carino-theme="color"] .sess-item.selected .sess-row,
+[data-carino-theme="color"] .brx-sess:hover, [data-carino-theme="color"] .brx-sess:focus-visible {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-card));
+}
+[data-carino-theme="color"] .fchip-select option { background: var(--bg-card); }
+/* Colourful: the pale amber, pink and green text Gold uses on black turns
+   into the theme's own warn, err and ok colours (both its modes). */
+[data-carino-theme="color"] :is(.sess-reason, .pc-warn, .pc-hint, .tile-foot.warn, .hit-snip mark, .batch-res code,
+  .md code.md-c, .login-card code) { color: var(--warn); }
+[data-carino-theme="color"] :is(.pc-l.del, .dl.del .lc, .secret-err, .pwa-bar.offline .pwa-msg, .gm-item.tone-err .gm-progress,
+  .up-row.err .up-state, .att-chip.att-failed .att-size, .fx-status.err, .usage-table tr.row-err td) { color: var(--err); }
+[data-carino-theme="color"] :is(.pc-l.add, .dl.add .lc) { color: var(--ok); }
 a.btn.disabled { opacity: 0.35; pointer-events: none; }
 .pill.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 40%, transparent); background: color-mix(in srgb, var(--info) 8%, transparent); }
 .pill.muted { color: var(--text-muted); border-color: var(--border); }
@@ -42,7 +152,7 @@ a.btn.disabled { opacity: 0.35; pointer-events: none; }
 .empty-title { margin: 0 0 6px; font-family: var(--display); font-weight: 900; text-transform: uppercase; font-size: var(--fs-h3); }
 
 /* ---------- sessions list ---------- */
-.sess-group { margin-bottom: 22px; }
+.sess-all { margin-bottom: 22px; }
 .group-title {
   display: flex; align-items: center; gap: 8px; margin: 22px 0 10px;
   font-family: var(--mono); font-size: var(--fs-label); font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-muted);
@@ -190,20 +300,8 @@ body[data-view="session"] #app { display: flex; flex-direction: column; overflow
 .about-box p:last-child { margin-bottom: 0; }
 .about-meta { color: var(--text-muted); font-size: var(--fs-sm); }
 
-/* ---------- bottom tabs (phones) ---------- */
-.bottom-tabs { display: none; }
-
 @media (max-width: 640px) {
-  /* Phones use the bottom tabs; hide the relocated tab links (needs
-     !important, the navbar's injected rules win otherwise). The bell stays. */
-  #carinoNav .cn-tabs > a, #carinoNav .cn-actions.cn-tabs > a { display: none !important; }
-  .bottom-tabs {
-    display: flex; flex-shrink: 0; border-top: 1px solid var(--border); background: rgba(5,5,5,0.96);
-    padding-bottom: env(safe-area-inset-bottom);
-  }
-  .bottom-tabs a { flex: 1; justify-content: center; height: 56px; border-radius: 0; }
-  .bottom-tabs a[aria-current] { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
-  body[data-view="session"] .bottom-tabs, body[data-view="diff"] .bottom-tabs, body[data-view="login"] .bottom-tabs { display: none; }
+  .sbar-tab { min-height: 36px; padding: 6px 12px; letter-spacing: 0.04em; }
   .view-pad { padding: 16px 16px 28px; }
   .view-head .btn-big { width: 100%; justify-content: center; }
   .btn { height: 44px; }

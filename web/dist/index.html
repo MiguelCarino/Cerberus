@@ -37,26 +37,17 @@
   <script type="module" src="assets/js/app.js"></script>
 </head>
 <body>
-  <!-- App views: carino-navbar.js moves this block into the shared navbar. -->
-  <nav class="cn-tabs" data-carino-actions aria-label="Views">
-    <a data-tab="chat" href="#/chat">Chat</a>
-    <a data-tab="sessions" href="#/sessions">Sessions <span class="nav-badge" hidden></span></a>
-    <a data-tab="flows" href="#/flows">Flows</a>
-    <a data-tab="models" href="#/models">Models</a>
-    <a data-tab="monitor" href="#/monitor">Monitor</a>
-    <a data-tab="usage" href="#/usage">Usage</a>
-    <a data-tab="settings" href="#/settings">Settings</a>
-  </nav>
-  <main id="app"></main>
-  <!-- Phones keep four bottom tabs (they fit at 360 px); "More" opens a
-       sheet with Flows, Models, Usage, Settings, Account and any later
-       views. Each role sees only the tabs it can open (app.js). -->
-  <nav class="bottom-tabs" aria-label="Views">
-    <a data-tab="chat" href="#/chat">Chat</a>
-    <a data-tab="sessions" href="#/sessions">Sessions <span class="nav-badge" hidden></span></a>
-    <a data-tab="monitor" href="#/monitor">Monitor</a>
-    <button type="button" data-tab="more" data-tab-also="flows models usage settings account" data-more aria-haspopup="dialog">More</button>
-  </nav>
+  <!-- The bell and the account button join this block (bell.js,
+       accountmenu.js); carino-navbar.js moves it into the shared navbar. -->
+  <div data-carino-actions></div>
+  <!-- The main views: a side nav left of the content (Carino DICOM's
+       sidebar); on phones one row above it that scrolls sideways. app.js
+       fills it with the views this person's role opens, then Account
+       (sidenav.js). main#app keeps its own scrolling. -->
+  <div class="app-shell">
+    <nav class="side-nav" id="viewBar" aria-label="Views"></nav>
+    <main id="app"></main>
+  </div>
   <!-- carino-navbar.js loads carino-clock.js relative to the page; the UI keeps
        it under assets/, so it is loaded here and the navbar, seeing the
        data-carino-clock tag, skips its own load. -->

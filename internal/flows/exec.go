@@ -597,7 +597,8 @@ func (e *Engine) runStep(ctx context.Context, rc *runCtx, s Step, rec *StepRecor
 		}
 		rec.Input = task
 		var u usageSum
-		out, err := e.session(ctx, rc, s, s.Agent, "", task, s.Label(), &u)
+		// s.Model "" keeps the agent profile's model.
+		out, err := e.session(ctx, rc, s, s.Agent, s.Model, task, s.Label(), &u)
 		u.fill(rec)
 		if out != nil {
 			rec.Session = out["session"].(string)

@@ -25,6 +25,7 @@ import {
   runLog, runLogName, parseListField, listFieldText,
 } from '../flows.js';
 import { layoutGraph, fitText, FONT, isCircle, circleOf } from '../flowgraph.js';
+import { smallRole, pickerLabel } from '../modelsize.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const enc = encodeURIComponent;
@@ -455,7 +456,7 @@ export function mount(root, r = {}) {
         });
         break;
       }
-      case 'model': control = modelSelect(s[f.key] || '', (v) => set(v), f.label, focusKey); break;
+      case 'model': control = modelSelect(s[f.key] || '', (v) => set(v || undefined), f.label, focusKey, smallRole(s, f.key), f.optional || ''); break;
       case 'agent': control = agentSelect(s[f.key] || '', (v) => set(v || undefined), f.label, focusKey, !!f.optional); break;
       case 'retry': {
         // retry {max, backoff_s}: two numbers; no tries means no retry.
@@ -505,12 +506,17 @@ export function mount(root, r = {}) {
     requestAnimationFrame(() => { const el = stepsEl.querySelector(`[data-focus="${key}"]`); if (el) el.focus(); });
   }
 
-  function modelSelect(cur, onChange, label, focusKey) {
+  // role ('planning', 'judging' or '') marks small models in the list;
+  // the server's validation warns about a small pick on the field.
+  // optional: the label of an empty choice that stays selectable (a session
+  // step's model, the judge's), else an empty value is a "Pick a model" prompt.
+  function modelSelect(cur, onChange, label, focusKey, role = '', optional = '') {
     const list = choices.models || [];
-    const opts = [['default', 'Default model'], ...list.map((m) => [m.ID, modelLabel(m)])];
+    const opts = [['default', 'Default model'], ...list.map((m) => [m.ID, pickerLabel(modelLabel(m), m, role)])];
     if (cur && !opts.some(([v]) => v === cur)) opts.push([cur, `${cur} · not installed`]);
     const sel = h('select', { class: 'select', 'aria-label': label, 'data-focus': focusKey },
-      cur ? null : h('option', { value: '', selected: true, text: 'Pick a model' }),
+      optional ? h('option', { value: '', selected: !cur, text: optional })
+        : cur ? null : h('option', { value: '', selected: true, text: 'Pick a model' }),
       opts.map(([v, l]) => h('option', { value: v, selected: v === cur, text: l })));
     sel.addEventListener('change', () => onChange(sel.value));
     return sel;

@@ -59,7 +59,8 @@ func (e *ValidationError) Error() string {
 // ids, references to earlier steps only, forward jumps, schedule, limits,
 // template placeholders, fan-out sources, and, when cat is not nil, models
 // and agent profiles that exist (a warning when a model is not installed
-// now). It never changes f. The result is never nil.
+// now). Plan, judge and agent session steps on a small model get a
+// warning (modelsize.go). It never changes f. The result is never nil.
 func Validate(f Flow, cat Catalog) []Problem {
 	v := validator{cat: cat, ps: []Problem{}}
 	v.flow(f)
@@ -317,6 +318,7 @@ func (v *validator) step(f Flow, i int, s Step, earlier func(string) bool) {
 		v.template(s.ID, "template", s.Template, true, earlier, false)
 	case KindPlan:
 		v.model(s.ID, "model", s.Model)
+		v.sizeHint(s.ID, "model", s.Model, "planning", false)
 		v.template(s.ID, "template", s.Template, true, earlier, false)
 		if s.MaxItems < 0 || s.MaxItems > maxMaxItems {
 			v.add(s.ID, "max_items", SevError, "max items is 1 to %d", maxMaxItems)
@@ -352,6 +354,7 @@ func (v *validator) step(f Flow, i int, s Step, earlier func(string) bool) {
 			}
 			v.agent(s.ID, "agent", s.Agent)
 			v.workspace(s)
+			v.sessionSizeHint(s)
 		default:
 			v.add(s.ID, "as", SevError, "fan out as prompt or session")
 		}
@@ -361,6 +364,10 @@ func (v *validator) step(f Flow, i int, s Step, earlier func(string) bool) {
 		}
 	case KindSession:
 		v.agent(s.ID, "agent", s.Agent)
+		if s.Model != "" {
+			v.model(s.ID, "model", s.Model)
+		}
+		v.sessionSizeHint(s)
 		if s.workspace() == WorkspaceStep {
 			v.stepWorkspace(f, s, earlier)
 		} else {
@@ -430,6 +437,7 @@ func (v *validator) judgeStep(f Flow, s Step, earlier func(string) bool) {
 	}
 	if strings.TrimSpace(s.Model) != "" {
 		v.model(s.ID, "model", s.Model)
+		v.sizeHint(s.ID, "model", s.Model, "judging", false)
 	}
 }
 

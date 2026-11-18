@@ -9,14 +9,6 @@
 }
 .mon .group-title { margin-top: 26px; }
 .mon-usage-link { white-space: nowrap; }
-/* Usage as a section of Monitor: phones only (the bottom bar has no Usage). */
-.mon-usage { display: none; margin-top: 12px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
-.mon-usage-sum { cursor: pointer; padding: 12px 14px; list-style-position: inside; }
-.mon-usage-sum .group-title { display: inline; margin: 0; }
-.mon-usage-body { padding: 0 12px 12px; }
-.mon-usage-body .view-pad { padding: 0; max-width: none; }
-.mon-usage-body .view-title, .mon-usage-body .view-sub { display: none; }
-.mon-usage-body .view-head { margin-bottom: 8px; }
 
 /* ---------- overview ---------- */
 .mon-power {
@@ -152,8 +144,6 @@
 
 @media (max-width: 640px) {
   .mon .view-head { flex-wrap: wrap; }
-  .mon-usage-link { display: none; }
-  .mon-usage { display: block; }
   .mon-wall-val { font-size: 2.2rem; }
   .mon-tiles { gap: 8px; }
   .mon-tile .st-value { font-size: var(--fs-body); }

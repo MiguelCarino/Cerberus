@@ -94,6 +94,10 @@ var toolSpecs = []toolSpec{
 	}, "path", "old_string", "new_string"),
 }
 
+// unchangedPrefix starts write_file's result when the file already held
+// the content.
+const unchangedPrefix = "unchanged (same content)"
+
 // changeTools need approval in ask mode; editTools write files.
 var (
 	changeTools = map[string]bool{"run_command": true, "write_file": true, "edit_file": true}
@@ -498,6 +502,14 @@ func (t *toolbox) writeFile(a args) (string, error) {
 	}
 	content := a.str("content")
 	_, statErr := os.Stat(p)
+	if statErr == nil {
+		if old, err := os.ReadFile(p); err == nil && string(old) == content {
+			// Nothing to write: say so, so a model that writes the same
+			// file again and again gets a signal (repeat.go).
+			return fmt.Sprintf("%s %s: %d lines, %d bytes; it already had exactly this content, nothing was written",
+				unchangedPrefix, p, len(splitLines(content)), len(content)), nil
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return "", errors.New(errText(err))
 	}
